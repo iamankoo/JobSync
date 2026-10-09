@@ -34,7 +34,7 @@ export function Sidebar({ current, onNavigate }: { current: Member; onNavigate?:
               onClick={onNavigate}
               aria-current={active ? "page" : undefined}
               className={`flex items-center gap-4 rounded-lg px-4 py-3 text-base font-medium transition-colors ${
-                active ? "bg-electric text-white" : "text-ink/90 hover:bg-navy-700"
+                active ? "bg-accent-strong text-on-accent" : "text-ink/90 hover:bg-navy-700"
               }`}
             >
               <Icon size={22} aria-hidden />

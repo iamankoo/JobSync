@@ -130,3 +130,36 @@ Sheets has no transactions or unique constraints, and a batch call is not a tran
 
 ### Verified vs unverified
 Verified by automated tests with a mocked Sheets client. **Not verified live**: no spreadsheet or credentials were available, so the real Google API calls, permissions and quotas have not been exercised.
+
+
+## Phase 3 implementation (job management screens)
+
+### Pages (server components load data, client components handle interaction)
+| Page | Server side | Client side |
+|---|---|---|
+| `/all-jobs` | `loadForMember(listJobsForMember)` | `JobsBrowser`: summary cards, search, Company/Location/Job Type/Experience/Status filters, Reset, sort (Deadline, Added On), 10-per-page pagination, details dialog, Applied/Not Applied toggle, row actions menu |
+| `/add-job` | `loadForMember(listJobsForMember)` (recent jobs and location suggestions) | `AddJobForm`: validation with the same Zod schema as the server, Clear, submit, duplicate-link handling, Recently Added panel |
+| `/my-applications` | `loadForMember(listMyApplications)` | `ApplicationsBrowser`: search, filters, sort (Applied On, Deadline), pagination, update dialog (status/stage/notes), details dialog. No charts |
+
+`src/lib/pages/load.ts` (`loadForMember`) is the single entry for page data: it reads the **session** (redirects to `/login` without one), checks the member is Active in the `Members` tab, runs the loader with the session's member, and converts data-layer failures into a safe `{ ok: false, title, message }` that the page shows as an error state. It never substitutes sample data. Pages pass the display timezone and today's date to client components so server and client render identical dates.
+
+### How changes persist
+Every control that changes data calls an existing server route and updates the UI only from the server's response:
+- Applied/Not Applied toggle and the update dialog: `PUT /api/applications/[jobId]` (body: `status`, optional `applicationStage`, `notes`; never a member ID).
+- Add Job: `POST /api/jobs` (never sends `addedBy`, `addedAt` or an ID; the server sets them from the session and clock).
+
+There is no client-side persistence and no optimistic write: a failed request leaves the old state and shows the server's message.
+
+### Product rules implemented
+- **One personal indicator.** All Jobs shows a green tick (applied) or red cross (not applied) for the signed-in member only. Statuses beyond `Applied` (In Progress, Interview, Offer, Rejected) show the tick but are locked in All Jobs and managed from My Applications.
+- **Summary cards (derived from the member's real records):** Total = all shared jobs; Applied = status other than Not Applied; Pending = Applied, In Progress or Interview (no final outcome yet); Not Applied = total minus applied.
+- **My Applications** lists the member's own rows whose status is not `Not Applied`, joined with the shared job. Moving a job back to Not Applied removes it from this page. Applications whose job was deleted by hand in the sheet are hidden and counted.
+- **Empty states, never invented data:** an empty sheet shows "No jobs yet" with an **Add New Job** button (same label as the header button) and zero counts; My Applications shows "No applications yet" with a link to All Jobs. A failing data layer shows an error state.
+- **Status filter:** "Applied" in All Jobs means any applied status; in My Applications it means exactly `Applied`.
+- **Search** matches every typed word (case-insensitive) in title, company, location, type, work mode, experience, salary and description. The top-bar search box navigates to `/all-jobs?q=...` (Ctrl/Cmd+K focuses it).
+- **Theme:** the signed-in member's accent colour (Anni blue, Lukky yellow, Rishii red) drives primary buttons, pagination and the active nav item through `--color-accent-strong` / `--color-on-accent`, chosen to meet WCAG AA contrast.
+- **Header:** the Log out button sits just left of the account (photo and name), which is pinned to the far top-right.
+- **Links:** job links open in a new tab with `rel="noopener noreferrer nofollow"`; only http(s) URLs are ever stored or rendered.
+
+### Limitations (Phase 3)
+Search, filtering and pagination run in the browser over all jobs loaded from Sheets (fine at this scale; each page load re-reads the tabs). Edits made directly in the sheet appear after a reload. Other members' status changes are not pushed live. The bell icon and "Online" indicator from the reference screenshots are intentionally omitted because there is no notification or presence feature. Dashboard and Analytics arrive in Phase 4.

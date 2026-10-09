@@ -12,12 +12,15 @@
   --color-muted: #a3b0d4;
   /* Member accent; overridden per member via [data-member] */
   --color-accent: #2f6bff;
+  /* Solid accent for buttons / active states and the text colour that stays readable on it (WCAG AA) */
+  --color-accent-strong: #2563eb;
+  --color-on-accent: #ffffff;
   --font-sans: var(--font-inter), ui-sans-serif, system-ui, sans-serif;
 }
 
-[data-member="anni"] { --color-accent: #2f6bff; }
-[data-member="lukky"] { --color-accent: #f5c518; }
-[data-member="rishii"] { --color-accent: #ff4d5e; }
+[data-member="anni"] { --color-accent: #2f6bff; --color-accent-strong: #2563eb; --color-on-accent: #ffffff; }
+[data-member="lukky"] { --color-accent: #f5c518; --color-accent-strong: #f5c518; --color-on-accent: #1a1400; }
+[data-member="rishii"] { --color-accent: #ff4d5e; --color-accent-strong: #e11d48; --color-on-accent: #ffffff; }
 
 html, body { min-height: 100%; }
 

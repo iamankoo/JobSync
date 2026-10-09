@@ -2,6 +2,8 @@ import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
   poweredByHeader: false,
+  // Lets the e2e server use its own build folder so it can run next to a normal dev server.
+  distDir: process.env.NEXT_DIST_DIR || ".next",
   turbopack: { root: __dirname },
   async headers() {
     return [

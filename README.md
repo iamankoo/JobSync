@@ -3,7 +3,7 @@
 A private job-tracking web app shared by three members: **Anni** (blue), **Lukky** (yellow) and **Rishii** (red).
 Screens: Login, Dashboard, All Jobs, Add Job, My Applications, Analytics.
 
-**Status:** Phases 1 (foundation and secure login) and 2 (Google Sheets data layer and protected API) are implemented. The job, application, dashboard and analytics screens arrive in Phases 3-4; until then they show only a heading. Phase 3 has not started. Live Google verification is pending the spreadsheet setup in `docs/setup/README.md`. Work proceeds one phase at a time with explicit owner approval.
+**Status:** Phases 1 (secure login), 2 (Google Sheets data layer) and 3 (All Jobs, Add Job, My Applications) are implemented, and the live Google connection is verified for all three members. Dashboard and Analytics arrive in Phase 4, which has not started (they show only a heading until then). Work proceeds one phase at a time with explicit owner approval.
 
 ## Documents
 - [phases.md](phases.md) – five-phase roadmap and completion criteria
@@ -27,6 +27,13 @@ Without env vars, development uses documented prototype access codes and a dev-o
 - `public/assets/` – browser-served copies of the profile photos
 - `src/app` – pages and route handlers; `src/components`; `src/lib` (`auth`, `validation`); `src/config`
 - `tests/` – `unit`, `integration`, `e2e`
+
+## Screens
+- **All Jobs**: shared jobs with search, filters, sorting, pagination, details and your own Applied/Not Applied status.
+- **Add Job**: validated form; duplicate links are detected; new jobs appear for everyone.
+- **My Applications**: your own applications only, with status/stage/notes updates.
+
+All data comes from the Google spreadsheet; an empty sheet shows an empty state with an **Add New Job** button, never sample data.
 
 ## Data API (all routes need a signed-in session)
 `GET/POST /api/jobs`, `GET /api/applications`, `PUT /api/applications/[jobId]`, `GET /api/sheets/status`. Jobs are shared; each member has an independent application status. Identity always comes from the session. Without Google configuration these routes return a safe 503; there is no sample data. Details: `architecture.md`.

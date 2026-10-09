@@ -4,8 +4,8 @@
 | Phase | Status |
 |---|---|
 | 1 — Foundation and secure login | Complete (commit `8c8bc38`) |
-| 2 — Google Sheets integration | Implemented and tested with a mocked Sheets client; live spreadsheet verification pending owner configuration; awaiting owner approval |
-| 3 — Job management | **Not started** |
+| 2 — Google Sheets integration | Complete; live Google connection verified by the owner for Anni, Lukky and Rishii (`/api/sheets/status`) |
+| 3 — Job management | Implemented and tested (mocked Sheets and component tests); read-only look at the real empty states done; awaiting owner approval |
 | 4 — Dashboard and analytics | Not started |
 | 5 — Final testing and deployment | Not started |
 
@@ -98,6 +98,8 @@ Five phases, executed strictly one at a time. This file is the authority for sco
 **Deliverables:** three screens, route handlers, components, tests. **Dependencies:** Phases 1–2 approved.
 
 **Validation:** screens compared to `all-jobs.png`, `add-jobs.png`, `my-aaplications.png`; every control exercised; member isolation tests; duplicate handling.
+
+**Phase 3 outcome (implemented):** All Jobs (summary cards, search, five filters, Reset, sorting, pagination, details dialog, Applied/Not Applied toggle, external links, row actions), Add Job (validated form, Clear, duplicate-link handling, Recently Added panel from real data), My Applications (own applications only, search, filters, sorting, pagination, update dialog with allowed transitions only, details; no charts), a working top-bar search with Ctrl/Cmd+K, per-member accent theming of primary controls, and designed empty/error states. Data comes only from Google Sheets via the Phase 2 services; identity only from the session. **Verified:** lint, type check, unit/integration/component tests, production build, Playwright e2e (isolated from the real sheet), and a read-only look at the real empty states. **Not verified:** writing a real job to the live spreadsheet (deliberately not done, to avoid fake production data); the first real job the owner adds is the live write check. **Known limitations:** see architecture.md "Limitations (Phase 3)".
 
 **Completion criteria:** all implemented, tested, documented, committed, pushed. **Stop for approval before Phase 4.**
 

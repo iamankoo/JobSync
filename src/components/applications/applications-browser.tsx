@@ -1,0 +1,224 @@
+"use client";
+
+import Link from "next/link";
+import { useMemo, useState } from "react";
+import { ExternalLink, Plus, SearchX, Send } from "lucide-react";
+import { ActionMenu } from "@/components/ui/action-menu";
+import { StatusBadge, TypeBadge } from "@/components/ui/badges";
+import { Button, buttonClass } from "@/components/ui/button";
+import { CompanyMark } from "@/components/ui/company-mark";
+import { EmptyState } from "@/components/ui/empty-state";
+import { Notice, type NoticeState } from "@/components/ui/notice";
+import { Pagination } from "@/components/ui/pagination";
+import { DeadlineText } from "@/components/jobs/deadline-text";
+import { FilterBar } from "@/components/jobs/filter-bar";
+import { JobDetailsDialog } from "@/components/jobs/job-details-dialog";
+import { SortableTh } from "@/components/jobs/sortable-th";
+import type { ApplicationUpdate } from "@/lib/client/api";
+import {
+  compareOptional, distinctValues, EMPTY_FILTERS, filterByJobFields, formatDisplayDate, hasActiveFilters, paginate,
+  type JobFilters, type SortDirection,
+} from "@/lib/jobs/query";
+import type { MyApplicationRow } from "@/types/domain";
+import { ApplicationUpdateDialog } from "./application-update-dialog";
+
+type SortKey = "appliedAt" | "deadline";
+
+interface Props {
+  rows: MyApplicationRow[];
+  timeZone: string;
+  today: string;
+  /** Applications ignored because their job no longer exists in the sheet. */
+  skipped?: number;
+}
+
+const STATUS_FILTER_OPTIONS = ["Applied", "In Progress", "Interview", "Offer", "Rejected"];
+
+/** The signed-in member's own applications. No charts here by design. */
+export function ApplicationsBrowser({ rows: initialRows, timeZone, today, skipped = 0 }: Props) {
+  const [rows, setRows] = useState(initialRows);
+  const [filters, setFilters] = useState<JobFilters>(EMPTY_FILTERS);
+  const [sort, setSort] = useState<{ key: SortKey; dir: SortDirection }>({ key: "appliedAt", dir: "desc" });
+  const [page, setPage] = useState(1);
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [detailsId, setDetailsId] = useState<string | null>(null);
+  const [notice, setNotice] = useState<NoticeState | null>(null);
+
+  const options = useMemo(
+    () => ({
+      companies: distinctValues(rows.map((r) => r.job.company)),
+      locations: distinctValues(rows.map((r) => r.job.location)),
+      jobTypes: distinctValues(rows.map((r) => r.job.jobType)),
+      experiences: distinctValues(rows.map((r) => r.job.experience)),
+      statuses: STATUS_FILTER_OPTIONS,
+    }),
+    [rows],
+  );
+
+  const sorted = useMemo(() => {
+    const filtered = filterByJobFields(rows, (r) => r.job, (r) => r.application.status, filters).filter(
+      // "Applied" here means exactly that status; the generic filter treats it as "any applied".
+      (r) => filters.status !== "Applied" || r.application.status === "Applied",
+    );
+    return [...filtered].sort((a, b) =>
+      sort.key === "deadline"
+        ? compareOptional(a.job.deadline, b.job.deadline, sort.dir)
+        : compareOptional(a.application.appliedAt, b.application.appliedAt, sort.dir),
+    );
+  }, [rows, filters, sort]);
+
+  const view = paginate(sorted, page);
+  const editing = rows.find((r) => r.job.jobId === editingId) ?? null;
+  const details = rows.find((r) => r.job.jobId === detailsId) ?? null;
+
+  function changeFilters(patch: Partial<JobFilters>) {
+    setFilters((f) => ({ ...f, ...patch }));
+    setPage(1);
+  }
+  function toggleSort(key: SortKey) {
+    setSort((s) => (s.key === key ? { key, dir: s.dir === "asc" ? "desc" : "asc" } : { key, dir: key === "deadline" ? "asc" : "desc" }));
+    setPage(1);
+  }
+
+  function onSaved(result: ApplicationUpdate) {
+    const row = rows.find((r) => r.job.jobId === result.jobId);
+    setEditingId(null);
+    if (!row) return;
+    const label = `${row.job.jobRole} at ${row.job.company}`;
+    if (!result.application || result.application.status === "Not Applied") {
+      setRows((prev) => prev.filter((r) => r.job.jobId !== result.jobId));
+      setNotice({ kind: "success", text: `"${label}" moved back to Not Applied and removed from My Applications.` });
+      return;
+    }
+    const application = result.application;
+    setRows((prev) => prev.map((r) => (r.job.jobId === result.jobId ? { ...r, application } : r)));
+    setNotice({ kind: "success", text: `Updated "${label}": ${application.status}.` });
+  }
+
+  return (
+    <div className="space-y-5">
+      <div className="flex flex-wrap items-start justify-between gap-4">
+        <div>
+          <h1 className="text-3xl font-bold">My Applications</h1>
+          <p className="mt-1 text-muted">Track and manage all the jobs you&apos;ve applied to</p>
+        </div>
+        <Link href="/add-job" className={buttonClass("primary", "px-5 py-3")}>
+          <Plus size={18} aria-hidden /> Add New Job
+        </Link>
+      </div>
+
+      <Notice notice={notice} onDismiss={() => setNotice(null)} />
+      {skipped > 0 && (
+        <p className="text-sm text-amber-300">
+          {skipped} application{skipped === 1 ? " was" : "s were"} hidden because the job no longer exists in the spreadsheet.
+        </p>
+      )}
+
+      {rows.length === 0 ? (
+        <EmptyState icon={Send} title="No applications yet" message="Jobs you mark as applied show up here, where you can track each stage and keep notes. Your applications are private to you.">
+          <Link href="/all-jobs" className={buttonClass("primary")}>Browse All Jobs</Link>
+        </EmptyState>
+      ) : (
+        <>
+          <FilterBar
+            filters={filters}
+            options={options}
+            searchLabel="Search your applications"
+            searchPlaceholder="Search your applications…"
+            onChange={changeFilters}
+            onReset={() => changeFilters(EMPTY_FILTERS)}
+            canReset={hasActiveFilters(filters)}
+          />
+
+          {sorted.length === 0 ? (
+            <EmptyState icon={SearchX} title="No applications match your search" message="Try different keywords or clear the filters.">
+              <Button onClick={() => changeFilters(EMPTY_FILTERS)}>Reset filters</Button>
+            </EmptyState>
+          ) : (
+            <div className="overflow-hidden rounded-xl border border-line bg-navy-900/70">
+              <div className="overflow-x-auto">
+                <table className="w-full min-w-[1120px] text-sm">
+                  <caption className="sr-only">Your applications</caption>
+                  <thead className="border-b border-line text-muted">
+                    <tr>
+                      <th scope="col" className="px-3 py-3 text-left font-medium">#</th>
+                      <th scope="col" className="px-3 py-3 text-left font-medium">Job Title</th>
+                      <th scope="col" className="px-3 py-3 text-left font-medium">Company</th>
+                      <th scope="col" className="px-3 py-3 text-left font-medium">Location</th>
+                      <th scope="col" className="px-3 py-3 text-left font-medium">Type</th>
+                      <th scope="col" className="px-3 py-3 text-left font-medium">Experience</th>
+                      <th scope="col" className="px-3 py-3 text-left font-medium">Stipend / Salary</th>
+                      <th scope="col" className="px-3 py-3 text-left font-medium">Status</th>
+                      <SortableTh label="Applied On" active={sort.key === "appliedAt"} direction={sort.dir} onSort={() => toggleSort("appliedAt")} />
+                      <SortableTh label="Deadline" active={sort.key === "deadline"} direction={sort.dir} onSort={() => toggleSort("deadline")} />
+                      <th scope="col" className="px-3 py-3 text-left font-medium">Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {view.items.map(({ job, application }, i) => {
+                      const label = `${job.jobRole} at ${job.company}`;
+                      return (
+                        <tr key={job.jobId} className="border-b border-line/60 last:border-0 hover:bg-navy-800/50">
+                          <td className="px-3 py-3 text-muted">{view.from + i}</td>
+                          <td className="px-3 py-3 font-medium">
+                            <button type="button" onClick={() => setDetailsId(job.jobId)} className="text-left hover:text-electric-soft hover:underline">
+                              {job.jobRole}
+                            </button>
+                          </td>
+                          <td className="px-3 py-3">
+                            <span className="flex items-center gap-2"><CompanyMark name={job.company} />{job.company}</span>
+                          </td>
+                          <td className="px-3 py-3">{job.location}</td>
+                          <td className="px-3 py-3"><TypeBadge type={job.jobType} /></td>
+                          <td className="whitespace-nowrap px-3 py-3">{job.experience ?? "—"}</td>
+                          <td className="whitespace-nowrap px-3 py-3">{job.stipendSalary ?? "—"}</td>
+                          <td className="px-3 py-3">
+                            <StatusBadge status={application.status} />
+                            {application.applicationStage && <span className="mt-1 block text-xs text-muted">{application.applicationStage}</span>}
+                          </td>
+                          <td className="whitespace-nowrap px-3 py-3">{formatDisplayDate(application.appliedAt, timeZone)}</td>
+                          <td className="px-3 py-3"><DeadlineText deadline={job.deadline} today={today} timeZone={timeZone} /></td>
+                          <td className="px-3 py-3">
+                            <span className="flex items-center gap-2">
+                              <a
+                                href={job.jobUrl}
+                                target="_blank"
+                                rel="noopener noreferrer nofollow"
+                                aria-label={`Open job posting: ${label}`}
+                                className="grid h-9 w-9 place-items-center rounded-lg border border-line bg-navy-900 text-electric-soft transition hover:border-electric-soft"
+                              >
+                                <ExternalLink size={17} aria-hidden />
+                              </a>
+                              <ActionMenu
+                                label={`More actions: ${label}`}
+                                items={[
+                                  { label: "Update status", onSelect: () => setEditingId(job.jobId) },
+                                  { label: "View details", onSelect: () => setDetailsId(job.jobId) },
+                                ]}
+                              />
+                            </span>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+              <Pagination
+                page={view.page}
+                pageCount={view.pageCount}
+                onChange={setPage}
+                summary={`Showing ${view.from}–${view.to} of ${view.total} application${view.total === 1 ? "" : "s"}${view.total !== rows.length ? ` (filtered from ${rows.length})` : ""}`}
+              />
+            </div>
+          )}
+        </>
+      )}
+
+      {editing && <ApplicationUpdateDialog row={editing} onClose={() => setEditingId(null)} onSaved={onSaved} />}
+      {details && (
+        <JobDetailsDialog job={details.job} status={details.application.status} timeZone={timeZone} today={today} onClose={() => setDetailsId(null)} />
+      )}
+    </div>
+  );
+}

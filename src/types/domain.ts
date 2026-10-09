@@ -61,6 +61,17 @@ export interface Application {
   lastUpdated: string;
 }
 
+/** A shared job plus the CALLER's own status. Other members' statuses are never included. */
+export interface JobWithMyStatus extends Job {
+  myStatus: ApplicationStatus;
+}
+
+/** One of the caller's own applications joined with its (shared) job. */
+export interface MyApplicationRow {
+  job: Job;
+  application: Application;
+}
+
 export interface Activity {
   activityId: string;
   memberId: MemberId;

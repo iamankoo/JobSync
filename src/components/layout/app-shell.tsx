@@ -1,8 +1,8 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useRouter, usePathname } from "next/navigation";
-import { LogOut, Menu, X } from "lucide-react";
+import { LogOut, Menu, Search, X } from "lucide-react";
 import type { Member } from "@/config/members";
 import { Avatar } from "@/components/ui/avatar";
 import { Logo } from "@/components/ui/logo";
@@ -13,6 +13,27 @@ export function AppShell({ member, children }: { member: Member; children: React
   const pathname = usePathname();
   const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [query, setQuery] = useState("");
+  const searchRef = useRef<HTMLInputElement>(null);
+
+  // Ctrl/Cmd + K focuses the search box.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "k") {
+        e.preventDefault();
+        searchRef.current?.focus();
+        searchRef.current?.select();
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
+
+  function search(e: React.FormEvent) {
+    e.preventDefault();
+    const q = query.trim();
+    router.push(q ? `/all-jobs?q=${encodeURIComponent(q)}` : "/all-jobs");
+  }
 
   useEffect(() => {
     if (!open) return;
@@ -54,20 +75,31 @@ export function AppShell({ member, children }: { member: Member; children: React
       )}
 
       <div className="lg:pl-72">
-        <header className="sticky top-0 z-20 flex h-16 items-center justify-between gap-3 border-b border-line bg-navy-950/90 px-4 backdrop-blur sm:px-6">
+        <header className="sticky top-0 z-20 flex flex-wrap items-center gap-3 border-b border-line bg-navy-950/90 px-4 py-3 backdrop-blur sm:px-6">
           <div className="flex items-center gap-3 lg:hidden">
             <button className="rounded-lg border border-line p-2" aria-label="Open menu" aria-expanded={open} onClick={() => setOpen(true)}>
               <Menu size={20} aria-hidden />
             </button>
             <Logo />
           </div>
-          <div className="ml-auto flex items-center gap-3">
-            <div className="flex items-center gap-2">
-              <Avatar member={member} size={36} ring />
-              <span className="hidden text-sm font-semibold sm:block" style={{ color: member.accentText }}>
-                {member.name}
-              </span>
-            </div>
+          <form role="search" onSubmit={search} className="relative order-3 w-full lg:order-none lg:max-w-2xl lg:flex-1">
+            <label htmlFor="global-search" className="sr-only">Search jobs by title, company, location or keyword</label>
+            <Search size={18} aria-hidden className="pointer-events-none absolute left-3.5 top-1/2 -translate-y-1/2 text-muted" />
+            <input
+              id="global-search"
+              ref={searchRef}
+              type="search"
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              placeholder="Search jobs by title, company, location, keyword…"
+              className="h-11 w-full rounded-lg border border-line bg-navy-900 pl-10 pr-16 text-sm text-ink outline-none placeholder:text-muted hover:border-electric-soft focus-visible:border-electric-soft"
+            />
+            <kbd aria-hidden className="pointer-events-none absolute right-3 top-1/2 hidden -translate-y-1/2 rounded border border-line bg-navy-800 px-1.5 py-0.5 text-xs text-muted sm:block">
+              Ctrl + K
+            </kbd>
+          </form>
+          {/* Pinned to the top-right: Log out sits just left of the account, which is the far-right item. */}
+          <div className="ml-auto flex shrink-0 items-center gap-3">
             <button
               onClick={logout}
               disabled={busy}
@@ -76,6 +108,12 @@ export function AppShell({ member, children }: { member: Member; children: React
               <LogOut size={16} aria-hidden />
               Log out
             </button>
+            <div className="flex items-center gap-2">
+              <Avatar member={member} size={36} ring />
+              <span className="hidden text-sm font-semibold sm:block" style={{ color: member.accentText }}>
+                {member.name}
+              </span>
+            </div>
           </div>
         </header>
         <main id="main" key={pathname} className="p-4 sm:p-6">

@@ -1,6 +1,6 @@
 import "server-only";
 import type { MemberId } from "@/config/members";
-import type { ApplicationStatus, Job } from "@/types/domain";
+import type { Job, JobWithMyStatus } from "@/types/domain";
 import { normalizeJobUrl } from "@/lib/utils/url";
 import { nowIso } from "@/lib/utils/time";
 import type { CreateJobInput } from "@/lib/validation/jobs";
@@ -9,11 +9,6 @@ import { DomainError } from "./errors";
 import { newId } from "./ids";
 import { withWriteLock } from "./lock";
 import { appendJob, readApplications, readJobs } from "./repositories";
-
-/** A shared job plus the CALLER's own status. Other members' statuses are never included. */
-export interface JobWithMyStatus extends Job {
-  myStatus: ApplicationStatus;
-}
 
 export async function listJobsForMember(memberId: MemberId): Promise<{ jobs: JobWithMyStatus[]; skippedRows: number }> {
   const [jobs, apps] = await Promise.all([readJobs(), readApplications()]);

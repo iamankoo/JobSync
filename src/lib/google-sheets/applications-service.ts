@@ -1,6 +1,6 @@
 import "server-only";
 import type { MemberId } from "@/config/members";
-import type { Application, ApplicationStatus } from "@/types/domain";
+import type { Application, ApplicationStatus, MyApplicationRow } from "@/types/domain";
 import { nowIso } from "@/lib/utils/time";
 import { canTransition, type UpdateApplicationInput } from "@/lib/validation/applications";
 import { recordActivity } from "./activity-service";
@@ -11,6 +11,29 @@ import { appendApplication, readApplications, readApplicationsLocated, readJobs,
 export async function listApplicationsForMember(memberId: MemberId): Promise<Application[]> {
   const { items } = await readApplications();
   return items.filter((a) => a.memberId === memberId);
+}
+
+/**
+ * The caller's own applications joined with their jobs, newest activity first. Rows whose status
+ * is "Not Applied" are not applications and are left out; rows pointing at a job that no longer
+ * exists (e.g. deleted by hand in the sheet) are skipped and counted.
+ */
+export async function listMyApplications(memberId: MemberId): Promise<{ rows: MyApplicationRow[]; skipped: number }> {
+  const [jobs, apps] = await Promise.all([readJobs(), readApplications()]);
+  const byId = new Map(jobs.items.map((j) => [j.jobId, j]));
+  const rows: MyApplicationRow[] = [];
+  let skipped = 0;
+  for (const application of apps.items) {
+    if (application.memberId !== memberId || application.status === "Not Applied") continue;
+    const job = byId.get(application.jobId);
+    if (!job) {
+      skipped += 1;
+      continue;
+    }
+    rows.push({ job, application });
+  }
+  rows.sort((a, b) => b.application.lastUpdated.localeCompare(a.application.lastUpdated));
+  return { rows, skipped };
 }
 
 export interface ApplicationUpdateResult {
