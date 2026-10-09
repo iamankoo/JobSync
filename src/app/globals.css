@@ -1,0 +1,46 @@
+@import "tailwindcss";
+
+@theme {
+  --color-navy-950: #050b1f;
+  --color-navy-900: #081029;
+  --color-navy-800: #0c1738;
+  --color-navy-700: #122049;
+  --color-line: #1c2b57;
+  --color-electric: #2563eb;
+  --color-electric-soft: #6f8dff;
+  --color-ink: #f2f5ff;
+  --color-muted: #a3b0d4;
+  /* Member accent; overridden per member via [data-member] */
+  --color-accent: #2f6bff;
+  --font-sans: var(--font-inter), ui-sans-serif, system-ui, sans-serif;
+}
+
+[data-member="anni"] { --color-accent: #2f6bff; }
+[data-member="lukky"] { --color-accent: #f5c518; }
+[data-member="rishii"] { --color-accent: #ff4d5e; }
+
+html, body { min-height: 100%; }
+
+body {
+  background: var(--color-navy-950);
+  color: var(--color-ink);
+  font-family: var(--font-sans);
+}
+
+@layer base {
+  :focus-visible {
+    outline: 2px solid var(--color-electric-soft);
+    outline-offset: 2px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }
+}
+
+.login-bg {
+  background:
+    radial-gradient(ellipse 80% 50% at 50% 100%, rgba(47, 107, 255, 0.22), transparent 70%),
+    radial-gradient(ellipse 60% 40% at 50% 0%, rgba(47, 107, 255, 0.12), transparent 70%),
+    var(--color-navy-950);
+}
