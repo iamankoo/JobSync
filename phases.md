@@ -1,5 +1,14 @@
 # JobSync — Master Roadmap
 
+## Status
+| Phase | Status |
+|---|---|
+| 1 — Foundation and secure login | Complete (commit `8c8bc38`) |
+| 2 — Google Sheets integration | Implemented and tested with a mocked Sheets client; live spreadsheet verification pending owner configuration; awaiting owner approval |
+| 3 — Job management | **Not started** |
+| 4 — Dashboard and analytics | Not started |
+| 5 — Final testing and deployment | Not started |
+
 Five phases, executed strictly one at a time. This file is the authority for scope.
 
 ## Mandatory workflow (every phase)
@@ -18,6 +27,7 @@ Five phases, executed strictly one at a time. This file is the authority for sco
 - Screenshots are never used as backgrounds or as static mockups; every screen is a real interface.
 - Every visible button, tab, filter, form, nav item, status control and chart interaction must work. No dead or decorative controls, no fake data presented as real.
 - Identity and data rules (owner-confirmed): jobs are shared by all three members; application status is independent per member (Anni marking Applied never changes Lukky or Rishii); name, photo, welcome message, theme, statistics, progress and analytics always belong to the authenticated member; the server derives the member from the validated session, never from browser-supplied names, IDs or URLs; the dashboard may show team contributions without mixing personal statistics; no hardcoded names, fake statistics or placeholder application data presented as real.
+- Reference images are UI design references only. They are never rendered as page content, and no job, company, salary, status or statistic visible in them is ever copied, seeded or presented as data. Nothing seeds Google Sheets. All data comes from records users enter and persist in Sheets; an empty database shows a designed empty state with a clear "add the first job" action. Automated tests may use clearly labelled synthetic fixtures in isolated test environments only.
 - Locked stack: Next.js App Router, React, TypeScript, Tailwind CSS, route handlers, Google Sheets as the only persistent store, Vercel. No Supabase, PostgreSQL, Prisma or other databases.
 - All Google Sheets access is server-side. Secrets never reach browser code or Git.
 - Navigation is exactly: Dashboard, All Jobs, Add Job, My Applications, Analytics. No Team Activity or Bookmarks.
@@ -70,6 +80,8 @@ Five phases, executed strictly one at a time. This file is the authority for sco
 **Dependencies:** Phase 1 approved (session identity).
 
 **Validation:** unit/integration tests for reads, writes, duplicates, malformed rows, error mapping, authorization and status independence; a manual check against a real test spreadsheet when the owner provides one.
+
+**Phase 2 outcome (implemented):** typed server-only data layer in `src/lib/google-sheets/`; four-tab schema with header verification; job/application/activity/member services; strict validation; URL normalisation and duplicate detection; per-member application isolation with a documented status model and transitions; protected routes `GET/POST /api/jobs`, `GET /api/applications`, `PUT /api/applications/[jobId]`, `GET /api/sheets/status`; Google error mapping, timeouts and retry; setup, testing and architecture docs. Verified by automated tests with a mocked Sheets client. **Not verified:** any live Google spreadsheet (no credentials were available); granting of the owner/editor sharing permissions (documented only). **Known limitations:** no cross-instance locking (see architecture.md "Concurrency"); no delete endpoints; reading re-fetches whole tabs, which is fine at this scale.
 
 **Completion criteria:** all scope implemented and tested; docs updated; committed and pushed. **Stop for approval before Phase 3.**
 

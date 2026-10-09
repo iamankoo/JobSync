@@ -133,3 +133,42 @@ test("no horizontal scroll on login", async ({ page }) => {
   const overflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
   expect(overflow).toBeLessThanOrEqual(0);
 });
+
+test.describe("data API (Phase 2)", () => {
+  const configured = Boolean(process.env.GOOGLE_SHEETS_SPREADSHEET_ID);
+
+  test("data routes reject unauthenticated requests", async ({ request }) => {
+    for (const path of ["/api/jobs", "/api/applications", "/api/sheets/status"]) {
+      const res = await request.get(path);
+      expect(res.status(), path).toBe(401);
+    }
+    const put = await request.put("/api/applications/job_x", { data: { status: "Applied" } });
+    expect(put.status()).toBe(401);
+    const post = await request.post("/api/jobs", { data: {} });
+    expect(post.status()).toBe(401);
+  });
+
+  test("signed in without Google configuration: safe 503, never fake data", async ({ request }, testInfo) => {
+    test.skip(configured, "Google Sheets is configured in this environment");
+    const ip = testInfo.project.name === "mobile" ? "203.0.113.91" : "203.0.113.90";
+    const login = await request.post("/api/auth/login", { data: { memberId: "anni", code: "0001" }, headers: { "x-forwarded-for": ip } });
+    expect(login.status()).toBe(200);
+    const res = await request.get("/api/jobs");
+    expect(res.status()).toBe(503);
+    const body = await res.json();
+    expect(body.data).toBeUndefined();
+    expect(body.error.message).toContain("GOOGLE_SHEETS_SPREADSHEET_ID");
+    expect(JSON.stringify(body)).not.toMatch(/BEGIN PRIVATE KEY/);
+  });
+
+  test("a client-supplied member ID cannot be used to act as someone else", async ({ request }, testInfo) => {
+    const ip = testInfo.project.name === "mobile" ? "203.0.113.93" : "203.0.113.92";
+    await request.post("/api/auth/login", { data: { memberId: "lukky", code: "0002" }, headers: { "x-forwarded-for": ip } });
+    const res = await request.put("/api/applications/job_x", { data: { status: "Applied", memberId: "anni" } });
+    // 400 when Sheets is configured (strict body rejects memberId); 503 when the membership check
+    // cannot reach Sheets first. Either way the request is never accepted. Exact 400 is covered in
+    // tests/integration/api-routes.test.ts.
+    expect([400, 503]).toContain(res.status());
+    expect((await res.json()).data).toBeUndefined();
+  });
+});

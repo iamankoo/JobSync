@@ -1,18 +1,19 @@
 # JobSync — Tech Stack
 
-Versions below were read from the installed packages after Phase 1 (`package.json` uses caret ranges; `package-lock.json` pins exact versions). Local tooling: Node v24.14.0, npm 11.9.0.
+Versions below were read from the installed packages after Phase 2 (`package.json` uses caret ranges; `package-lock.json` pins exact versions). Local tooling: Node v24.14.0, npm 11.9.0.
 
-## Installed (Phase 1)
+## Installed (Phases 1-2)
 | Technology | Version | Responsibility | Location |
 |---|---|---|---|
 | Next.js (App Router, Turbopack) | 16.4.0 | Routing, server components, route handlers | `src/app/` |
 | React / React DOM | 19.3.0 | UI | `src/components/` |
 | TypeScript | 6.0.3 | Type safety (`strict`) | everywhere; `src/types/` |
 | Tailwind CSS (+ `@tailwindcss/postcss`) | 4.3.3 | Styling and design tokens | `src/app/globals.css` (`@theme` tokens) |
-| Zod | 4.6.5 | Request validation | `src/lib/validation/` |
+| Zod | 4.6.5 | Request and input validation (strict schemas) | `src/lib/validation/` |
 | jose | 6.2.12 | Signed (HS256) session tokens in HTTP-only cookies | `src/lib/auth/session.ts` |
 | server-only | 0.0.1 | Build-time guard keeping secret-handling modules out of client bundles | `src/lib/auth/*` |
 | lucide-react | 1.54.0 | Icons | components |
+| `@googleapis/sheets` | 18.1.1 | Official Google Sheets v4 client + service-account JWT auth (chosen over the full `googleapis` package, ~0.8 MB) | `src/lib/google-sheets/client.ts` |
 | ESLint (`eslint-config-next`) | 9.39.5 | Lint | `eslint.config.mjs` |
 | Vitest + Testing Library | 5.0.3 | Unit and integration tests | `tests/unit`, `tests/integration` |
 | Playwright + `@axe-core/playwright` | 1.64.0 / ^4.13.0 | End-to-end, responsive and accessibility tests | `tests/e2e` |
@@ -22,7 +23,6 @@ Accessible reusable UI components are built in-house in `src/components/ui/` wit
 ## Planned (not installed yet)
 | Technology | Why | Phase |
 |---|---|---|
-| `googleapis` (or `@googleapis/sheets`) | Official Sheets client | 2 |
 | Recharts | No charting dependency exists; needed for donut/trend/contribution charts. Re-evaluate against `analytics.png` in Phase 4 (custom SVG is the fallback for the donut) | 4 |
 
 ## Locked by the owner
@@ -31,7 +31,7 @@ Next.js App Router, React, TypeScript, Tailwind CSS, Next.js route handlers, Goo
 ## Prohibited for the initial version
 Supabase, PostgreSQL, Prisma, MySQL, MongoDB, Firebase/Firestore, SQLite, Redis as a store, and any other persistent database.
 
-## Development commands (all run in Phase 1)
+## Development commands (all run in Phases 1-2)
 | Command | Purpose |
 |---|---|
 | `npm run dev` | Start the dev server |

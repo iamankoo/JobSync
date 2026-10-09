@@ -71,3 +71,62 @@ Unit tests (validation, calculations), integration tests of route handlers with 
 
 ## Deployment
 Vercel hosts the single Next.js app. Secrets live in Vercel environment variables (server-only). The spreadsheet is shared only with the service-account email. Deployment is gated on Phase 5.
+
+
+## Phase 2 implementation (data layer)
+
+### Modules (`src/lib/google-sheets/`, all `server-only`)
+| Module | Responsibility |
+|---|---|
+| `config.ts` | Reads/validates `GOOGLE_SHEETS_SPREADSHEET_ID`, `GOOGLE_SERVICE_ACCOUNT_EMAIL`, `GOOGLE_PRIVATE_KEY`, `APP_TIMEZONE`. Errors name variables, never values. |
+| `client.ts` | `SheetsClient` interface (get/append/update) over `@googleapis/sheets` with a JWT service account, 10 s timeout, retry with backoff (250/500 ms, 3 attempts) for 429/5xx/timeouts on reads and updates, and Google-error to `SheetsError` mapping. Appends are not auto-retried (an ambiguous failure could duplicate a row). Writes use `valueInputOption: RAW`. |
+| `schema.ts`, `table.ts` | Tab names, exact headers, A1 ranges; whole-tab reads that verify the header row first and never repair it. |
+| `rows.ts`, `repositories.ts` | Row to typed object parsing/serialising; skip-and-report handling of malformed rows (`RowIssue`), blank rows ignored, first row wins for duplicate keys. |
+| `jobs-service.ts`, `applications-service.ts`, `activity-service.ts`, `members-service.ts`, `status-service.ts` | Business rules (below). |
+| `lock.ts`, `ids.ts`, `errors.ts` | In-process write lock, `job_<uuid>`/`act_<uuid>` IDs, `SheetsError` and `DomainError`. |
+
+Validation lives in `src/lib/validation/` (`jobs.ts`, `applications.ts`, `auth.ts`), URL/date helpers in `src/lib/utils/`, shared types in `src/types/domain.ts`. The HTTP layer is `src/lib/api/` (`protectedRoute` wrapper and response helpers).
+
+### Routes (all require a valid session; handlers are thin)
+| Route | Behaviour |
+|---|---|
+| `GET /api/jobs` | Shared jobs, newest first, each with **only the caller's** `myStatus`. `meta.skippedRows` counts malformed rows. |
+| `POST /api/jobs` | Validates and creates a job; `AddedBy` is the session member. 201, or 400/409. |
+| `GET /api/applications` | The caller's own application records only. |
+| `PUT /api/applications/[jobId]` | Sets the caller's own status/stage/notes for that job. |
+| `GET /api/sheets/status` | Read-only tab/header/row-health report, no credentials or cell contents. |
+
+There is deliberately no delete route and no route that takes a `MemberID`: a member is "Not Applied" again by moving their own row back to that status.
+
+`protectedRoute` order: same-origin check (mutations) -> session -> member is Active in the `Members` tab -> handler. Responses are `{ data, meta? }` or `{ error: { code, message, details? } }` with `Cache-Control: no-store`.
+
+### Error mapping
+| Failure | HTTP | `error.code` |
+|---|---|---|
+| No/invalid session | 401 | `unauthenticated` |
+| Cross-origin mutation, inactive member | 403 | `forbidden`, `member_inactive` |
+| Invalid body/ID (field messages only, no echoed values) | 400 | `validation_failed`, `invalid_json` |
+| Body > 16 KB | 413 | `payload_too_large` |
+| Unknown job | 404 | `job_not_found` |
+| Duplicate URL / disallowed status change | 409 | `duplicate_url`, `invalid_transition` |
+| Missing/malformed config, wrong headers or missing tab | 503 | `data_service_unavailable` |
+| Quota (429) | 503 + `Retry-After` | `data_service_unavailable` |
+| Credentials rejected, not shared, spreadsheet missing, upstream 5xx | 502 | `data_service_unavailable` |
+| Timeout | 504 | `data_service_unavailable` |
+| Anything else | 500 | `internal_error` |
+
+Messages are fixed, safe strings; upstream messages, stack traces and secrets are never returned. When Sheets is unavailable the API fails; it never falls back to sample data.
+
+### Ownership and independence
+The member comes only from the validated session (`getSession()`); request bodies are strict schemas, so a `memberId` (or `addedBy`) field is rejected with 400. `setApplicationStatus(memberId, jobId, ...)` reads and writes only the row whose key is exactly `(jobId, memberId)`, so Anni's update cannot change Lukky's or Rishii's rows, and list endpoints filter to the caller before returning anything.
+
+### Duplicates, IDs, timestamps
+- Job URL duplicates are detected on a normalised form (scheme ignored, lower-case host without `www.`, default ports/fragments/tracking parameters/trailing slashes removed, query sorted). The original URL is stored as entered.
+- `(JobID, MemberID)` is unique in the application path (update-in-place; append only when no row exists). If a hand edit creates duplicates, the first row wins and the rest are reported as issues.
+- IDs are server-generated UUIDs; stored timestamps are ISO 8601 UTC; `Activity.Date` uses `APP_TIMEZONE`.
+
+### Concurrency (limits stated plainly)
+Sheets has no transactions or unique constraints, and a batch call is not a transaction. Mitigations: every read-check-write runs under an in-process lock and re-reads the tab immediately before writing, updates target one exact row range (never a whole-sheet rewrite), and the activity log is append-only. **Remaining risks:** (1) the lock is per server instance, so two serverless instances could both pass a duplicate check and append the same URL/application at the same moment; (2) a person editing the sheet by hand between the read and the write is not coordinated; (3) a failed Activity append after a successful primary write leaves a missing activity row (logged, not retried); (4) rows with malformed fields are invisible to duplicate detection. For a three-person team these are rare and visible in the sheet; they are accepted for the initial version.
+
+### Verified vs unverified
+Verified by automated tests with a mocked Sheets client. **Not verified live**: no spreadsheet or credentials were available, so the real Google API calls, permissions and quotas have not been exercised.

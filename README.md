@@ -3,7 +3,7 @@
 A private job-tracking web app shared by three members: **Anni** (blue), **Lukky** (yellow) and **Rishii** (red).
 Screens: Login, Dashboard, All Jobs, Add Job, My Applications, Analytics.
 
-**Status:** Phase 1 (foundation and secure login) is implemented. Jobs, applications, dashboard metrics and analytics arrive in later phases; until then those screens show only a heading. Work proceeds one phase at a time with explicit owner approval.
+**Status:** Phases 1 (foundation and secure login) and 2 (Google Sheets data layer and protected API) are implemented. The job, application, dashboard and analytics screens arrive in Phases 3-4; until then they show only a heading. Phase 3 has not started. Live Google verification is pending the spreadsheet setup in `docs/setup/README.md`. Work proceeds one phase at a time with explicit owner approval.
 
 ## Documents
 - [phases.md](phases.md) – five-phase roadmap and completion criteria
@@ -14,7 +14,7 @@ Screens: Login, Dashboard, All Jobs, Add Job, My Applications, Analytics.
 ## Quick start
 ```bash
 npm install
-cp .env.example .env.local   # optional locally; see docs/setup/README.md
+cp .env.example .env.local   # add GOOGLE_* values for data routes; see docs/setup/README.md
 npm run dev                  # http://localhost:3000
 ```
 Without env vars, development uses documented prototype access codes and a dev-only session secret. Production refuses to start sessions without `SESSION_SECRET` and fails closed without access codes.
@@ -27,6 +27,9 @@ Without env vars, development uses documented prototype access codes and a dev-o
 - `public/assets/` – browser-served copies of the profile photos
 - `src/app` – pages and route handlers; `src/components`; `src/lib` (`auth`, `validation`); `src/config`
 - `tests/` – `unit`, `integration`, `e2e`
+
+## Data API (all routes need a signed-in session)
+`GET/POST /api/jobs`, `GET /api/applications`, `PUT /api/applications/[jobId]`, `GET /api/sheets/status`. Jobs are shared; each member has an independent application status. Identity always comes from the session. Without Google configuration these routes return a safe 503; there is no sample data. Details: `architecture.md`.
 
 ## Security notes
 Access codes are verified on the server only. Sessions are signed, HTTP-only cookies; identity is always taken from the validated session, never from browser-supplied names or IDs. Never commit `.env*` files or service-account JSON.
