@@ -1,0 +1,38 @@
+# dependencies
+node_modules/
+.pnp
+.pnp.js
+
+# build output
+.next/
+out/
+build/
+dist/
+coverage/
+*.tsbuildinfo
+next-env.d.ts
+
+# environment files (keep only the example)
+.env
+.env.*
+!.env.example
+
+# credentials
+*service-account*.json
+*credentials*.json
+*.pem
+*.key
+*.p12
+
+# test output
+playwright-report/
+test-results/
+
+# logs and OS/editor files
+*.log
+npm-debug.log*
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+.vercel
