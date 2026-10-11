@@ -1,0 +1,13 @@
+# Never upload local build output, dependencies, test artefacts or local env files
+node_modules
+.next
+.next-*
+.next-e2e*
+.next-preview
+test-results
+playwright-report
+coverage
+.env
+.env.*
+!.env.example
+.vercel

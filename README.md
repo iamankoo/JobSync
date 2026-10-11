@@ -3,7 +3,7 @@
 A private job-tracking web app shared by three members: **Anni** (blue), **Lukky** (yellow) and **Rishii** (red).
 Screens: Login, Dashboard, All Jobs, Add Job, My Applications, Analytics.
 
-**Status:** Phases 1 (secure login), 2 (Google Sheets data layer) and 3 (All Jobs, Add Job, My Applications) are implemented, and the live Google connection is verified for all three members. Phase 4 (Dashboard, Analytics, 7-day follow-up, job edit/delete, 30-day retention) is implemented and awaiting approval; Phase 5 has not started. Work proceeds one phase at a time with explicit owner approval.
+**Status:** Phases 1 (secure login), 2 (Google Sheets data layer) and 3 (All Jobs, Add Job, My Applications) are implemented, and the live Google connection is verified for all three members. Phases 1-4 are done and Phase 5 (deployment) is complete: production is live at https://jobsbyarillabs.vercel.app (see docs/deployment). Work proceeds one phase at a time with explicit owner approval.
 
 ## Documents
 - [phases.md](phases.md) – five-phase roadmap and completion criteria

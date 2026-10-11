@@ -138,3 +138,5 @@ Five phases, executed strictly one at a time. This file is the authority for sco
 **Dependencies:** Phases 1–4 approved.
 
 **Completion criteria:** all checks run and reported honestly; deployment verified by smoke tests; documentation complete; committed and pushed.
+
+**Phase 5 outcome (deployed):** production runs at **https://jobsbyarillabs.vercel.app** on Vercel (project `jobsbyarillabs`, repo `iamankoo/JobSync`, branch `main`). `jobsync.vercel.app` was tried first and Vercel refused it (already in use). Verified on the live URL: HTTPS, all three logins, logout/unauthorised access, member identity enforcement, all five pages, all 7 shared jobs, mobile/tablet/desktop layouts, and no secrets in the browser bundles. Production retention cleanup remains disabled. **Not verified:** a real production follow-up answer. Details, environment variable names, rollback and limitations: `docs/deployment/README.md`.
