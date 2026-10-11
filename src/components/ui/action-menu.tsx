@@ -20,6 +20,13 @@ export function ActionMenu({ label, items }: { label: string; items: MenuItem[] 
     if (!open) return;
     menu.current?.querySelector<HTMLButtonElement>("button:not(:disabled)")?.focus();
     const close = () => setPos(null);
+    // Only close on scroll when the button actually moved (the popup is fixed-positioned, so it
+    // would otherwise be left floating); unrelated scroll events must not dismiss the menu.
+    const start = button.current?.getBoundingClientRect();
+    const onScroll = () => {
+      const now = button.current?.getBoundingClientRect();
+      if (!start || !now || Math.abs(now.top - start.top) > 1 || Math.abs(now.left - start.left) > 1) close();
+    };
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
         setPos(null);
@@ -31,12 +38,12 @@ export function ActionMenu({ label, items }: { label: string; items: MenuItem[] 
     };
     window.addEventListener("keydown", onKey);
     window.addEventListener("mousedown", onDown);
-    window.addEventListener("scroll", close, true);
+    window.addEventListener("scroll", onScroll, true);
     window.addEventListener("resize", close);
     return () => {
       window.removeEventListener("keydown", onKey);
       window.removeEventListener("mousedown", onDown);
-      window.removeEventListener("scroll", close, true);
+      window.removeEventListener("scroll", onScroll, true);
       window.removeEventListener("resize", close);
     };
   }, [open]);
@@ -44,7 +51,11 @@ export function ActionMenu({ label, items }: { label: string; items: MenuItem[] 
   function toggle() {
     if (open) return setPos(null);
     const r = button.current!.getBoundingClientRect();
-    setPos({ top: r.bottom + 4, left: Math.max(8, r.right - 208) });
+    // Open below the button; flip above it when the menu would run off the bottom of the screen.
+    const height = items.length * 36 + 10;
+    const below = r.bottom + 4;
+    const top = below + height <= window.innerHeight - 8 ? below : Math.max(8, r.top - 4 - height);
+    setPos({ top, left: Math.max(8, Math.min(r.right - 208, window.innerWidth - 216)) });
   }
 
   function onMenuKey(e: React.KeyboardEvent) {

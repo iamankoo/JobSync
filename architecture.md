@@ -163,3 +163,29 @@ There is no client-side persistence and no optimistic write: a failed request le
 
 ### Limitations (Phase 3)
 Search, filtering and pagination run in the browser over all jobs loaded from Sheets (fine at this scale; each page load re-reads the tabs). Edits made directly in the sheet appear after a reload. Other members' status changes are not pushed live. The bell icon and "Online" indicator from the reference screenshots are intentionally omitted because there is no notification or presence feature. Dashboard and Analytics arrive in Phase 4.
+
+## Phase 4 - Dashboard, Analytics, follow-ups, retention
+
+### Counting rules (single source: `src/lib/counting.ts`)
+Total Jobs = distinct jobs in `Jobs`. Total Applications = distinct jobs the member has not left at Not Applied. **Applied includes pending** (Pending is a subset, never added on top). Pending = applied with no known outcome (Applied, In Progress or Interview without an Offer). Shortlisted / Interviewed / Offers / Rejected come from the persisted stage and status; each application counts once per category and unknown stages never inflate a number. Not Applied = shared jobs - applied. **Rejected** = status Rejected, or the 7-day follow-up was answered "No update yet" and the application never reached Shortlisted/Interview/Offer (not shortlisted after follow-up); such an application is no longer pending. **Analytics "Total Applications" = every job available to the team** (added by all members, not limited by the date range); Applied, In Progress, Shortlisted, Interviewed, Offers and Rejected are the member's own, for the chosen range. Team totals are separate from personal ones; no other member's application data reaches the client.
+
+### 7-day follow-up (`src/lib/follow-ups`, `follow-up-service.ts`)
+The timer is the server-recorded `AppliedAt` (UTC). A job is due when `now >= AppliedAt + 604,800 s`. A blocking modal (cannot be dismissed, sequential for several due jobs) asks "What's the current status of this application?": shortlisted (stage Shortlisted), interview call (status Interview), offer (status and stage Offer) or no update (answer only). Advanced stages are never downgraded; an answered question is never asked again; Not Applied / Interview / Offer / later stages are suppressed; a failed save keeps the modal open; identity comes only from the session. Answers live in two optional trailing `Applications` columns, `FollowUpAnswer` (H) and `FollowUpAnsweredAt` (I). **Manual step on the live sheet:** add the headers `FollowUpAnswer` and `FollowUpAnsweredAt` in `Applications!H1:I1`; until then the feature is off and nothing breaks.
+
+### 30-day retention (`retention-service.ts`, `GET /api/cron/retention`)
+A job is deleted 30 days after its original `AddedAt`, together with its application rows; Activity rows keep their history but have the JobID cleared (no orphans). A missing or invalid timestamp never deletes anything. The route needs `Authorization: Bearer $CRON_SECRET`, is a **dry run by default**, and only deletes when `RETENTION_CLEANUP_ENABLED=true` (at most 100 jobs per run). Cleanup against the real spreadsheet stays disabled until the owner has reviewed a dry run.
+
+### Activity and timeline
+Events are recorded server-side: `login`, `visit` (at most one per member per 30 minutes, only after the session is validated), `job_added`, `job_applied`, `job_unapplied`, `application_updated`, `follow_up_answered`, `job_updated`, `job_deleted`. **Meaningful (work) actions** are everything except `login` and `visit`; visits are never work and no "time spent" is claimed. The Application Timeline heatmap shows the current calendar quarter (Mon-Sun weeks; Oct-Dec 2026, then Jan-Mar 2027, ...). Hover, focus or tap a day for: Date, **Job Added** (jobs the member added that day, from `Jobs.AddedBy`/`AddedAt`), **Job Applied** (distinct applications marked Applied that day, from `AppliedAt`) and **Streak** (consecutive days ending on that date with at least one work action, calculated as of that date and never using later activity). Repeated identical events (same action, job and timestamp) count once in the intensity.
+
+### Deadlines
+Only jobs the member has not applied to, nearest first; "due today" means the deadline date equals today in `APP_TIMEZONE`; missing or invalid deadlines are never invented (they are only counted).
+
+### Live updates, edit and delete
+Open pages re-fetch every `NEXT_PUBLIC_AUTO_REFRESH_MS` (default 30 s) and when the tab regains focus. `PUT/DELETE /api/jobs/[jobId]` are owner-only (`not_job_owner`, 403), enforced on the server.
+
+### Responsive layout
+Tables below 1280 px render as cards (one ARIA table in the DOM, labelled cells, a "Sort by" control). Dialogs fit the viewport and scroll internally; the follow-up modal respects safe areas. The mobile nav keeps exactly five items.
+
+### Limitations (Phase 4)
+Polling, not push. Reads are cached for a few seconds in-process. A job's "Job Applied" date falls back to the last-updated date for old rows that have no `AppliedAt`.

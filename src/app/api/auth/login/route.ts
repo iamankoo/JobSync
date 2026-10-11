@@ -4,6 +4,7 @@ import { verifyAccessCode } from "@/lib/auth/codes";
 import { checkRateLimit, recordFailure, resetFailures } from "@/lib/auth/rate-limit";
 import { clientIp, isSameOrigin, jsonError } from "@/lib/auth/request";
 import { createSessionToken, sessionCookieOptions } from "@/lib/auth/session";
+import { recordActivity, withinMs } from "@/lib/google-sheets/activity-service";
 import { loginSchema } from "@/lib/validation/auth";
 
 export async function POST(req: Request) {
@@ -35,6 +36,9 @@ export async function POST(req: Request) {
   }
 
   resetFailures(key);
+  // Persist the sign-in as a presence event (not work). Best effort and time-boxed: it can never
+  // block or fail a login, and a Sheets outage simply means no row is written.
+  await withinMs(recordActivity(memberId, "login"), 3000);
   const res = NextResponse.json({ data: { memberId } });
   res.cookies.set(SESSION_COOKIE, await createSessionToken(memberId), sessionCookieOptions());
   return res;

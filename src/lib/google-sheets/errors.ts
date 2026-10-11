@@ -32,7 +32,15 @@ export type DomainErrorCode =
   | "duplicate_url"
   | "job_not_found"
   | "member_inactive"
-  | "invalid_transition";
+  | "invalid_transition"
+  | "not_job_owner"
+  | "follow_up_not_found"
+  | "follow_up_not_due"
+  | "follow_up_not_applicable"
+  | "follow_up_conflict"
+  | "follow_ups_unavailable"
+  | "retention_disabled"
+  | "retention_limit";
 
 export class DomainError extends Error {
   constructor(

@@ -6,9 +6,22 @@ import { LogOut, Menu, Search, X } from "lucide-react";
 import type { Member } from "@/config/members";
 import { Avatar } from "@/components/ui/avatar";
 import { Logo } from "@/components/ui/logo";
+import { FollowUpGate, type DueFollowUpItem } from "@/components/follow-up/follow-up-gate";
+import { AutoRefresh } from "./auto-refresh";
 import { Sidebar } from "./sidebar";
 
-export function AppShell({ member, children }: { member: Member; children: React.ReactNode }) {
+export function AppShell({
+  member,
+  children,
+  followUps = [],
+  timeZone = "UTC",
+}: {
+  member: Member;
+  children: React.ReactNode;
+  /** Follow-up questions due for this member, decided on the server. */
+  followUps?: DueFollowUpItem[];
+  timeZone?: string;
+}) {
   const router = useRouter();
   const pathname = usePathname();
   const [open, setOpen] = useState(false);
@@ -54,11 +67,13 @@ export function AppShell({ member, children }: { member: Member; children: React
 
   return (
     <div data-member={member.id} className="min-h-screen bg-navy-950">
+      <AutoRefresh />
+      <FollowUpGate items={followUps} timeZone={timeZone} />
       <a href="#main" className="sr-only focus:not-sr-only focus:fixed focus:left-2 focus:top-2 focus:z-50 focus:rounded focus:bg-electric focus:px-3 focus:py-2">
         Skip to content
       </a>
 
-      <aside className="fixed inset-y-0 left-0 z-30 hidden w-72 border-r border-line bg-navy-950 lg:block">
+      <aside aria-label="Sidebar" className="fixed inset-y-0 left-0 z-30 hidden w-72 border-r border-line bg-navy-950 lg:block">
         <Sidebar current={member} />
       </aside>
 
@@ -91,7 +106,7 @@ export function AppShell({ member, children }: { member: Member; children: React
               type="search"
               value={query}
               onChange={(e) => setQuery(e.target.value)}
-              placeholder="Search jobs by title, company, location, keyword…"
+              placeholder="Search jobs, companies, locations…"
               className="h-11 w-full rounded-lg border border-line bg-navy-900 pl-10 pr-16 text-sm text-ink outline-none placeholder:text-muted hover:border-electric-soft focus-visible:border-electric-soft"
             />
             <kbd aria-hidden className="pointer-events-none absolute right-3 top-1/2 hidden -translate-y-1/2 rounded border border-line bg-navy-800 px-1.5 py-0.5 text-xs text-muted sm:block">

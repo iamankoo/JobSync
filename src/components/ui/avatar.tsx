@@ -35,7 +35,12 @@ export function Avatar({ member, size, ring = false }: { member: Member; size: n
         width={Math.round(photoSize.width * scale)}
         height={Math.round(photoSize.height * scale)}
         className="absolute max-w-none"
-        style={{ left: -photoCrop.x * scale, top: -photoCrop.y * scale }}
+        style={{
+          left: -photoCrop.x * scale,
+          top: -photoCrop.y * scale,
+          width: Math.round(photoSize.width * scale),
+          height: Math.round(photoSize.height * scale),
+        }}
       />
     </span>
   );

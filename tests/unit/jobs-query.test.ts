@@ -3,7 +3,7 @@ import {
   compareOptional, daysUntil, deadlineTone, distinctValues, EMPTY_FILTERS, filterByJobFields, formatDisplayDate, hasActiveFilters,
   matchesQuery, paginate, pageWindow, PAGE_SIZE,
 } from "@/lib/jobs/query";
-import { countStatuses, isApplied } from "@/lib/jobs/stats";
+import { isApplied } from "@/lib/jobs/stats";
 import type { ApplicationStatus, Job } from "@/types/domain";
 
 const job = (over: Partial<Job> = {}): Job => ({
@@ -132,14 +132,9 @@ describe("dates", () => {
   });
 });
 
-describe("status counts", () => {
-  it("derives counts only from the given statuses", () => {
-    expect(countStatuses([])).toEqual({ total: 0, applied: 0, pending: 0, notApplied: 0 });
-    const c = countStatuses(["Not Applied", "Applied", "In Progress", "Interview", "Offer", "Rejected", "Not Applied"]);
-    expect(c).toEqual({ total: 7, applied: 5, pending: 3, notApplied: 2 });
-  });
-  it("treats any status past Not Applied as applied", () => {
+describe("status helper", () => {
+  it("treats any status past Not Applied as applied (counts live in src/lib/counting.ts)", () => {
     expect(isApplied("Not Applied")).toBe(false);
-    for (const s of ["Applied", "In Progress", "Interview", "Offer", "Rejected"] as const) expect(isApplied(s)).toBe(true);
+    for (const st of ["Applied", "In Progress", "Interview", "Offer", "Rejected"] as const) expect(isApplied(st)).toBe(true);
   });
 });

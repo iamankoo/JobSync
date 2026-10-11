@@ -18,6 +18,7 @@ export type ApplicationStatus = (typeof APPLICATION_STATUSES)[number];
 
 export const APPLICATION_STAGES = [
   "Submitted",
+  "Shortlisted",
   "Online Assessment",
   "Screening",
   "Technical Interview",
@@ -28,7 +29,15 @@ export const APPLICATION_STAGES = [
 ] as const;
 export type ApplicationStage = (typeof APPLICATION_STAGES)[number];
 
-export const ACTIVITY_ACTIONS = ["job_added", "job_applied", "application_updated"] as const;
+export const ACTIVITY_ACTIONS = [
+  "job_added", "job_applied", "job_unapplied", "application_updated", "job_updated", "job_deleted", "follow_up_answered",
+  // presence events (not work): a successful sign-in, and a server-validated page visit (max once / 30 min)
+  "login", "visit",
+] as const;
+
+/** Answers to "What's the current status of this application?" (asked 168 hours after applying). */
+export const FOLLOW_UP_ANSWERS = ["Shortlisted", "Interview", "Offer", "No update"] as const;
+export type FollowUpAnswer = (typeof FOLLOW_UP_ANSWERS)[number];
 export type ActivityAction = (typeof ACTIVITY_ACTIONS)[number];
 
 export interface Job {
@@ -59,11 +68,18 @@ export interface Application {
   notes?: string;
   /** ISO 8601 UTC. */
   lastUpdated: string;
+  /** The member's answer to the 7-day status follow-up; absent while unanswered. */
+  followUpAnswer?: FollowUpAnswer;
+  /** ISO 8601 UTC, server-generated when the follow-up was answered. */
+  followUpAnsweredAt?: string;
 }
 
 /** A shared job plus the CALLER's own status. Other members' statuses are never included. */
 export interface JobWithMyStatus extends Job {
   myStatus: ApplicationStatus;
+  /** The caller's own application stage for this job, when set. */
+  myStage?: ApplicationStage;
+  myFollowUpAnswer?: FollowUpAnswer;
 }
 
 /** One of the caller's own applications joined with its (shared) job. */

@@ -1,23 +1,31 @@
-import { TABS, type TabKey } from "@/lib/google-sheets/schema";
+import { optionalHeaders, TABS, type TabKey } from "@/lib/google-sheets/schema";
 import { mapGoogleError, type SheetsClient } from "@/lib/google-sheets/client";
 
 /** In-memory stand-in for the Google Sheets API. Stores each tab as rows of strings (header = row 1). */
 export class FakeSheets implements SheetsClient {
   tabs = new Map<string, string[][]>();
-  calls: { op: "get" | "append" | "update"; range: string }[] = [];
+  calls: { op: "get" | "append" | "update" | "delete"; range: string }[] = [];
   /** When set, the next matching operation rejects with this error (then clears). */
-  failNext: { op?: "get" | "append" | "update"; error: unknown } | null = null;
+  failNext: { op?: "get" | "append" | "update" | "delete"; error: unknown } | null = null;
   /** When set, every operation rejects. */
   failAll: unknown = null;
   /** Yield to the event loop inside operations so concurrent callers interleave. */
   interleave = true;
 
-  constructor(seed: boolean = true) {
-    if (seed) this.seedHeaders();
+  /**
+   * @param seed  create the four tabs with headers
+   * @param followUpColumns  include the optional follow-up columns on the Applications tab
+   *        (false mimics a sheet that has not been extended yet)
+   */
+  constructor(seed: boolean = true, followUpColumns: boolean = true) {
+    if (seed) this.seedHeaders(followUpColumns);
   }
 
-  seedHeaders(): this {
-    for (const key of Object.keys(TABS) as TabKey[]) this.tabs.set(TABS[key].name, [[...TABS[key].headers]]);
+  seedHeaders(followUpColumns: boolean = true): this {
+    for (const key of Object.keys(TABS) as TabKey[]) {
+      const extra = key === "applications" && !followUpColumns ? [] : optionalHeaders(key);
+      this.tabs.set(TABS[key].name, [[...TABS[key].headers, ...extra]]);
+    }
     return this;
   }
 
@@ -40,7 +48,7 @@ export class FakeSheets implements SheetsClient {
     return this.rows(tab).slice(1);
   }
 
-  private async gate(op: "get" | "append" | "update", range: string) {
+  private async gate(op: "get" | "append" | "update" | "delete", range: string) {
     this.calls.push({ op, range });
     if (this.interleave) await new Promise((r) => setTimeout(r, 0));
     // The real client maps Google errors before they leave it; mirror that here.
@@ -72,6 +80,14 @@ export class FakeSheets implements SheetsClient {
     this.tabOf(range).push(...rows.map((r) => [...r]));
   }
 
+  async deleteRows(tabName: string, rows: number[]): Promise<void> {
+    await this.gate("delete", `${tabName}!rows`);
+    const t = this.tabOf(`${tabName}!A:A`);
+    for (const row of [...new Set(rows)].sort((a, b) => b - a)) {
+      if (row >= 2 && row <= t.length) t.splice(row - 1, 1);
+    }
+  }
+
   async updateValues(range: string, rows: string[][]): Promise<void> {
     await this.gate("update", range);
     const t = this.tabOf(range);
@@ -79,7 +95,9 @@ export class FakeSheets implements SheetsClient {
     if (!m) throw new Error(`bad update range ${range}`);
     const start = Number(m[1]);
     rows.forEach((r, i) => {
-      t[start - 1 + i] = [...r];
+      // Like Sheets: only the provided cells change; later cells in the row keep their values.
+      const existing = t[start - 1 + i] ?? [];
+      t[start - 1 + i] = [...r, ...existing.slice(r.length)];
     });
   }
 }

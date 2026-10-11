@@ -55,13 +55,13 @@ export async function setApplicationStatus(
   input: UpdateApplicationInput,
   now: Date = new Date(),
 ): Promise<ApplicationUpdateResult> {
-  const outcome = await withWriteLock(async (): Promise<ApplicationUpdateResult & { activity?: "job_applied" | "application_updated" }> => {
-    const { items: jobs } = await readJobs();
+  const outcome = await withWriteLock(async (): Promise<ApplicationUpdateResult & { activity?: "job_applied" | "job_unapplied" | "application_updated" }> => {
+    const { items: jobs } = await readJobs({ fresh: true });
     if (!jobs.some((j) => j.jobId === jobId)) {
       throw new DomainError("job_not_found", "That job does not exist.");
     }
 
-    const { items } = await readApplicationsLocated();
+    const { items, optionalColumns } = await readApplicationsLocated({ fresh: true });
     const existing = items.find((i) => i.value.jobId === jobId && i.value.memberId === memberId);
     const current: ApplicationStatus = existing?.value.status ?? "Not Applied";
 
@@ -90,6 +90,12 @@ export async function setApplicationStatus(
     if (!notApplied && stage) next.applicationStage = stage;
     const notes = input.notes === undefined ? prev?.notes : (input.notes || undefined);
     if (notes) next.notes = notes;
+    // The follow-up answer belongs to one application cycle: editing notes, stage or a later status
+    // keeps it, while moving back to Not Applied clears it (a fresh Applied starts a new 168 h timer).
+    if (!notApplied && prev?.followUpAnswer && prev.followUpAnsweredAt) {
+      next.followUpAnswer = prev.followUpAnswer;
+      next.followUpAnsweredAt = prev.followUpAnsweredAt;
+    }
 
     const unchanged =
       prev &&
@@ -98,15 +104,16 @@ export async function setApplicationStatus(
       prev.notes === next.notes;
     if (unchanged) return { jobId, status: prev.status, application: prev, changed: false };
 
-    if (existing) await updateApplicationRow(existing.row, next);
-    else await appendApplication(next);
+    if (existing) await updateApplicationRow(existing.row, next, optionalColumns);
+    else await appendApplication(next, optionalColumns);
 
     return {
       jobId,
       status: next.status,
       application: next,
       changed: true,
-      activity: current === "Not Applied" && next.status === "Applied" ? "job_applied" : "application_updated",
+      activity:
+        next.status === "Not Applied" ? "job_unapplied" : current === "Not Applied" && next.status === "Applied" ? "job_applied" : "application_updated",
     };
   });
 

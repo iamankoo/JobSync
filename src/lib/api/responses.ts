@@ -39,6 +39,14 @@ const DOMAIN_STATUS: Record<DomainErrorCode, number> = {
   job_not_found: 404,
   member_inactive: 403,
   invalid_transition: 409,
+  not_job_owner: 403,
+  follow_up_not_found: 404,
+  follow_up_not_due: 409,
+  follow_up_not_applicable: 409,
+  follow_up_conflict: 409,
+  follow_ups_unavailable: 503,
+  retention_disabled: 403,
+  retention_limit: 409,
 };
 
 const SHEETS_STATUS: Record<SheetsErrorCode, number> = {

@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useMemo, useState } from "react";
 import { ExternalLink, Plus, SearchX, Send } from "lucide-react";
+import { cellClass, HEAD_ROW_CLASS, MobileSort, ROW_CLASS, TABLE_CLASS, TBODY_CLASS, THEAD_CLASS, TH_CLASS } from "@/components/ui/responsive-table";
 import { ActionMenu } from "@/components/ui/action-menu";
 import { StatusBadge, TypeBadge } from "@/components/ui/badges";
 import { Button, buttonClass } from "@/components/ui/button";
@@ -43,6 +44,13 @@ export function ApplicationsBrowser({ rows: initialRows, timeZone, today, skippe
   const [editingId, setEditingId] = useState<string | null>(null);
   const [detailsId, setDetailsId] = useState<string | null>(null);
   const [notice, setNotice] = useState<NoticeState | null>(null);
+
+  // Fresh data from the background refresh replaces the list.
+  const [seenRows, setSeenRows] = useState(initialRows);
+  if (initialRows !== seenRows) {
+    setSeenRows(initialRows);
+    setRows(initialRows);
+  }
 
   const options = useMemo(
     () => ({
@@ -136,49 +144,63 @@ export function ApplicationsBrowser({ rows: initialRows, timeZone, today, skippe
             </EmptyState>
           ) : (
             <div className="overflow-hidden rounded-xl border border-line bg-navy-900/70">
-              <div className="overflow-x-auto">
-                <table className="w-full min-w-[1120px] text-sm">
+              <MobileSort
+                value={`${sort.key}:${sort.dir}`}
+                onChange={(v) => {
+                  const [key, dir] = v.split(":") as [SortKey, SortDirection];
+                  setSort({ key, dir });
+                  setPage(1);
+                }}
+                options={[
+                  { value: "appliedAt:desc", label: "Most recently applied" },
+                  { value: "appliedAt:asc", label: "Earliest applied" },
+                  { value: "deadline:asc", label: "Deadline, soonest first" },
+                  { value: "deadline:desc", label: "Deadline, latest first" },
+                ]}
+              />
+              <div className="relative overflow-x-auto">
+                <table role="table" className={TABLE_CLASS}>
                   <caption className="sr-only">Your applications</caption>
-                  <thead className="border-b border-line text-muted">
-                    <tr>
-                      <th scope="col" className="px-3 py-3 text-left font-medium">#</th>
-                      <th scope="col" className="px-3 py-3 text-left font-medium">Job Title</th>
-                      <th scope="col" className="px-3 py-3 text-left font-medium">Company</th>
-                      <th scope="col" className="px-3 py-3 text-left font-medium">Location</th>
-                      <th scope="col" className="px-3 py-3 text-left font-medium">Type</th>
-                      <th scope="col" className="px-3 py-3 text-left font-medium">Experience</th>
-                      <th scope="col" className="px-3 py-3 text-left font-medium">Stipend / Salary</th>
-                      <th scope="col" className="px-3 py-3 text-left font-medium">Status</th>
+                  <thead role="rowgroup" className={THEAD_CLASS}>
+                    <tr role="row" className={HEAD_ROW_CLASS}>
+                      <th role="columnheader" scope="col" className={TH_CLASS}>#</th>
+                      <th role="columnheader" scope="col" className={TH_CLASS}>Job Title</th>
+                      <th role="columnheader" scope="col" className={TH_CLASS}>Company</th>
+                      <th role="columnheader" scope="col" className={TH_CLASS}>Location</th>
+                      <th role="columnheader" scope="col" className={TH_CLASS}>Type</th>
+                      <th role="columnheader" scope="col" className={TH_CLASS}>Experience</th>
+                      <th role="columnheader" scope="col" className={TH_CLASS}>Stipend / Salary</th>
+                      <th role="columnheader" scope="col" className={TH_CLASS}>Status</th>
                       <SortableTh label="Applied On" active={sort.key === "appliedAt"} direction={sort.dir} onSort={() => toggleSort("appliedAt")} />
                       <SortableTh label="Deadline" active={sort.key === "deadline"} direction={sort.dir} onSort={() => toggleSort("deadline")} />
-                      <th scope="col" className="px-3 py-3 text-left font-medium">Actions</th>
+                      <th role="columnheader" scope="col" className={TH_CLASS}>Actions</th>
                     </tr>
                   </thead>
-                  <tbody>
+                  <tbody role="rowgroup" className={TBODY_CLASS}>
                     {view.items.map(({ job, application }, i) => {
                       const label = `${job.jobRole} at ${job.company}`;
                       return (
-                        <tr key={job.jobId} className="border-b border-line/60 last:border-0 hover:bg-navy-800/50">
-                          <td className="px-3 py-3 text-muted">{view.from + i}</td>
-                          <td className="px-3 py-3 font-medium">
+                        <tr role="row" key={job.jobId} className={ROW_CLASS}>
+                          <td role="cell" data-label="#" className={cellClass("text-muted", "index")}>{view.from + i}</td>
+                          <td role="cell" data-label="Job Title" className={cellClass("font-medium", "title")}>
                             <button type="button" onClick={() => setDetailsId(job.jobId)} className="text-left hover:text-electric-soft hover:underline">
                               {job.jobRole}
                             </button>
                           </td>
-                          <td className="px-3 py-3">
+                          <td role="cell" data-label="Company" className={cellClass("")}>
                             <span className="flex items-center gap-2"><CompanyMark name={job.company} />{job.company}</span>
                           </td>
-                          <td className="px-3 py-3">{job.location}</td>
-                          <td className="px-3 py-3"><TypeBadge type={job.jobType} /></td>
-                          <td className="whitespace-nowrap px-3 py-3">{job.experience ?? "—"}</td>
-                          <td className="whitespace-nowrap px-3 py-3">{job.stipendSalary ?? "—"}</td>
-                          <td className="px-3 py-3">
+                          <td role="cell" data-label="Location" className={cellClass("")}>{job.location}</td>
+                          <td role="cell" data-label="Type" className={cellClass("")}><TypeBadge type={job.jobType} /></td>
+                          <td role="cell" data-label="Experience" className={cellClass("whitespace-nowrap")}>{job.experience ?? "—"}</td>
+                          <td role="cell" data-label="Stipend / Salary" className={cellClass("whitespace-nowrap")}>{job.stipendSalary ?? "—"}</td>
+                          <td role="cell" data-label="Status" className={cellClass("")}>
                             <StatusBadge status={application.status} />
                             {application.applicationStage && <span className="mt-1 block text-xs text-muted">{application.applicationStage}</span>}
                           </td>
-                          <td className="whitespace-nowrap px-3 py-3">{formatDisplayDate(application.appliedAt, timeZone)}</td>
-                          <td className="px-3 py-3"><DeadlineText deadline={job.deadline} today={today} timeZone={timeZone} /></td>
-                          <td className="px-3 py-3">
+                          <td role="cell" data-label="Applied on" className={cellClass("whitespace-nowrap")}>{formatDisplayDate(application.appliedAt, timeZone)}</td>
+                          <td role="cell" data-label="Deadline" className={cellClass("")}><DeadlineText deadline={job.deadline} today={today} timeZone={timeZone} /></td>
+                          <td role="cell" data-label="Actions" className={cellClass("")}>
                             <span className="flex items-center gap-2">
                               <a
                                 href={job.jobUrl}

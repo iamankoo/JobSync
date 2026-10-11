@@ -2,12 +2,16 @@ import "server-only";
 import { auth, sheets as sheetsApi } from "@googleapis/sheets";
 import { loadSheetsConfig, type SheetsConfig } from "./config";
 import { SheetsError } from "./errors";
+import { memorySheets } from "./memory-client";
+import { invalidateTableCache } from "./table";
 
 /** The only operations the data layer needs. Small on purpose so it can be faked in tests. */
 export interface SheetsClient {
   getValues(range: string): Promise<string[][]>;
   appendValues(range: string, rows: string[][]): Promise<void>;
   updateValues(range: string, rows: string[][]): Promise<void>;
+  /** Deletes whole spreadsheet rows (1-based numbers) of one tab in a single atomic request. */
+  deleteRows(tabName: string, rows: number[]): Promise<void>;
 }
 
 const REQUEST_TIMEOUT_MS = 10_000;
@@ -80,6 +84,21 @@ function createGoogleClient(config: SheetsConfig): SheetsClient {
   const api = sheetsApi({ version: "v4", auth: jwt });
   const spreadsheetId = config.spreadsheetId;
   const opts = { timeout: REQUEST_TIMEOUT_MS };
+  const sheetIds = new Map<string, number>();
+
+  async function sheetIdOf(tabName: string): Promise<number> {
+    const known = sheetIds.get(tabName);
+    if (known !== undefined) return known;
+    const res = await withRetry(() =>
+      api.spreadsheets.get({ spreadsheetId, fields: "sheets.properties(sheetId,title)" }, opts),
+    );
+    for (const s of res.data.sheets ?? []) {
+      if (s.properties?.title != null && s.properties.sheetId != null) sheetIds.set(s.properties.title, s.properties.sheetId);
+    }
+    const id = sheetIds.get(tabName);
+    if (id === undefined) throw new SheetsError("schema_invalid", "A required spreadsheet tab is missing or misnamed.");
+    return id;
+  }
 
   return {
     async getValues(range) {
@@ -103,6 +122,20 @@ function createGoogleClient(config: SheetsConfig): SheetsClient {
         throw mapGoogleError(err);
       }
     },
+    async deleteRows(tabName, rows) {
+      if (rows.length === 0) return;
+      const sheetId = await sheetIdOf(tabName);
+      // Highest row first so earlier deletions never shift the rows still to be deleted.
+      const requests = [...new Set(rows)]
+        .sort((a, b) => b - a)
+        .map((row) => ({ deleteDimension: { range: { sheetId, dimension: "ROWS", startIndex: row - 1, endIndex: row } } }));
+      // Not auto-retried: repeating an ambiguous delete could remove the wrong rows.
+      try {
+        await api.spreadsheets.batchUpdate({ spreadsheetId, requestBody: { requests } }, opts);
+      } catch (err) {
+        throw mapGoogleError(err);
+      }
+    },
     async updateValues(range, rows) {
       await withRetry(async () => {
         await api.spreadsheets.values.update(
@@ -117,9 +150,22 @@ function createGoogleClient(config: SheetsConfig): SheetsClient {
 let override: SheetsClient | null = null;
 let cached: { client: SheetsClient } | null = null;
 
+/**
+ * True only for the isolated browser E2E suite: SHEETS_TEST_BACKEND=memory outside production.
+ * It swaps Google for an in-memory copy of the same four tabs. It is impossible to enable in
+ * production (see getSheetsClient).
+ */
+export function isMemoryBackend(env: NodeJS.ProcessEnv = process.env): boolean {
+  return env.SHEETS_TEST_BACKEND === "memory" && env.NODE_ENV !== "production";
+}
+
 /** Returns the shared client, building it from the environment on first use. */
 export function getSheetsClient(): SheetsClient {
   if (override) return override;
+  if (process.env.SHEETS_TEST_BACKEND && process.env.NODE_ENV === "production") {
+    throw new SheetsError("not_configured", "SHEETS_TEST_BACKEND must never be set in production.");
+  }
+  if (isMemoryBackend()) return memorySheets();
   if (!cached) cached = { client: createGoogleClient(loadSheetsConfig()) };
   return cached.client;
 }
@@ -128,4 +174,5 @@ export function getSheetsClient(): SheetsClient {
 export function setSheetsClientForTesting(client: SheetsClient | null): void {
   override = client;
   cached = null;
+  invalidateTableCache();
 }

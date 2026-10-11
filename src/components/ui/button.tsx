@@ -1,6 +1,6 @@
 import type { ButtonHTMLAttributes } from "react";
 
-export type ButtonVariant = "primary" | "secondary" | "ghost";
+export type ButtonVariant = "primary" | "secondary" | "ghost" | "danger";
 
 const BASE =
   "inline-flex items-center justify-center gap-2 rounded-lg px-4 py-2.5 text-sm font-semibold transition disabled:cursor-not-allowed disabled:opacity-60";
@@ -9,6 +9,7 @@ const VARIANTS: Record<ButtonVariant, string> = {
   primary: "bg-accent-strong text-on-accent hover:brightness-110",
   secondary: "border border-line bg-navy-900 text-ink hover:border-electric-soft hover:bg-navy-800",
   ghost: "text-muted hover:bg-navy-800 hover:text-ink",
+  danger: "bg-red-600 text-white hover:bg-red-500",
 };
 
 /** Class names so links can look like buttons. */

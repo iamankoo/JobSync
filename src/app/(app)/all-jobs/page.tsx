@@ -10,7 +10,7 @@ export default async function AllJobsPage({ searchParams }: { searchParams: Prom
   const { q } = await searchParams;
   const query = typeof q === "string" ? q.slice(0, 200) : "";
   // The member comes from the validated session inside loadForMember, never from the request.
-  const { timeZone, today, result } = await loadForMember(listJobsForMember);
+  const { memberId, timeZone, today, result } = await loadForMember(listJobsForMember);
 
   if (!result.ok) {
     return (
@@ -20,5 +20,5 @@ export default async function AllJobsPage({ searchParams }: { searchParams: Prom
       </div>
     );
   }
-  return <JobsBrowser key={query} jobs={result.data.jobs} skippedRows={result.data.skippedRows} initialQuery={query} timeZone={timeZone} today={today} />;
+  return <JobsBrowser key={query} currentMemberId={memberId} jobs={result.data.jobs} skippedRows={result.data.skippedRows} initialQuery={query} timeZone={timeZone} today={today} />;
 }

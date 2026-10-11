@@ -12,6 +12,16 @@ One-time: `npx playwright install chromium`. E2E tests start their own dev serve
 
 **E2E never touches the real spreadsheet.** `playwright.config.ts` starts the server with the three `GOOGLE_*` variables forced empty (empty values cannot be overridden by `.env.local`), so Google Sheets is unconfigured and the data routes and pages return their safe error state. Data behaviour is tested with the fake Sheets client and mocked `fetch` instead.
 
+## Phase 4 test tiers
+| Tier | Command | What it proves |
+|---|---|---|
+| Mocked unit / integration / component | `npm test` | Counting, follow-up rules and service, retention, activity/visits, quarter heatmap and tooltip metrics, deadlines, charts, views, routes. Uses the in-memory fake Sheets client. |
+| Isolated browser E2E | `npm run test:e2e:isolated` | Real browser against the real app on an **in-memory Sheets backend** (`SHEETS_TEST_BACKEND=memory`, refused in production; Google variables forced empty). `workflow.spec.ts` is the per-account audit for Anni, Lukky and Rishii (identity, validation, duplicates, status persistence, My Applications scoping, cross-member isolation, owner-only edit/delete, unauthorized calls, logout, exact counts, follow-up modal, activity). `responsive.spec.ts` runs at 320x568, 375x812, 430x932, 768x1024, 1366x768 and 1920x1080 (overflow, nav, axe, dialogs, tooltip by hover/focus/tap, follow-up modal). Persisted rows are read back through the guarded `/api/test/seed` route. |
+| Live Google Sheets | `npm run sheets:test-setup` (prepare) | **Not run.** The service account cannot create spreadsheets (403). To enable: create a spreadsheet named "JobSync TEST (disposable)", share it with the service account as Editor, put its ID in `.env.test.local` as `GOOGLE_TEST_SPREADSHEET_ID`, run `npm run sheets:test-setup`. The script refuses the production ID. |
+| Unverified on production | - | Retention cleanup; follow-up columns on the live sheet (add the `FollowUpAnswer`/`FollowUpAnsweredAt` headers first). |
+
+Elapsed time is simulated by seeding old `AppliedAt` / `AddedAt` timestamps; no test waits seven days.
+
 ## Test data
 The Sheets tests use `tests/helpers/fake-sheets.ts`, an in-memory stand-in for the Google API with failure injection. Fixtures are clearly synthetic (`Synthetic Co A`, `jobs.example.test`, `Testville`). No credentials are needed; nothing in the normal suite touches Google or any real spreadsheet, and no test data can reach production because the fake is only installed from test files.
 

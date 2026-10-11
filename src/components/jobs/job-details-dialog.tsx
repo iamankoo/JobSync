@@ -1,6 +1,6 @@
 "use client";
 
-import { ExternalLink } from "lucide-react";
+import { ExternalLink, Pencil, Trash2 } from "lucide-react";
 import { getMember } from "@/config/members";
 import { Dialog } from "@/components/ui/dialog";
 import { StatusBadge, TypeBadge } from "@/components/ui/badges";
@@ -19,6 +19,9 @@ interface Props {
   today: string;
   busy?: boolean;
   onToggleStatus?: () => void;
+  /** Provided only when the signed-in member added this job. */
+  onEdit?: () => void;
+  onDelete?: () => void;
   onClose: () => void;
 }
 
@@ -31,7 +34,7 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
   );
 }
 
-export function JobDetailsDialog({ job, status, timeZone, today, busy, onToggleStatus, onClose }: Props) {
+export function JobDetailsDialog({ job, status, timeZone, today, busy, onToggleStatus, onEdit, onDelete, onClose }: Props) {
   const addedBy = getMember(job.addedBy)?.name ?? "Unknown";
   return (
     <Dialog title="Job details" onClose={onClose} wide>
@@ -66,6 +69,16 @@ export function JobDetailsDialog({ job, status, timeZone, today, busy, onToggleS
         <a href={job.jobUrl} target="_blank" rel="noopener noreferrer nofollow" className={buttonClass("primary")}>
           <ExternalLink size={16} aria-hidden /> Open job posting
         </a>
+        {onEdit && (
+          <button type="button" onClick={onEdit} className={buttonClass("secondary")}>
+            <Pencil size={16} aria-hidden /> Edit
+          </button>
+        )}
+        {onDelete && (
+          <button type="button" onClick={onDelete} className={buttonClass("secondary", "text-red-300 hover:border-red-400")}>
+            <Trash2 size={16} aria-hidden /> Delete
+          </button>
+        )}
         {onToggleStatus && (
           <span className="flex items-center gap-2 text-sm text-muted">
             Your application:

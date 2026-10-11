@@ -100,10 +100,10 @@ describe("schema helpers", () => {
     expect(columnLetter(13)).toBe("M");
     expect(columnLetter(27)).toBe("AA");
     expect(tableRange("jobs")).toBe("Jobs!A:M");
-    expect(tableRange("applications")).toBe("Applications!A:G");
+    expect(tableRange("applications")).toBe("Applications!A:I"); // 7 required + 2 optional follow-up columns
     expect(tableRange("members")).toBe("Members!A:D");
     expect(tableRange("activity")).toBe("Activity!A:F");
-    expect(rowRange("applications", 5)).toBe("Applications!A5:G5");
+    expect(rowRange("applications", 5)).toBe("Applications!A5:I5");
   });
 
   it("keeps the exact column order from the spec", () => {

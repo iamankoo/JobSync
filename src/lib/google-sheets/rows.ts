@@ -3,6 +3,7 @@ import { getMember, MEMBER_IDS, type MemberId } from "@/config/members";
 import {
   ACTIVITY_ACTIONS,
   APPLICATION_STAGES,
+  FOLLOW_UP_ANSWERS,
   APPLICATION_STATUSES,
   JOB_TYPES,
   WORK_MODES,
@@ -63,7 +64,7 @@ export function serializeJob(job: Job): string[] {
 // ---- Applications -------------------------------------------------------
 
 export function parseApplicationRow(cells: string[]): RowParse<Application> {
-  const [jobId, memberId, status, appliedAt, stage, notes, lastUpdated] = cells.map((c) => c.trim());
+  const [jobId, memberId, status, appliedAt, stage, notes, lastUpdated, followUp, followUpAt] = cells.map((c) => c.trim());
 
   if (!ID_PATTERN.test(jobId)) return { ok: false, problem: "missing or invalid JobID" };
   if (!isMemberId(memberId)) return { ok: false, problem: "missing or unknown MemberID" };
@@ -81,11 +82,24 @@ export function parseApplicationRow(cells: string[]): RowParse<Application> {
     else warnings.push("ignored invalid ApplicationStage");
   }
   if (notes) app.notes = notes;
+  if (followUp) {
+    if (oneOf(FOLLOW_UP_ANSWERS, followUp) && followUpAt && isIsoTimestamp(followUpAt)) {
+      app.followUpAnswer = followUp;
+      app.followUpAnsweredAt = followUpAt;
+    } else {
+      warnings.push("ignored invalid follow-up answer (expected Shortlisted/Interview/Offer/No update with an ISO timestamp)");
+    }
+  }
   return { ok: true, value: app, warnings };
 }
 
-export function serializeApplication(app: Application): string[] {
-  return [app.jobId, app.memberId, app.status, app.appliedAt ?? "", app.applicationStage ?? "", app.notes ?? "", app.lastUpdated];
+/**
+ * `withFollowUp` = whether the sheet has the optional follow-up columns. Without them only the
+ * seven core cells are written, so a sheet that has not been extended is never touched beyond G.
+ */
+export function serializeApplication(app: Application, withFollowUp = true): string[] {
+  const core = [app.jobId, app.memberId, app.status, app.appliedAt ?? "", app.applicationStage ?? "", app.notes ?? "", app.lastUpdated];
+  return withFollowUp ? [...core, app.followUpAnswer ?? "", app.followUpAnsweredAt ?? ""] : core;
 }
 
 // ---- Members ------------------------------------------------------------

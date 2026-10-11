@@ -47,6 +47,14 @@ export function updateApplication(jobId: string, body: ApplicationUpdateBody) {
   });
 }
 
+export function updateJobRequest(jobId: string, body: Record<string, unknown>) {
+  return apiRequest<Job>(`/api/jobs/${encodeURIComponent(jobId)}`, { method: "PUT", body: JSON.stringify(body) });
+}
+
+export function deleteJobRequest(jobId: string) {
+  return apiRequest<{ jobId: string }>(`/api/jobs/${encodeURIComponent(jobId)}`, { method: "DELETE" });
+}
+
 export function createJobRequest(body: Record<string, unknown>) {
   return apiRequest<Job>("/api/jobs", { method: "POST", body: JSON.stringify(body) });
 }

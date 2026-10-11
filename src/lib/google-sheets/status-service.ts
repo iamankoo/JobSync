@@ -1,4 +1,5 @@
 import "server-only";
+import { isMemoryBackend } from "./client";
 import { loadSheetsConfig } from "./config";
 import { SheetsError } from "./errors";
 import { readActivity, readApplications, readJobs, readMembers } from "./repositories";
@@ -27,7 +28,7 @@ const READERS: Record<TabKey, () => Promise<{ items: unknown[]; issues: unknown[
  * credentials or cell contents. Throws SheetsError for config/auth/permission/upstream failures.
  */
 export async function checkSheetsStatus(): Promise<{ ok: boolean; tabs: TabStatus[] }> {
-  loadSheetsConfig(); // throws not_configured with variable names only
+  if (!isMemoryBackend()) loadSheetsConfig(); // throws not_configured with variable names only
   const tabs: TabStatus[] = [];
   for (const key of TAB_KEYS) {
     const name = TABS[key].name;

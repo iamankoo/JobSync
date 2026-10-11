@@ -13,7 +13,7 @@ afterEach(() => {
 });
 
 const setup = (props: Partial<React.ComponentProps<typeof JobsBrowser>> = {}) =>
-  render(<JobsBrowser jobs={makeJobs(3)} timeZone={TZ} today={TODAY} {...props} />);
+  render(<JobsBrowser jobs={makeJobs(3)} currentMemberId="anni" timeZone={TZ} today={TODAY} {...props} />);
 
 const bodyRows = () => within(screen.getByRole("table")).getAllByRole("row").slice(1);
 
@@ -205,7 +205,7 @@ describe("All Jobs: personal status control", () => {
     setup({ jobs: makeJobs(1) });
     await user.click(screen.getByRole("button", { name: /More actions: Test Role 1/ }));
     const menu = screen.getByRole("menu");
-    expect(within(menu).getAllByRole("menuitem").map((i) => i.textContent)).toEqual(["View details", "Mark as applied"]);
+    expect(within(menu).getAllByRole("menuitem").map((i) => i.textContent)).toEqual(["View details", "Mark as applied", "Edit job", "Delete job"]);
     await user.click(within(menu).getByRole("menuitem", { name: "Mark as applied" }));
     expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(screen.queryByRole("menu")).not.toBeInTheDocument();

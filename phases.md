@@ -115,6 +115,8 @@ Five phases, executed strictly one at a time. This file is the authority for sco
 
 **Validation:** calculation tests with fixtures including empty data; compare to screenshots; chart interactions work.
 
+**Phase 4 outcome (implemented):** Dashboard and Analytics from real Sheets data, personalised per member (team contribution shared, personal numbers private; daily target = jobs the member added today in the app timezone); one counting module for every number; Application Timeline heatmap for the current calendar quarter (rolls over automatically) with a per-day tooltip (Job Added, Job Applied, work streak); real Deadlines Overview; job edit/delete (owner only, enforced on the server); near-real-time refresh (polling); the blocking 7-day (168 h) follow-up question with four answers; 30-day retention (dry run by default, cleanup disabled until approved); activity events (login, deduplicated visits, work); fully responsive layouts (tables become cards below 1280 px). **Verified:** lint, type check, unit/integration/component tests, production build, desktop + mobile Playwright suites on an isolated in-memory backend (per-account workflow audit; responsive suite at 320x568, 375x812, 430x932, 768x1024, 1366x768, 1920x1080). **Not verified:** automated tests against a real, disposable Google spreadsheet (none was available: the service account cannot create spreadsheets); retention cleanup against production (deliberately disabled).
+
 **Completion criteria:** all implemented, tested, documented, committed, pushed. **Stop for approval before Phase 5.**
 
 ---

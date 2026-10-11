@@ -3,7 +3,7 @@
 A private job-tracking web app shared by three members: **Anni** (blue), **Lukky** (yellow) and **Rishii** (red).
 Screens: Login, Dashboard, All Jobs, Add Job, My Applications, Analytics.
 
-**Status:** Phases 1 (secure login), 2 (Google Sheets data layer) and 3 (All Jobs, Add Job, My Applications) are implemented, and the live Google connection is verified for all three members. Dashboard and Analytics arrive in Phase 4, which has not started (they show only a heading until then). Work proceeds one phase at a time with explicit owner approval.
+**Status:** Phases 1 (secure login), 2 (Google Sheets data layer) and 3 (All Jobs, Add Job, My Applications) are implemented, and the live Google connection is verified for all three members. Phase 4 (Dashboard, Analytics, 7-day follow-up, job edit/delete, 30-day retention) is implemented and awaiting approval; Phase 5 has not started. Work proceeds one phase at a time with explicit owner approval.
 
 ## Documents
 - [phases.md](phases.md) – five-phase roadmap and completion criteria
@@ -20,7 +20,7 @@ npm run dev                  # http://localhost:3000
 Without env vars, development uses documented prototype access codes and a dev-only session secret. Production refuses to start sessions without `SESSION_SECRET` and fails closed without access codes.
 
 ## Commands
-`npm run dev`, `npm run build`, `npm start`, `npm run lint`, `npm run typecheck`, `npm test`, `npm run test:e2e`.
+`npm run dev`, `npm run build`, `npm start`, `npm run lint`, `npm run typecheck`, `npm test`, `npm run test:e2e`, `npm run test:e2e:isolated` (browser workflow + responsive suites on an in-memory backend), `npm run sheets:test-setup` (prepare a disposable test spreadsheet).
 
 ## Layout
 - `assets/` – original reference screenshots and photos (never modified)

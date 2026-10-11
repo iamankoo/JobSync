@@ -6,6 +6,9 @@ node_modules/
 # build output
 .next/
 .next-e2e/
+.next-preview/
+.next-e2e-live/
+.next-e2e-isolated/
 out/
 build/
 dist/

@@ -52,7 +52,7 @@ describe("parseApplicationRow", () => {
   it("parses and round-trips", () => {
     const r = parseApplicationRow(cells);
     expect(r.ok).toBe(true);
-    if (r.ok) expect(serializeApplication(r.value)).toEqual(cells);
+    if (r.ok) expect(serializeApplication(r.value, false)).toEqual(cells);
   });
   it("rejects unknown members, statuses and missing LastUpdated", () => {
     expect(parseApplicationRow(["job_1", "bob", "Applied", "", "", "", "2026-10-09T11:00:00.000Z"]).ok).toBe(false);

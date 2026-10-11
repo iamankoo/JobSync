@@ -22,10 +22,13 @@ export function Dialog({ title, onClose, children, wide = false }: Props) {
     const el = ref.current;
     if (!el) return;
     const opener = document.activeElement as HTMLElement | null;
-    if (typeof el.showModal === "function") el.showModal();
-    else el.setAttribute("open", "");
+    // Guarded so React StrictMode's extra effect run in development cannot throw or toggle it.
+    if (typeof el.showModal === "function") {
+      if (!el.open) el.showModal();
+    } else el.setAttribute("open", "");
     return () => {
-      if (el.open && typeof el.close === "function") el.close();
+      // No close() here: unmounting removes the dialog (and its top layer) by itself, and a
+      // programmatic close would fire "close" and tell the parent to dismiss it.
       opener?.focus?.();
     };
   }, []);
