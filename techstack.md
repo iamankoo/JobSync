@@ -40,4 +40,5 @@ Supabase, PostgreSQL, Prisma, MySQL, MongoDB, Firebase/Firestore, SQLite, Redis 
 | `npm run typecheck` | `tsc --noEmit` |
 | `npm test` | Vitest unit + integration tests |
 | `npm run test:e2e` | Playwright e2e (starts its own dev server on port 3100; run `npx playwright install chromium` once first) |
+| `npm run test:live` / `npm run test:prod-readonly` | Live Sheets tests on the disposable test spreadsheet / strictly read-only production check |
 | `npm run test:e2e:isolated` | Phase 4 browser suites on an in-memory Sheets backend (workflow audit + responsive viewports) |

@@ -10,6 +10,8 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:e2e": "playwright test",
+    "test:live": "vitest run --config vitest.live.config.mts",
+    "test:prod-readonly": "vitest run --config vitest.prod-readonly.config.mts --reporter=verbose",
     "sheets:test-setup": "node --conditions=react-server --experimental-strip-types --no-warnings scripts/test-spreadsheet.mts",
     "test:e2e:isolated": "playwright test --config playwright.isolated.config.ts"
   },

@@ -1,4 +1,5 @@
 import "server-only";
+import { effectiveAppliedAt } from "@/lib/applications/applied-date";
 import type { MemberId } from "@/config/members";
 import type { Application } from "@/types/domain";
 import type { AnalyticsSource, DashboardData } from "@/types/insights";
@@ -12,6 +13,12 @@ const dateOf = (iso: string, timeZone: string) => dateInTimezone(new Date(iso), 
 /** Only the signed-in member's own application rows. */
 function own(apps: Application[], memberId: MemberId): Application[] {
   return apps.filter((a) => a.memberId === memberId);
+}
+
+/** Calendar date the member applied (see effectiveAppliedAt): recorded AppliedAt, else LastUpdated, else none. */
+function appliedDateOf(a: { appliedAt?: string; lastUpdated: string }, timeZone: string): string | undefined {
+  const { iso } = effectiveAppliedAt(a);
+  return iso ? dateOf(iso, timeZone) : undefined;
 }
 
 /**
@@ -31,7 +38,7 @@ export async function getDashboardData(memberId: MemberId, now: Date = new Date(
       status: a.status,
       applicationStage: a.applicationStage,
       followUpAnswer: a.followUpAnswer,
-      appliedDate: a.appliedAt ? dateOf(a.appliedAt, timeZone) : undefined,
+      appliedDate: appliedDateOf(a, timeZone),
     })),
     activeMembers: members.items.filter((m) => m.active).map((m) => m.memberId),
     // counts only: no job IDs or notes leave this function
@@ -63,7 +70,7 @@ export async function getAnalyticsSource(memberId: MemberId, now: Date = new Dat
       status: a.status,
       applicationStage: a.applicationStage,
       followUpAnswer: a.followUpAnswer,
-      appliedDate: dateOf(a.appliedAt ?? a.lastUpdated, timeZone),
+      appliedDate: appliedDateOf(a, timeZone) ?? dateOf(a.lastUpdated, timeZone),
       company: job.company,
       jobType: job.jobType,
       location: job.location,

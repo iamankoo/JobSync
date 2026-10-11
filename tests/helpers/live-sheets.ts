@@ -7,7 +7,7 @@ const ROOT = path.resolve(__dirname, "..", "..");
 const { auth, sheets } = require(path.join(ROOT, "node_modules/@googleapis/sheets"));
 
 const TAB_NAMES = ["Jobs", "Applications", "Members", "Activity"] as const;
-const WIDTH: Record<(typeof TAB_NAMES)[number], string> = { Jobs: "M", Applications: "G", Members: "D", Activity: "F" };
+const WIDTH: Record<(typeof TAB_NAMES)[number], string> = { Jobs: "M", Applications: "I", Members: "D", Activity: "F" };
 
 const MEMBER_ROWS = [
   ["anni", "Anni", "/assets/anni.jpeg", "TRUE"],

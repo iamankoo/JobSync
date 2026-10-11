@@ -17,10 +17,24 @@ One-time: `npx playwright install chromium`. E2E tests start their own dev serve
 |---|---|---|
 | Mocked unit / integration / component | `npm test` | Counting, follow-up rules and service, retention, activity/visits, quarter heatmap and tooltip metrics, deadlines, charts, views, routes. Uses the in-memory fake Sheets client. |
 | Isolated browser E2E | `npm run test:e2e:isolated` | Real browser against the real app on an **in-memory Sheets backend** (`SHEETS_TEST_BACKEND=memory`, refused in production; Google variables forced empty). `workflow.spec.ts` is the per-account audit for Anni, Lukky and Rishii (identity, validation, duplicates, status persistence, My Applications scoping, cross-member isolation, owner-only edit/delete, unauthorized calls, logout, exact counts, follow-up modal, activity). `responsive.spec.ts` runs at 320x568, 375x812, 430x932, 768x1024, 1366x768 and 1920x1080 (overflow, nav, axe, dialogs, tooltip by hover/focus/tap, follow-up modal). Persisted rows are read back through the guarded `/api/test/seed` route. |
-| Live Google Sheets | `npm run sheets:test-setup` (prepare) | **Not run.** The service account cannot create spreadsheets (403). To enable: create a spreadsheet named "JobSync TEST (disposable)", share it with the service account as Editor, put its ID in `.env.test.local` as `GOOGLE_TEST_SPREADSHEET_ID`, run `npm run sheets:test-setup`. The script refuses the production ID. |
+| Live Google Sheets | `npm run sheets:test-setup` then `npm run test:live` | Real Google Sheets API against a manually created DISPOSABLE spreadsheet (see "Live Sheets setup" below). Not part of `npm test`. |
 | Unverified on production | - | Retention cleanup; follow-up columns on the live sheet (add the `FollowUpAnswer`/`FollowUpAnsweredAt` headers first). |
 
 Elapsed time is simulated by seeding old `AppliedAt` / `AddedAt` timestamps; no test waits seven days.
+
+## Live Sheets setup
+Why a manual spreadsheet: the service account can read and write spreadsheets shared with it (verified: `spreadsheets.get` on the production sheet returns 200), but `spreadsheets.create` returns `403 PERMISSION_DENIED "The caller does not have permission"` with no further detail. Creating a file is a different permission from editing a shared one, and widening the service account's IAM is not needed, so the test workflow uses a spreadsheet you create yourself.
+1. In Google Sheets (signed in as a project owner), create a **new blank spreadsheet** titled `JobSync TEST (disposable)`. It must be a different file from the production sheet.
+2. Click **Share**, add the service-account email (`GOOGLE_SERVICE_ACCOUNT_EMAIL` in `.env.local`, ends with `.iam.gserviceaccount.com`) as **Editor**, untick "Notify", and share.
+3. Copy the ID from the URL: `https://docs.google.com/spreadsheets/d/<THIS_PART>/edit`.
+4. Create `.env.test.local` (gitignored) in the project root containing one line: `GOOGLE_TEST_SPREADSHEET_ID=<THIS_PART>`. No keys or secrets belong in this file; credentials stay in `.env.local`.
+5. `npm run sheets:test-setup` adds the four tabs, the headers (including `FollowUpAnswer`/`FollowUpAnsweredAt`) and the three Members rows to the test spreadsheet only. It exits with an error if the ID is missing (exit 3) or equals the production ID (exit 2), and never creates a spreadsheet.
+6. `npm run test:live` runs the live tests. They fail (they do not silently skip) when the test ID is missing or equals the production ID, take a read-only snapshot of the production sheet before and after (the run fails if it changed), mark every record `[LIVE TEST]`, and clear the test sheet afterwards.
+
+### Live retention and the production read-only check
+- `npm run test:live` also runs `tests/live/retention.live.test.ts`: real expired/kept/unreadable jobs on the test sheet; dry run deletes nothing, cleanup refuses unless `RETENTION_CLEANUP_ENABLED=true`, then deletes only the expired jobs and their application rows, clears Activity references and leaves everything else (including a job with an unreadable `AddedAt`) untouched.
+- `npm run test:prod-readonly` is a **strictly read-only** look at production: every write is blocked by a guard that throws, and a before/after snapshot proves nothing changed. It checks the four tabs and the `Applications!H1:I1` headers, reports each member's due follow-ups, and prints the retention dry run (every proposed deletion). Destructive cleanup on production stays disabled.
+- Google allows about 60 reads per minute per user; the live suites pause between tests. If you re-run them back to back and see `rate_limited`, wait a minute.
 
 ## Test data
 The Sheets tests use `tests/helpers/fake-sheets.ts`, an in-memory stand-in for the Google API with failure injection. Fixtures are clearly synthetic (`Synthetic Co A`, `jobs.example.test`, `Testville`). No credentials are needed; nothing in the normal suite touches Google or any real spreadsheet, and no test data can reach production because the fake is only installed from test files.

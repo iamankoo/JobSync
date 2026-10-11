@@ -5,7 +5,8 @@
  *   npm run sheets:test-setup            verify the test spreadsheet and prepare it (tabs, headers, Members rows)
  *   npm run sheets:test-setup -- --reset  also clear its data rows (Members rows are re-seeded)
  *
- * One-time manual step (a service account cannot create spreadsheets in this project):
+ * One-time manual step (the service account is forbidden from CREATING spreadsheets - HTTP 403 - although
+ * it can read and write spreadsheets shared with it, so this script never creates one):
  *   1. In Google Sheets create a NEW spreadsheet titled exactly starting with "JobSync TEST"
  *      (e.g. "JobSync TEST (disposable)"). It must be a different file from "JobSync Database".
  *   2. Share it with the service-account email as Editor.
@@ -31,7 +32,6 @@ const root = path.resolve(import.meta.dirname, "..");
 const { loadEnvConfig } = require(path.join(root, "node_modules/@next/env"));
 const { auth, sheets } = require(path.join(root, "node_modules/@googleapis/sheets"));
 
-const TEST_TITLE = "JobSync TEST (disposable - never production data)";
 const ENV_TEST = path.join(root, ".env.test.local");
 
 loadEnvConfig(root, true);
@@ -83,7 +83,7 @@ async function headersOk(spreadsheetId: string): Promise<boolean> {
   for (const t of Object.values(TABS)) {
     const r = await api.spreadsheets.values.get({ spreadsheetId, range: `${t.name}!1:1` });
     const row = (r.data.values?.[0] ?? []).map((c: unknown) => String(c).trim());
-    if (JSON.stringify(row) !== JSON.stringify([...t.headers])) return false;
+    if (JSON.stringify(row) !== JSON.stringify([...t.headers, ...(("optionalHeaders" in t ? t.optionalHeaders : []) as readonly string[])])) return false;
   }
   return true;
 }
@@ -94,7 +94,7 @@ async function writeHeadersAndMembers(spreadsheetId: string) {
       spreadsheetId,
       range: `${t.name}!A1`,
       valueInputOption: "RAW",
-      requestBody: { values: [[...t.headers]] },
+      requestBody: { values: [[...t.headers, ...(("optionalHeaders" in t ? t.optionalHeaders : []) as readonly string[])]] },
     });
   }
   await api.spreadsheets.values.update({
@@ -118,7 +118,7 @@ async function clearData(spreadsheetId: string) {
 }
 
 async function main() {
-  let id = readTestId();
+  const id = readTestId();
 
   if (id) {
     if (id === prodId) {
@@ -145,35 +145,19 @@ async function main() {
     return;
   }
 
-  const res = await api.spreadsheets.create({
-    requestBody: {
-      properties: { title: TEST_TITLE },
-      sheets: Object.values(TABS).map((t) => ({ properties: { title: t.name } })),
-    },
-  });
-  id = res.data.spreadsheetId!;
-  if (id === prodId) {
-    console.error("REFUSING: unexpected ID collision with production.");
-    process.exit(2);
-  }
-  await writeHeadersAndMembers(id);
-  fs.writeFileSync(
-    ENV_TEST,
-    "# Disposable TEST spreadsheet for live integration + isolated E2E. Gitignored. NEVER the production ID.\n" +
-      `GOOGLE_TEST_SPREADSHEET_ID=${id}\n`,
-    { encoding: "utf8", mode: 0o600 },
+  console.error(
+    [
+      "GOOGLE_TEST_SPREADSHEET_ID is not set in .env.test.local, so nothing was done.",
+      "This script never creates spreadsheets and never falls back to the production spreadsheet.",
+      "Create a spreadsheet titled 'JobSync TEST (disposable)', share it with the service account as Editor,",
+      "add GOOGLE_TEST_SPREADSHEET_ID=<id from its URL> to .env.test.local, then run this script again.",
+    ].join("\n"),
   );
-  console.log("Created disposable test spreadsheet with the 4 tabs, headers and Members rows. ID saved to .env.test.local (not printed).");
+  process.exit(3);
 }
 
 main().catch((err) => {
   console.error("FAILED:", safeError(err));
-  if (!readTestId()) {
-    console.error(
-      "\nThe service account cannot create spreadsheets here. Create a spreadsheet titled 'JobSync TEST (disposable)'\n" +
-        "yourself, share it with the service account as Editor, add GOOGLE_TEST_SPREADSHEET_ID=<id> to .env.test.local,\n" +
-        "and run this script again.",
-    );
-  }
+  console.error("Check that the test spreadsheet is shared with the service account as Editor and the ID is correct.");
   process.exit(1);
 });
