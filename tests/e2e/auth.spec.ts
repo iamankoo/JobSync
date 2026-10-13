@@ -172,3 +172,29 @@ test.describe("data API (Phase 2)", () => {
     expect((await res.json()).data).toBeUndefined();
   });
 });
+
+test("login persists across refresh and a simulated browser restart until logout", async ({ page, browser }) => {
+  await signIn(page, "Lukky", "0002");
+  await page.reload();
+  await expect(page.getByRole("heading", { level: 1 })).toHaveText("Welcome back, Lukky");
+
+  // A browser restart discards session cookies (no expiry) and keeps persistent ones.
+  const persistent = (await page.context().cookies()).filter((c) => c.expires > 0);
+  const session = persistent.find((c) => c.name === "jobsync_session");
+  expect(session?.httpOnly).toBe(true);
+  expect(session!.expires - Date.now() / 1000).toBeGreaterThan(7 * 24 * 60 * 60);
+
+  const reopened = await browser.newContext({ baseURL: "http://localhost:3100" });
+  await reopened.addCookies(persistent);
+  const page2 = await reopened.newPage();
+  await page2.goto("/dashboard");
+  await expect(page2.getByRole("heading", { level: 1 })).toHaveText("Welcome back, Lukky");
+  await page2.goto("/login");
+  await expect(page2).not.toHaveURL(/\/login$/);
+
+  await page2.getByRole("button", { name: "Log out" }).click();
+  await page2.waitForURL("**/login");
+  await page2.goto("/dashboard");
+  await expect(page2).toHaveURL(/\/login/);
+  await reopened.close();
+});
