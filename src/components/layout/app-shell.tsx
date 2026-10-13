@@ -7,6 +7,8 @@ import type { Member } from "@/config/members";
 import { Avatar } from "@/components/ui/avatar";
 import { Logo } from "@/components/ui/logo";
 import { FollowUpGate, type DueFollowUpItem } from "@/components/follow-up/follow-up-gate";
+import { NotificationManager } from "@/components/notifications/notification-manager";
+import { removeThisDevice } from "@/lib/push/browser";
 import { AutoRefresh } from "./auto-refresh";
 import { Sidebar } from "./sidebar";
 
@@ -58,6 +60,8 @@ export function AppShell({
   async function logout() {
     setBusy(true);
     try {
+      // Detach this browser from the member before the session ends (other devices keep their notifications).
+      await removeThisDevice();
       await fetch("/api/auth/logout", { method: "POST" });
     } finally {
       router.replace("/login");
@@ -69,6 +73,7 @@ export function AppShell({
     <div data-member={member.id} className="min-h-screen bg-navy-950">
       <AutoRefresh />
       <FollowUpGate items={followUps} timeZone={timeZone} />
+      <NotificationManager memberId={member.id} showOnboarding={pathname === "/dashboard" && followUps.length === 0} />
       <a href="#main" className="sr-only focus:not-sr-only focus:fixed focus:left-2 focus:top-2 focus:z-50 focus:rounded focus:bg-electric focus:px-3 focus:py-2">
         Skip to content
       </a>

@@ -34,6 +34,8 @@ interface Props {
   /** The signed-in member (from the session). Used only to decide which edit/delete actions to show; the server enforces ownership. */
   currentMemberId: MemberId;
   initialQuery?: string;
+  /** Job whose details open on arrival (e.g. from a notification link). Ignored if the job is not in the list. */
+  initialJobId?: string;
   timeZone: string;
   today: string;
   /** Spreadsheet rows ignored because they were incomplete or invalid. */
@@ -56,12 +58,12 @@ function SummaryCard({ label, value, tone, icon: Icon }: { label: string; value:
   );
 }
 
-export function JobsBrowser({ jobs: initialJobs, currentMemberId, initialQuery = "", timeZone, today, skippedRows = 0 }: Props) {
+export function JobsBrowser({ jobs: initialJobs, currentMemberId, initialQuery = "", initialJobId, timeZone, today, skippedRows = 0 }: Props) {
   const [jobs, setJobs] = useState(initialJobs);
   const [filters, setFilters] = useState<JobFilters>({ ...EMPTY_FILTERS, query: initialQuery });
   const [sort, setSort] = useState<{ key: SortKey; dir: SortDirection }>({ key: "addedAt", dir: "desc" });
   const [page, setPage] = useState(1);
-  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [selectedId, setSelectedId] = useState<string | null>(initialJobId ?? null);
   const [busyId, setBusyId] = useState<string | null>(null);
   const [notice, setNotice] = useState<NoticeState | null>(null);
   const [editingId, setEditingId] = useState<string | null>(null);

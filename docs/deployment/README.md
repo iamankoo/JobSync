@@ -22,8 +22,10 @@ All are server-side and stored as **Sensitive** in Vercel (not readable after sa
 | `SESSION_MAX_AGE_SECONDS` | Session lifetime (28800 = 8 h) |
 | `ACCESS_CODE_ANNI`, `ACCESS_CODE_LUKKY`, `ACCESS_CODE_RISHII` | Member access codes (required in production: login fails closed without them) |
 | `APP_TIMEZONE` | Calendar timezone for "today" (Asia/Kolkata) |
+| `VAPID_PUBLIC_KEY`, `VAPID_PRIVATE_KEY`, `VAPID_SUBJECT` | Chrome push notifications (see [docs/notifications](../notifications/README.md)). The private key is Sensitive and server-only |
+| `CRON_SECRET` | Bearer secret for `/api/cron/daily-notifications` (10 AM / 10 PM messages; also the retention dry run) |
 
-**Deliberately NOT set in production:** `RETENTION_CLEANUP_ENABLED` (30-day cleanup stays disabled until the owner approves it after a dry run), `CRON_SECRET` (no scheduled job is configured), `SHEETS_TEST_BACKEND` / `TEST_SEED_KEY` (test-only; the app refuses the in-memory backend in production and `/api/test/seed` answers 404), `GOOGLE_TEST_SPREADSHEET_ID` (tests only, lives in `.env.test.local`). Optional tuning: `SHEETS_CACHE_TTL_MS` (default 5000) and `NEXT_PUBLIC_AUTO_REFRESH_MS` (default 30000).
+**Deliberately NOT set in production:** `RETENTION_CLEANUP_ENABLED` (30-day cleanup stays disabled until the owner approves it after a dry run), `RETENTION_CLEANUP_ENABLED` stays unset even once `CRON_SECRET` exists (the retention endpoint then only does a dry run; it is not scheduled), `SHEETS_TEST_BACKEND` / `TEST_SEED_KEY` (test-only; the app refuses the in-memory backend in production and `/api/test/seed` answers 404), `GOOGLE_TEST_SPREADSHEET_ID` (tests only, lives in `.env.test.local`). Optional tuning: `SHEETS_CACHE_TTL_MS` (default 5000) and `NEXT_PUBLIC_AUTO_REFRESH_MS` (default 30000).
 
 Set or rotate a value (the value is read from stdin, not typed into history):
 `vercel env add NAME production --sensitive --force` then redeploy (`vercel deploy --prod`). Never paste keys into chat or commit them.

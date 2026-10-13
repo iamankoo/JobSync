@@ -11,6 +11,10 @@ import {
   type Application,
   type Job,
   type MemberRecord,
+  type NotificationLogRecord,
+  NOTIFICATION_STATUSES,
+  NOTIFICATION_TYPES,
+  type PushSubscriptionRecord,
 } from "@/types/domain";
 import { ID_PATTERN } from "@/lib/validation/applications";
 import { parseHttpUrl } from "@/lib/utils/url";
@@ -143,4 +147,40 @@ export function parseActivityRow(cells: string[]): RowParse<Activity> {
 
 export function serializeActivity(a: Activity): string[] {
   return [a.activityId, a.memberId, a.date, a.action, a.jobId ?? "", a.timestamp];
+}
+
+// ---- Push subscriptions -------------------------------------------------
+
+export function parsePushSubscriptionRow(cells: string[]): RowParse<PushSubscriptionRecord> {
+  const [subscriptionId, memberId, endpoint, p256dh, auth, createdAt, lastSeenAt] = cells.map((c) => c.trim());
+  if (!ID_PATTERN.test(subscriptionId)) return { ok: false, problem: "missing or invalid SubscriptionID" };
+  if (!isMemberId(memberId)) return { ok: false, problem: "missing or unknown MemberID" };
+  if (!parseHttpUrl(endpoint)) return { ok: false, problem: "missing or invalid Endpoint" };
+  if (!p256dh || !auth) return { ok: false, problem: "missing keys" };
+  if (!isIsoTimestamp(createdAt)) return { ok: false, problem: "missing or invalid CreatedAt" };
+  if (!isIsoTimestamp(lastSeenAt)) return { ok: false, problem: "missing or invalid LastSeenAt" };
+  return { ok: true, value: { subscriptionId, memberId, endpoint, p256dh, auth, createdAt, lastSeenAt }, warnings: [] };
+}
+
+export function serializePushSubscription(s: PushSubscriptionRecord): string[] {
+  return [s.subscriptionId, s.memberId, s.endpoint, s.p256dh, s.auth, s.createdAt, s.lastSeenAt];
+}
+
+// ---- Notification log ---------------------------------------------------
+
+export function parseNotificationLogRow(cells: string[]): RowParse<NotificationLogRecord> {
+  const [logKey, claimId, memberId, type, localDate, status, claimedAt, updatedAt, detail] = cells.map((c) => c.trim());
+  if (!logKey) return { ok: false, problem: "missing LogKey" };
+  if (!ID_PATTERN.test(claimId)) return { ok: false, problem: "missing or invalid ClaimID" };
+  if (!isMemberId(memberId)) return { ok: false, problem: "missing or unknown MemberID" };
+  if (!oneOf(NOTIFICATION_TYPES, type)) return { ok: false, problem: "missing or invalid Type" };
+  if (!isIsoDate(localDate)) return { ok: false, problem: "missing or invalid LocalDate" };
+  if (!oneOf(NOTIFICATION_STATUSES, status)) return { ok: false, problem: "missing or invalid Status" };
+  if (!isIsoTimestamp(claimedAt)) return { ok: false, problem: "missing or invalid ClaimedAt" };
+  if (!isIsoTimestamp(updatedAt)) return { ok: false, problem: "missing or invalid UpdatedAt" };
+  return { ok: true, value: { logKey, claimId, memberId, type, localDate, status, claimedAt, updatedAt, detail }, warnings: [] };
+}
+
+export function serializeNotificationLog(r: NotificationLogRecord): string[] {
+  return [r.logKey, r.claimId, r.memberId, r.type, r.localDate, r.status, r.claimedAt, r.updatedAt, r.detail];
 }

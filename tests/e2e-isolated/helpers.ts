@@ -86,7 +86,18 @@ export async function seedRealisticData(request: APIRequestContext) {
 }
 
 // ---------- UI helpers
-export async function signIn(page: Page, name: string, code: string) {
+export async function signIn(page: Page, name: string, code: string, options: { keepNotificationOnboarding?: boolean } = {}) {
+  // The notification onboarding dialog (a modal, by design) is dismissed up front so the older specs, which are not
+  // about notifications, can use the Dashboard. notifications.spec.ts opts out to test the dialog itself.
+  if (!options.keepNotificationOnboarding) {
+    await page.addInitScript(() => {
+      try {
+        for (const id of ["anni", "lukky", "rishii"]) sessionStorage.setItem(`jobsync:push-onboarding:${id}`, "1");
+      } catch {
+        /* ignore */
+      }
+    });
+  }
   await page.goto("/login");
   await page.getByRole("button", { name, exact: true }).click();
   await page.getByLabel(`Access code for ${name}`).fill(code);

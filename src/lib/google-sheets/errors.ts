@@ -40,7 +40,8 @@ export type DomainErrorCode =
   | "follow_up_conflict"
   | "follow_ups_unavailable"
   | "retention_disabled"
-  | "retention_limit";
+  | "retention_limit"
+  | "subscription_conflict";
 
 export class DomainError extends Error {
   constructor(

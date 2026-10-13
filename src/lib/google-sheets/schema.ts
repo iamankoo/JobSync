@@ -23,9 +23,28 @@ export const TABS = {
     name: "Activity",
     headers: ["ActivityID", "MemberID", "Date", "Action", "JobID", "Timestamp"],
   },
+  // Browser Web Push subscriptions (one row per member device). Optional: when the tab is absent the
+  // app works exactly as before and push notifications are simply unavailable.
+  pushSubscriptions: {
+    name: "PushSubscriptions",
+    headers: ["SubscriptionID", "MemberID", "Endpoint", "P256dh", "Auth", "CreatedAt", "LastSeenAt"],
+    optional: true,
+  },
+  // Ledger of scheduled (10 AM / 10 PM) notifications, so a repeated cron run never notifies twice.
+  // Optional: without it the scheduled notifications are refused rather than risking duplicates.
+  notificationLog: {
+    name: "NotificationLog",
+    headers: ["LogKey", "ClaimID", "MemberID", "Type", "LocalDate", "Status", "ClaimedAt", "UpdatedAt", "Detail"],
+    optional: true,
+  },
 } as const;
 
 export type TabKey = keyof typeof TABS;
+
+/** Tabs the app can run without (their feature is simply off while the tab is missing). */
+export function isOptionalTab(tab: TabKey): boolean {
+  return (TABS[tab] as { optional?: boolean }).optional === true;
+}
 
 /** Optional trailing headers of a tab (empty for tabs that have none). */
 export function optionalHeaders(tab: TabKey): readonly string[] {

@@ -1,4 +1,5 @@
 import { defineConfig, devices } from "@playwright/test";
+import { generateVAPIDKeys } from "web-push";
 
 /**
  * ISOLATED browser E2E: the real UI, real route handlers and real validation against an
@@ -9,6 +10,8 @@ import { defineConfig, devices } from "@playwright/test";
  *   npm run test:e2e:isolated
  */
 const PORT = 3102;
+// Throwaway VAPID keys for this run only (never real ones).
+const VAPID = generateVAPIDKeys();
 export const SEED_KEY = "e2e-isolated-seed-key";
 
 /** The six viewport sizes the product must support. */
@@ -41,14 +44,17 @@ export default defineConfig({
       GOOGLE_SERVICE_ACCOUNT_EMAIL: "",
       GOOGLE_PRIVATE_KEY: "",
       SHEETS_CACHE_TTL_MS: "0",
+      VAPID_PUBLIC_KEY: VAPID.publicKey,
+      VAPID_PRIVATE_KEY: VAPID.privateKey,
+      CRON_SECRET: "e2e-cron-secret",
       NEXT_PUBLIC_AUTO_REFRESH_MS: "2500",
       NEXT_DIST_DIR: ".next-e2e-isolated",
       APP_TIMEZONE: "Asia/Kolkata",
     },
   },
   projects: [
-    { name: "workflow-desktop", testMatch: /workflow\.spec\.ts/, use: { ...devices["Desktop Chrome"], viewport: { width: 1366, height: 768 } } },
-    { name: "workflow-mobile", testMatch: /workflow\.spec\.ts/, use: { ...devices["Pixel 7"] } },
+    { name: "workflow-desktop", testMatch: /(workflow|notifications)\.spec\.ts/, use: { ...devices["Desktop Chrome"], viewport: { width: 1366, height: 768 } } },
+    { name: "workflow-mobile", testMatch: /(workflow|notifications)\.spec\.ts/, use: { ...devices["Pixel 7"] } },
     ...VIEWPORTS.map((v) => ({
       name: `responsive-${v.name}`,
       testMatch: /responsive\.spec\.ts/,

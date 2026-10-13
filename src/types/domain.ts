@@ -99,6 +99,42 @@ export interface Activity {
   timestamp: string;
 }
 
+/** One browser Web Push subscription belonging to a member's device. Secret: never sent to browsers or logged. */
+export interface PushSubscriptionRecord {
+  /** Stable, log-safe ID derived from the endpoint. */
+  subscriptionId: string;
+  memberId: MemberId;
+  endpoint: string;
+  p256dh: string;
+  auth: string;
+  /** ISO 8601 UTC. */
+  createdAt: string;
+  /** ISO 8601 UTC. */
+  lastSeenAt: string;
+}
+
+export const NOTIFICATION_TYPES = ["morning", "night"] as const;
+export type NotificationType = (typeof NOTIFICATION_TYPES)[number];
+export const NOTIFICATION_STATUSES = ["claimed", "sent", "failed"] as const;
+export type NotificationStatus = (typeof NOTIFICATION_STATUSES)[number];
+
+/** One attempt to send a member's scheduled notification for a local date. */
+export interface NotificationLogRecord {
+  /** `<type>:<memberId>:<localDate>` — the idempotency key. */
+  logKey: string;
+  /** Unique per attempt. */
+  claimId: string;
+  memberId: MemberId;
+  type: NotificationType;
+  /** Calendar date (YYYY-MM-DD) in the app timezone. */
+  localDate: string;
+  status: NotificationStatus;
+  claimedAt: string;
+  updatedAt: string;
+  /** Short machine-readable note (never contains endpoints or keys). */
+  detail: string;
+}
+
 export interface MemberRecord {
   memberId: MemberId;
   name: string;

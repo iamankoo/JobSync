@@ -6,8 +6,8 @@ const require = createRequire(import.meta.url);
 const ROOT = path.resolve(__dirname, "..", "..");
 const { auth, sheets } = require(path.join(ROOT, "node_modules/@googleapis/sheets"));
 
-const TAB_NAMES = ["Jobs", "Applications", "Members", "Activity"] as const;
-const WIDTH: Record<(typeof TAB_NAMES)[number], string> = { Jobs: "M", Applications: "I", Members: "D", Activity: "F" };
+const TAB_NAMES = ["Jobs", "Applications", "Members", "Activity", "PushSubscriptions", "NotificationLog"] as const;
+const WIDTH: Record<(typeof TAB_NAMES)[number], string> = { Jobs: "M", Applications: "I", Members: "D", Activity: "F", PushSubscriptions: "G", NotificationLog: "I" };
 
 const MEMBER_ROWS = [
   ["anni", "Anni", "/assets/anni.jpeg", "TRUE"],
@@ -74,7 +74,8 @@ export async function snapshotProduction(): Promise<Record<string, { rows: numbe
   const api = client(env.email, env.privateKey);
   const { createHash } = await import("node:crypto");
   const out: Record<string, { rows: number; hash: string }> = {};
-  for (const tab of TAB_NAMES) {
+  // Only the four original tabs: the optional push tabs may not exist in production yet.
+  for (const tab of ["Jobs", "Applications", "Members", "Activity"] as const) {
     const res = await api.spreadsheets.values.get({ spreadsheetId: env.prodId, range: `${tab}!A:${WIDTH[tab]}` });
     const values = (res.data.values ?? []) as unknown[][];
     out[tab] = { rows: values.length, hash: createHash("sha256").update(JSON.stringify(values)).digest("hex").slice(0, 16) };

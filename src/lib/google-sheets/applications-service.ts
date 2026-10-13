@@ -3,6 +3,7 @@ import type { MemberId } from "@/config/members";
 import type { Application, ApplicationStatus, MyApplicationRow } from "@/types/domain";
 import { nowIso } from "@/lib/utils/time";
 import { canTransition, type UpdateApplicationInput } from "@/lib/validation/applications";
+import { notifyJobApplied } from "@/lib/push/notify";
 import { recordActivity } from "./activity-service";
 import { DomainError } from "./errors";
 import { withWriteLock } from "./lock";
@@ -55,9 +56,10 @@ export async function setApplicationStatus(
   input: UpdateApplicationInput,
   now: Date = new Date(),
 ): Promise<ApplicationUpdateResult> {
-  const outcome = await withWriteLock(async (): Promise<ApplicationUpdateResult & { activity?: "job_applied" | "job_unapplied" | "application_updated" }> => {
+  const outcome = await withWriteLock(async (): Promise<ApplicationUpdateResult & { activity?: "job_applied" | "job_unapplied" | "application_updated"; notify?: { company: string; jobRole: string; appliedAt: string } }> => {
     const { items: jobs } = await readJobs({ fresh: true });
-    if (!jobs.some((j) => j.jobId === jobId)) {
+    const job = jobs.find((j) => j.jobId === jobId);
+    if (!job) {
       throw new DomainError("job_not_found", "That job does not exist.");
     }
 
@@ -114,11 +116,16 @@ export async function setApplicationStatus(
       changed: true,
       activity:
         next.status === "Not Applied" ? "job_unapplied" : current === "Not Applied" && next.status === "Applied" ? "job_applied" : "application_updated",
+      // Only a genuine Not Applied -> Applied change notifies the others.
+      notify: current === "Not Applied" && next.status === "Applied" ? { company: job.company, jobRole: job.jobRole, appliedAt: next.appliedAt ?? next.lastUpdated } : undefined,
     };
   });
 
+  // The change is persisted: tell the other members (never throws, never affects the saved result).
+  if (outcome.changed && outcome.notify) await notifyJobApplied(memberId, { jobId, ...outcome.notify }, outcome.notify.appliedAt);
   if (outcome.changed && outcome.activity) await recordActivity(memberId, outcome.activity, jobId, now);
-  const { activity: _activity, ...result } = outcome;
+  const { activity: _activity, notify: _notify, ...result } = outcome;
   void _activity;
+  void _notify;
   return result;
 }

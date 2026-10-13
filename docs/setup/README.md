@@ -78,6 +78,9 @@ Intended human access (must be granted by the owner in Google Sheets -> Share; *
 ### 8. Verify the connection (no credentials exposed)
 Start the app, sign in as any member, then open `http://localhost:3000/api/sheets/status` in the same browser. A healthy setup returns each tab with `"ok": true`, a valid row count and a `rowIssues` count. Problems are described per tab (for example `Tab "Jobs" column 3 should be "JobRole" but is "Role"`). The response never contains credentials or cell contents. Typical failures: `503 ... missing: GOOGLE_...` (env not set), `502 ... not shared with the service account` (step 7), `503 ... does not match the expected header row` (step 6).
 
+## Push notification setup
+Two optional tabs, `PushSubscriptions` and `NotificationLog`, plus the `VAPID_*` variables enable Chrome push notifications. See [docs/notifications](../notifications/README.md) for headers, keys and the 10 AM / 10 PM schedule.
+
 ## Phase 4 setup
 - Add headers `FollowUpAnswer` and `FollowUpAnsweredAt` to `Applications!H1:I1` (until then the 7-day follow-up is off).
 - New environment variables (see `.env.example`): `CRON_SECRET`, `RETENTION_CLEANUP_ENABLED` (keep `false` until you have reviewed a dry run), `SHEETS_CACHE_TTL_MS`, `NEXT_PUBLIC_AUTO_REFRESH_MS`, `APP_TIMEZONE`.

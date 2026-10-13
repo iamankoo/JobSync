@@ -1,14 +1,18 @@
 import "server-only";
-import type { Activity, Application, Job, MemberRecord, ReadResult, RowIssue } from "@/types/domain";
+import type { Activity, Application, Job, MemberRecord, NotificationLogRecord, PushSubscriptionRecord, ReadResult, RowIssue } from "@/types/domain";
 import { getSheetsClient } from "./client";
 import {
   parseActivityRow,
   parseApplicationRow,
   parseJobRow,
   parseMemberRow,
+  parseNotificationLogRow,
+  parsePushSubscriptionRow,
   serializeActivity,
   serializeApplication,
   serializeJob,
+  serializeNotificationLog,
+  serializePushSubscription,
   type RowParse,
 } from "./rows";
 import { rowRange, tableRange, TABS, type TabKey } from "./schema";
@@ -154,6 +158,50 @@ export async function updateActivityRow(row: number, activity: Activity): Promis
 export async function appendActivity(activity: Activity): Promise<void> {
   try {
     await getSheetsClient().appendValues(tableRange("activity"), [serializeActivity(activity)]);
+  } finally {
+    invalidateTableCache();
+  }
+}
+
+// ---- Push subscriptions -------------------------------------------------
+
+export function readPushSubscriptionsLocated(options: ReadOptions = {}) {
+  return readParsed("pushSubscriptions", parsePushSubscriptionRow, (s) => s.subscriptionId, options);
+}
+
+export async function appendPushSubscription(sub: PushSubscriptionRecord): Promise<void> {
+  try {
+    await getSheetsClient().appendValues(tableRange("pushSubscriptions"), [serializePushSubscription(sub)]);
+  } finally {
+    invalidateTableCache();
+  }
+}
+
+export async function updatePushSubscriptionRow(row: number, sub: PushSubscriptionRecord): Promise<void> {
+  try {
+    await getSheetsClient().updateValues(rowRange("pushSubscriptions", row), [serializePushSubscription(sub)]);
+  } finally {
+    invalidateTableCache();
+  }
+}
+
+// ---- Notification log ---------------------------------------------------
+
+export function readNotificationLogLocated(options: ReadOptions = {}) {
+  return readParsed("notificationLog", parseNotificationLogRow, (r) => r.claimId, options);
+}
+
+export async function appendNotificationLog(rec: NotificationLogRecord): Promise<void> {
+  try {
+    await getSheetsClient().appendValues(tableRange("notificationLog"), [serializeNotificationLog(rec)]);
+  } finally {
+    invalidateTableCache();
+  }
+}
+
+export async function updateNotificationLogRow(row: number, rec: NotificationLogRecord): Promise<void> {
+  try {
+    await getSheetsClient().updateValues(rowRange("notificationLog", row), [serializeNotificationLog(rec)]);
   } finally {
     invalidateTableCache();
   }

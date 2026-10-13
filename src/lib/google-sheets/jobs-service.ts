@@ -4,6 +4,7 @@ import type { Job, JobWithMyStatus } from "@/types/domain";
 import { normalizeJobUrl } from "@/lib/utils/url";
 import { nowIso } from "@/lib/utils/time";
 import type { CreateJobInput } from "@/lib/validation/jobs";
+import { notifyJobAdded } from "@/lib/push/notify";
 import { recordActivity, scrubDeletedJobReferences } from "./activity-service";
 import { DomainError } from "./errors";
 import { newId } from "./ids";
@@ -59,6 +60,8 @@ export async function createJob(memberId: MemberId, input: CreateJobInput, now: 
     return created;
   });
 
+  // The row is persisted: tell the other members. Never throws, so a push problem cannot fail the save.
+  await notifyJobAdded(memberId, job);
   await recordActivity(memberId, "job_added", job.jobId, now);
   return job;
 }

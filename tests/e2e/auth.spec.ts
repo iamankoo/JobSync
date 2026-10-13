@@ -8,6 +8,17 @@ const MEMBERS = [
 ];
 const ROUTES = ["/dashboard", "/all-jobs", "/add-job", "/my-applications", "/analytics"];
 
+// The notification onboarding dialog is a modal by design; these specs are not about it, so it is dismissed up front.
+test.beforeEach(async ({ page }) => {
+  await page.addInitScript(() => {
+    try {
+      for (const id of ["anni", "lukky", "rishii"]) sessionStorage.setItem(`jobsync:push-onboarding:${id}`, "1");
+    } catch {
+      /* ignore */
+    }
+  });
+});
+
 async function signIn(page: Page, name: string, code: string) {
   await page.goto("/login");
   await page.getByRole("button", { name }).click();

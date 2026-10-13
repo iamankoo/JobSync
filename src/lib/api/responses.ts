@@ -47,6 +47,7 @@ const DOMAIN_STATUS: Record<DomainErrorCode, number> = {
   follow_ups_unavailable: 503,
   retention_disabled: 403,
   retention_limit: 409,
+  subscription_conflict: 409,
 };
 
 const SHEETS_STATUS: Record<SheetsErrorCode, number> = {

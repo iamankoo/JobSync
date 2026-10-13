@@ -94,11 +94,11 @@ describe("real Google Sheets API", () => {
   let jobAnni = "";
   let jobLukky = "";
 
-  it("status check: all four tabs readable with the expected headers (including the follow-up columns)", async () => {
+  it("status check: all tabs readable with the expected headers (including the follow-up columns)", async () => {
     const res = await s.status.checkSheetsStatus();
     log("status", res);
     expect(res.ok).toBe(true);
-    expect(res.tabs.map((t) => t.tab.toLowerCase()).sort()).toEqual(["activity", "applications", "jobs", "members"]);
+    expect(res.tabs.map((t) => t.tab.toLowerCase()).sort()).toEqual(["activity", "applications", "jobs", "members", "notificationlog", "pushsubscriptions"]);
     expect(res.tabs.every((t) => t.ok)).toBe(true);
     const header = (await sheet.readTab("Applications"))[0];
     expect(header.slice(7, 9)).toEqual(["FollowUpAnswer", "FollowUpAnsweredAt"]);

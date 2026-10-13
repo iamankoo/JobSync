@@ -2,8 +2,8 @@ import "server-only";
 import { isMemoryBackend } from "./client";
 import { loadSheetsConfig } from "./config";
 import { SheetsError } from "./errors";
-import { readActivity, readApplications, readJobs, readMembers } from "./repositories";
-import { TABS, TAB_KEYS, type TabKey } from "./schema";
+import { readActivity, readApplications, readJobs, readMembers, readNotificationLogLocated, readPushSubscriptionsLocated } from "./repositories";
+import { isOptionalTab, TABS, TAB_KEYS, type TabKey } from "./schema";
 import { checkTabHeader } from "./table";
 
 export interface TabStatus {
@@ -21,6 +21,8 @@ const READERS: Record<TabKey, () => Promise<{ items: unknown[]; issues: unknown[
   applications: readApplications,
   members: readMembers,
   activity: readActivity,
+  pushSubscriptions: readPushSubscriptionsLocated,
+  notificationLog: readNotificationLogLocated,
 };
 
 /**
@@ -49,5 +51,7 @@ export async function checkSheetsStatus(): Promise<{ ok: boolean; tabs: TabStatu
       throw err;
     }
   }
-  return { ok: tabs.every((t) => t.ok), tabs };
+  // An optional tab (push notifications) that is not set up yet is reported but does not fail the check.
+  const optional = new Set<string>(TAB_KEYS.filter(isOptionalTab).map((k) => TABS[k].name));
+  return { ok: tabs.every((t) => t.ok || optional.has(t.tab)), tabs };
 }
