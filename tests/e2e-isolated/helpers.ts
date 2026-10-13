@@ -28,10 +28,10 @@ export const appendRows = (request: APIRequestContext, tab: string, rows: string
 export const updateRows = (request: APIRequestContext, tab: string, where: Record<string, string>, set: Record<string, string>) =>
   seed(request, { action: "update", tab, where, set });
 /** Raw spreadsheet rows (header first) as persisted by the app. */
-export async function dumpTab(request: APIRequestContext, tab: "Jobs" | "Applications" | "Members" | "Activity"): Promise<string[][]> {
+export async function dumpTab(request: APIRequestContext, tab: "Jobs" | "Applications" | "Members" | "Activity" | "PushSubscriptions" | "NotificationLog"): Promise<string[][]> {
   return (await seed(request, { action: "dump", tab })).rows;
 }
-export async function dataRows(request: APIRequestContext, tab: "Jobs" | "Applications" | "Members" | "Activity") {
+export async function dataRows(request: APIRequestContext, tab: "Jobs" | "Applications" | "Members" | "Activity" | "PushSubscriptions" | "NotificationLog") {
   return (await dumpTab(request, tab)).slice(1);
 }
 
@@ -86,23 +86,87 @@ export async function seedRealisticData(request: APIRequestContext) {
 }
 
 // ---------- UI helpers
-export async function signIn(page: Page, name: string, code: string, options: { keepNotificationOnboarding?: boolean } = {}) {
-  // The notification onboarding dialog (a modal, by design) is dismissed up front so the older specs, which are not
-  // about notifications, can use the Dashboard. notifications.spec.ts opts out to test the dialog itself.
-  if (!options.keepNotificationOnboarding) {
-    await page.addInitScript(() => {
-      try {
-        for (const id of ["anni", "lukky", "rishii"]) sessionStorage.setItem(`jobsync:push-onboarding:${id}`, "1");
-      } catch {
-        /* ignore */
-      }
-    });
-  }
+export interface FakePushOptions {
+  /** Starting browser permission (default "granted"). */
+  permission?: "default" | "granted" | "denied";
+  /** What Chrome's own prompt answers when the page calls Notification.requestPermission(). */
+  promptResult?: "default" | "granted" | "denied";
+  /** Make PushManager.subscribe() fail (push service error). */
+  subscribeFails?: boolean;
+  /** Remove the Push API entirely (unsupported browser). */
+  unsupported?: boolean;
+}
+
+/**
+ * Headless Chromium has no push service and does not grant the notification permission, so the browser side of
+ * Web Push is replaced by a scriptable fake (permission, prompt, service worker registration, PushManager). The
+ * server side (config, status, registration, ledger) is the REAL application. window.__push exposes counters.
+ */
+export async function installFakePush(page: Page, options: FakePushOptions = {}) {
+  await page.addInitScript((o) => {
+    const w = window as unknown as { __push: { prompts: number; subscribes: number; unsubscribes: number; perm: string; setPermission(p: string): void; setSubscribeFails(f: boolean): void } };
+    // Permission and subscription survive reloads (like a real browser) via sessionStorage.
+    const store = (k: string, v?: string | null) => { try { if (v === undefined) return sessionStorage.getItem(k); if (v === null) sessionStorage.removeItem(k); else sessionStorage.setItem(k, v); } catch { /* ignore */ } return null; };
+    let perm: string = store("__fake_perm") ?? o.permission ?? "granted";
+    let fails = Boolean(o.subscribeFails) || store("__fake_fails") === "1";
+    type FakeSub = { endpoint: string; options: { applicationServerKey: ArrayBuffer | null }; toJSON(): unknown; unsubscribe(): Promise<boolean> };
+    let sub: FakeSub | null = null;
+    let n = 0;
+    w.__push = {
+      prompts: Number(store("__fake_prompts") ?? 0), subscribes: Number(store("__fake_subscribes") ?? 0), unsubscribes: 0,
+      get perm() { return perm; },
+      setPermission: (p) => { perm = p; store("__fake_perm", p); },
+      setSubscribeFails: (f) => { fails = f; store("__fake_fails", f ? "1" : "0"); },
+    } as typeof w.__push;
+    if (o.unsupported) { delete (window as unknown as Record<string, unknown>).PushManager; return; }
+    const N = window.Notification;
+    Object.defineProperty(N, "permission", { get: () => perm, configurable: true });
+    N.requestPermission = async () => { w.__push.prompts += 1; store("__fake_prompts", String(w.__push.prompts)); if (o.promptResult) { perm = o.promptResult; store("__fake_perm", perm); } return perm as NotificationPermission; };
+    const make = (key: ArrayBuffer | null, endpointOverride?: string): FakeSub => {
+      const endpoint = endpointOverride ?? `https://fcm.googleapis.com/fcm/send/e2e-fake-${++n}-${Math.random().toString(36).slice(2, 10)}`;
+      const s: FakeSub = {
+        endpoint,
+        options: { applicationServerKey: key },
+        toJSON: () => ({ endpoint, keys: { p256dh: "BPk1234567890abcdef", auth: "authKey1234567" } }),
+        unsubscribe: async () => { w.__push.unsubscribes += 1; if (sub === s) { sub = null; store("__fake_sub", null); } return true; },
+      };
+      return s;
+    };
+    const saved = store("__fake_sub");
+    if (saved) { const j = JSON.parse(saved) as { endpoint: string; key: number[] }; sub = make(new Uint8Array(j.key).buffer, j.endpoint); }
+    const reg = {
+      pushManager: {
+        getSubscription: async () => sub,
+        subscribe: async (opts: { applicationServerKey: BufferSource }) => {
+          if (fails) throw new Error("push service error");
+          w.__push.subscribes += 1;
+          const key = (opts.applicationServerKey as Uint8Array).buffer as ArrayBuffer;
+          sub = make(key);
+          store("__fake_subscribes", String(w.__push.subscribes));
+          store("__fake_sub", JSON.stringify({ endpoint: sub.endpoint, key: Array.from(new Uint8Array(key)) }));
+          return sub;
+        },
+      },
+    };
+    const sw = { register: async () => reg, ready: Promise.resolve(reg), getRegistration: async () => reg, addEventListener() {}, removeEventListener() {} };
+    Object.defineProperty(navigator, "serviceWorker", { value: sw, configurable: true });
+    if (!("PushManager" in window)) (window as unknown as Record<string, unknown>).PushManager = function PushManager() {};
+  }, options);
+}
+
+export async function signIn(page: Page, name: string, code: string, options: { push?: FakePushOptions | false } = {}) {
+  // Notifications are mandatory in JobSync (the app stays blurred until this browser is registered), so by default
+  // the page gets a working fake push stack. notifications.spec.ts passes its own scenario (or `false` to set it up itself).
+  if (options.push !== false) await installFakePush(page, options.push ?? {});
   await page.goto("/login");
   await page.getByRole("button", { name, exact: true }).click();
   await page.getByLabel(`Access code for ${name}`).fill(code);
   await page.getByRole("button", { name: "Open Dashboard" }).click();
   await page.waitForURL("**/dashboard");
+  // The notification gate verifies the device with the server first; the page is inert until it opens.
+  if (options.push !== false && (options.push?.permission ?? "granted") === "granted" && !options.push?.subscribeFails && !options.push?.unsupported) {
+    await page.locator('[data-notification-gate="open"]').waitFor({ state: "attached" });
+  }
 }
 
 /** Navigates through the real sidebar (opening the mobile drawer when the sidebar is collapsed). */

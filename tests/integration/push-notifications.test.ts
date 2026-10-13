@@ -7,6 +7,7 @@ import { POST as postJob } from "@/app/api/jobs/route";
 import { PUT as putApp } from "@/app/api/applications/[jobId]/route";
 import { GET as getConfig } from "@/app/api/push/config/route";
 import { DELETE as deleteSub, POST as postSub } from "@/app/api/push/subscriptions/route";
+import { POST as postStatus } from "@/app/api/push/status/route";
 import { setSheetsClientForTesting } from "@/lib/google-sheets/client";
 import { resetMembersCache } from "@/lib/google-sheets/members-service";
 import { setPushSenderForTesting, resetPushDedupeForTesting, type PushSender } from "@/lib/push/notify";
@@ -275,6 +276,47 @@ describe("invalid and expired subscriptions", () => {
     expect(logged).not.toContain("BPk1234567890abcd");
     expect(logged).not.toContain("test-private-key");
     spies.forEach((s) => s.mockRestore());
+  });
+});
+
+describe("POST /api/push/status (server-side check that this browser is registered)", () => {
+  const status = async (m: MemberId | null, endpoint: string) => {
+    as(m);
+    return postStatus(req("/api/push/status", "POST", { endpoint }));
+  };
+
+  it("requires a session", async () => {
+    expect((await status(null, endpointOf("anni"))).status).toBe(401);
+  });
+
+  it("is true only for the member that owns the subscription", async () => {
+    await subscribe("anni");
+    expect((await (await status("anni", endpointOf("anni"))).json()).data.registered).toBe(true);
+    expect((await (await status("lukky", endpointOf("anni"))).json()).data.registered).toBe(false);
+    expect((await (await status("anni", endpointOf("anni", 2))).json()).data.registered).toBe(false);
+  });
+
+  it("turns false when the stored row disappears (expired/removed), so the browser must re-register", async () => {
+    await subscribe("anni");
+    sheets.tabs.get("PushSubscriptions")!.splice(1);
+    expect((await (await status("anni", endpointOf("anni"))).json()).data.registered).toBe(false);
+  });
+
+  it("rejects non-push endpoints and extra fields, and reports 503 when push is not set up", async () => {
+    as("anni");
+    expect((await postStatus(req("/api/push/status", "POST", { endpoint: "https://evil.example/x" }))).status).toBe(400);
+    expect((await postStatus(req("/api/push/status", "POST", { endpoint: endpointOf("anni"), memberId: "lukky" }))).status).toBe(400);
+    sheets.tabs.delete("PushSubscriptions");
+    expect((await status("anni", endpointOf("anni"))).status).toBe(503);
+    vi.stubEnv("VAPID_PRIVATE_KEY", "");
+    expect((await status("anni", endpointOf("anni"))).status).toBe(503);
+  });
+
+  it("never changes the sheet", async () => {
+    await subscribe("anni");
+    const before = JSON.stringify(sheets.rows("PushSubscriptions"));
+    await status("anni", endpointOf("anni"));
+    expect(JSON.stringify(sheets.rows("PushSubscriptions"))).toBe(before);
   });
 });
 

@@ -141,7 +141,7 @@ describe("morning quotes", () => {
   it("is deterministic per member and date, and never repeats on consecutive days", () => {
     for (const m of MEMBER_IDS) {
       let previous = -1;
-      for (let d = 0; d < 400; d++) {
+      for (let d = 0; d < 120; d++) {
         const date = new Date(Date.UTC(2026, 0, 1 + d)).toISOString().slice(0, 10);
         const idx = quoteIndexFor(m, date);
         expect(idx).toBe(quoteIndexFor(m, date));

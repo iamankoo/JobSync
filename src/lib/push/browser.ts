@@ -1,8 +1,6 @@
 /** Browser-side Web Push helpers. Imported only by client components. */
 
 const REG_KEY = "jobsync:push-registration";
-/** Re-confirm an unchanged subscription with the server at most this often. */
-const REFRESH_MS = 12 * 3_600_000;
 
 export type EnsureResult = { ok: true } | { ok: false; reason: "unconfigured" | "failed" };
 
@@ -46,13 +44,23 @@ async function serviceWorkerRegistration(): Promise<ServiceWorkerRegistration> {
   return navigator.serviceWorker.ready;
 }
 
-async function post(method: "POST" | "DELETE", body: unknown): Promise<{ ok: boolean; status: number }> {
+async function post(method: "POST" | "DELETE", body: unknown, url = "/api/push/subscriptions"): Promise<{ ok: boolean; status: number; data?: { registered?: boolean } }> {
   try {
-    const res = await fetch("/api/push/subscriptions", { method, headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
-    return { ok: res.ok, status: res.status };
+    const res = await fetch(url, { method, headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+    const json = res.ok ? await res.json().catch(() => null) : null;
+    return { ok: res.ok, status: res.status, data: json?.data };
   } catch {
     return { ok: false, status: 0 };
   }
+}
+
+/**
+ * Optimistic hint only: this browser registered successfully for this member before. It lets the app skip the
+ * "checking" blur on a normal page load, but the server is ALWAYS asked afterwards and a failure blocks again.
+ */
+export function hasRegistrationHint(memberId: string): boolean {
+  const c = readCache();
+  return c?.memberId === memberId && typeof c.endpoint === "string" && "Notification" in window && Notification.permission === "granted";
 }
 
 /** Whether the server can use push at all (VAPID keys and the PushSubscriptions tab). False on any doubt. */
@@ -71,11 +79,16 @@ export async function pushAvailable(): Promise<boolean> {
 export async function ensureSubscribed(memberId: string, retried = false): Promise<EnsureResult> {
   try {
     const reg = await serviceWorkerRegistration();
-    // Fast path (no network): the same subscription was confirmed with the server for this member recently.
+    // An existing browser subscription only counts once the SERVER confirms it is stored for this member.
+    // (Local state is never trusted: it can be stale after expiry, another login, or a cleared sheet row.)
     const current = await reg.pushManager.getSubscription();
-    const cachedReg = readCache();
-    if (current && cachedReg && cachedReg.memberId === memberId && cachedReg.endpoint === current.endpoint && Date.now() - cachedReg.at < REFRESH_MS) {
-      return { ok: true };
+    if (current) {
+      const status = await post("POST", { endpoint: current.endpoint }, "/api/push/status");
+      if (status.status === 503) return { ok: false, reason: "unconfigured" };
+      if (status.ok && status.data?.registered === true) {
+        writeCache({ memberId, endpoint: current.endpoint, at: Date.now() });
+        return { ok: true };
+      }
     }
     const cfg = await fetch("/api/push/config", { cache: "no-store" });
     if (cfg.status === 503) return { ok: false, reason: "unconfigured" };
@@ -93,9 +106,6 @@ export async function ensureSubscribed(memberId: string, retried = false): Promi
     sub ??= await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: appKey });
 
     const json = sub.toJSON();
-    const cached = readCache();
-    if (cached && cached.memberId === memberId && cached.endpoint === sub.endpoint && Date.now() - cached.at < REFRESH_MS) return { ok: true };
-
     const res = await post("POST", { endpoint: json.endpoint, keys: { p256dh: json.keys?.p256dh, auth: json.keys?.auth } });
     if (res.status === 409 && !retried) {
       // The server already holds this endpoint with other keys: start over with a fresh subscription.

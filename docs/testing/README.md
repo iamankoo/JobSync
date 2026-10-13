@@ -50,9 +50,9 @@ The login, All Jobs, Add Job and My Applications screens were compared manually 
 
 ## Push notifications
 - `tests/unit/push-payload-sw.test.ts`: wording, recipients, safe click URLs, subscription validation, and the real `public/sw.js` run in a sandbox (push display, click focus/open, unsafe targets).
-- `tests/unit/notification-manager.test.tsx`: default / granted / denied / unsupported states, no automatic prompt, no loop.
+- `tests/unit/notification-gate.test.tsx`: blur/inert gate, 2-second reprompt with fake timers, default / denied / granted / failed registration / unsupported, single timer, cleanup on logout and unmount.
 - `tests/integration/push-notifications.test.ts`: all three members as actor for "added" and "applied", failed writes, retries, delivery failure, expired subscriptions, authorization.
 - `tests/integration/daily-notifications.test.ts`: thresholds 0/3/4/6/7/9/10, per-member counting, midnight and DST boundaries, invalid timestamps, idempotency, concurrent and repeated cron calls, partial failures, missing subscriptions, controlled clock.
 - `tests/live/push.live.test.ts` (`npm run test:live`): the same services against the real Google Sheets API on the disposable test spreadsheet (delivery mocked).
-- `tests/e2e-isolated/notifications.spec.ts`: real Chromium, desktop and mobile: onboarding dialog states, deep link, service worker headers.
+- `tests/e2e-isolated/notifications.spec.ts`: real Chromium, desktop and mobile: blocking gate on every protected page, Not now / denied / Check Again / Retry flows, refresh and logout, deep link, service worker headers (browser Web Push is a scriptable fake there).
 - Not automatable here: real delivery to a Chrome device. Verify manually: sign in on a Chrome device, enable notifications, then add a job / mark Applied from another member and watch for the notification.

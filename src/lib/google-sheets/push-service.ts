@@ -72,6 +72,13 @@ export async function removeSubscription(memberId: MemberId, endpoint: string): 
   });
 }
 
+/** Whether `endpoint` is stored for exactly this member (never reveals another member's subscriptions). */
+export async function isSubscriptionRegistered(memberId: MemberId, endpoint: string): Promise<boolean> {
+  const id = subscriptionIdFor(endpoint);
+  const { items } = await readPushSubscriptionsLocated({ fresh: true });
+  return items.some((i) => i.value.subscriptionId === id && i.value.memberId === memberId && i.value.endpoint === endpoint);
+}
+
 /** Subscriptions of the given members (used for delivery). */
 export async function listSubscriptionsFor(memberIds: readonly MemberId[]): Promise<PushSubscriptionRecord[]> {
   const { items } = await readPushSubscriptionsLocated();

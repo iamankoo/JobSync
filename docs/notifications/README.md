@@ -17,18 +17,21 @@ Night thresholds (exact): 0–3 `Need more efforts, {Name}.` · 4–6 `Good but 
 
 The count is the number of valid `Jobs` rows with `AddedBy` = that member whose `AddedAt` falls on the current **local calendar day** in `APP_TIMEZONE` (each JobID once; rows with an invalid timestamp are ignored; applications, logins and other members' jobs are never counted). A member with 0 jobs still gets the 0-job message.
 
-## Onboarding (browser)
+## Mandatory notification gate (browser)
 
-On the Dashboard, once any follow-up question is out of the way, a JobSync dialog explains the feature with **Enable Notifications** and **Not now**. Chrome's native permission prompt is only ever requested from that button click.
+Every protected page is wrapped by `NotificationGate` (`src/components/notifications/notification-gate.tsx`, mounted in the app shell). Until this browser has **permission granted AND a push subscription that the server confirms is stored for the signed-in member** (`POST /api/push/status`), the whole application is blurred (`filter: blur(18px)`), `inert` (no clicks, focus or screen-reader access) and a JobSync dialog is shown. The state is re-derived from the browser and the server on every full page load, login and refresh; the only local value is an optimistic hint that skips the blur while the server check runs, and a failed check blocks again.
 
-| Permission | Behaviour |
+| State | Behaviour |
 |---|---|
-| `default` | Dialog shown. "Not now"/Escape/✕ dismiss it for the rest of the browser session (no loop). |
-| `granted` | No dialog. The browser is silently (re)registered on every app page (server write at most every 12 h). If registration fails, the dialog reappears in an error state with **Try again**. |
-| `denied` | Dialog explains how to allow notifications in Chrome site settings, with **Check again**. The native prompt is never called again. |
-| No Push API | Dialog says push is unavailable in this browser. |
+| `default` | Blocked. Dialog with **Enable Notifications**, **Not now**, **Log out**. Chrome's native prompt is requested only from the Enable click. |
+| **Not now** / close / Escape | The dialog disappears, the app stays blocked, and the dialog **returns after 2 seconds, repeating** while setup is incomplete. One timer at a time, cleared on unmount/logout. The repetition never calls the browser's permission API. |
+| `denied` | Blocked. Dialog explains Chrome site settings (lock icon → Site settings → Notifications → Allow; Android path too) with **Check Again**, **Close** (comes back in 2 s) and **Log out**. The native prompt is never called again. |
+| granted, registration fails | Blocked. Explains the failure with **Retry** / **Check Again** (re-uses the existing subscription, so no duplicates; the server upserts by endpoint). |
+| granted + registered | Unblocked. |
+| No Push API / service worker | **Not blocked** (it can never be satisfied there): honest message and troubleshooting, with **Continue**. |
+| Push not set up on the server | **Not blocked**, no dialog (VAPID keys or the `PushSubscriptions` tab missing). |
 
-The dialog never blurs or blocks the app permanently. If the member clicked "Not now" they see it again after their next login (new browser session) until they enable notifications.
+The dialog stays accessible: **Log out** and the primary action are real buttons, Escape works, the dialog is a native modal `<dialog>` with ARIA labelling, and the follow-up question (also a modal) takes turns with it. This is a **UI gate, not a security boundary**: page data is still sent to the signed-in member's browser (the session and per-member authorization protect the data itself).
 
 ## Persistence (Google Sheets) — two optional tabs
 
@@ -58,7 +61,7 @@ Verify with `GET /api/sheets/status` (signed in): both tabs show `ok: true`.
 | `CRON_SECRET` | server only, **Sensitive** | bearer secret for `/api/cron/daily-notifications` (and the existing retention endpoint) |
 | `APP_TIMEZONE` | existing | local day/time for the scheduled messages (default `Asia/Kolkata`) |
 
-Generate keys locally (do not paste them anywhere): `npx web-push generate-vapid-keys --json`. Store them with `vercel env add VAPID_PRIVATE_KEY production --sensitive` (value from stdin). Rotating the public key makes every browser resubscribe automatically on its next page load (a subscription made with an old key is detected and replaced).
+Generate keys locally (do not paste them anywhere): `npx web-push generate-vapid-keys --json`. Store them with `vercel env add VAPID_PRIVATE_KEY production --sensitive` (value from stdin). Rotating the public key makes every browser resubscribe on its next page load (the app is blocked until it has (a subscription made with an old key is detected and replaced).
 
 Setting `CRON_SECRET` also lets the bearer token call `/api/cron/retention`, which stays a **dry run** because `RETENTION_CLEANUP_ENABLED` is not set. Production retention cleanup remains disabled and is not scheduled.
 
@@ -98,7 +101,7 @@ No schedule is configured in `vercel.json` until one of these is chosen. Vercel 
 
 ## Troubleshooting
 
-- *No dialog appears*: permission is already granted/blocked, "Not now" was clicked this session, or the push tabs/VAPID keys are missing (`/api/push/config` → 503 keeps the UI quiet).
+- *No dialog appears*: permission is already granted and registered, or the push tabs/VAPID keys are missing (`/api/push/config` → 503 keeps the UI unblocked and quiet), or the browser has no Push API.
 - *Blocked*: Chrome → lock icon → Site settings → Notifications → Allow, then **Check again**.
 - *Nothing arrives*: check `/api/sheets/status`, that `PushSubscriptions` has rows for the other members, that `VAPID_*` are set in Production and redeployed, and the OS notification settings. Logs show `[push] delivered x/y, expired n, failed m` (counts only).
 - *Scheduled message missing*: call the endpoint manually with the bearer token; a `409` means wrong local time, `503` lists which member failed, and `NotificationLog` shows each member's status.

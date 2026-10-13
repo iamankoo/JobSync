@@ -7,7 +7,7 @@ import type { Member } from "@/config/members";
 import { Avatar } from "@/components/ui/avatar";
 import { Logo } from "@/components/ui/logo";
 import { FollowUpGate, type DueFollowUpItem } from "@/components/follow-up/follow-up-gate";
-import { NotificationManager } from "@/components/notifications/notification-manager";
+import { NotificationGate } from "@/components/notifications/notification-gate";
 import { removeThisDevice } from "@/lib/push/browser";
 import { AutoRefresh } from "./auto-refresh";
 import { Sidebar } from "./sidebar";
@@ -73,7 +73,7 @@ export function AppShell({
     <div data-member={member.id} className="min-h-screen bg-navy-950">
       <AutoRefresh />
       <FollowUpGate items={followUps} timeZone={timeZone} />
-      <NotificationManager memberId={member.id} showOnboarding={pathname === "/dashboard" && followUps.length === 0} />
+      <NotificationGate memberId={member.id} promptAllowed={followUps.length === 0} onLogout={logout} logoutBusy={busy}>
       <a href="#main" className="sr-only focus:not-sr-only focus:fixed focus:left-2 focus:top-2 focus:z-50 focus:rounded focus:bg-electric focus:px-3 focus:py-2">
         Skip to content
       </a>
@@ -140,6 +140,7 @@ export function AppShell({
           {children}
         </main>
       </div>
+      </NotificationGate>
     </div>
   );
 }

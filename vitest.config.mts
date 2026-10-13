@@ -15,5 +15,7 @@ export default defineConfig({
     environment: "node",
     include: ["tests/unit/**/*.test.{ts,tsx}", "tests/integration/**/*.test.{ts,tsx}"],
     setupFiles: ["tests/setup.ts"],
+    // Generous: the userEvent-heavy form tests take over a second each and run alongside many other files.
+    testTimeout: 20_000,
   },
 });

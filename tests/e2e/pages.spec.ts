@@ -12,17 +12,6 @@ const MEMBERS = [
   { id: "rishii", name: "Rishii", code: "0003", accent: "rgb(225, 29, 72)", onAccent: "rgb(255, 255, 255)" },
 ];
 
-// The notification onboarding dialog is a modal by design; these specs are not about it, so it is dismissed up front.
-test.beforeEach(async ({ page }) => {
-  await page.addInitScript(() => {
-    try {
-      for (const id of ["anni", "lukky", "rishii"]) sessionStorage.setItem(`jobsync:push-onboarding:${id}`, "1");
-    } catch {
-      /* ignore */
-    }
-  });
-});
-
 async function signIn(page: Page, name: string, code: string) {
   await page.goto("/login");
   await page.getByRole("button", { name }).click();
