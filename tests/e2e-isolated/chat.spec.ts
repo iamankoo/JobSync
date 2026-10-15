@@ -305,9 +305,13 @@ test("video call: local and remote video render, camera toggle, and joining audi
     }
     await anni.page.getByRole("button", { name: "Turn camera off" }).click();
     await expect(anni.page.getByRole("button", { name: "Turn camera on" })).toBeVisible();
-    await anni.page.getByRole("button", { name: "Leave call" }).click();
-    await lukky.page.getByRole("button", { name: "Leave call" }).click();
+    // End Call: only the starter has it, and it ends the call for everyone
+    await expect(lukky.page.getByRole("button", { name: "End call for everyone" })).toHaveCount(0);
+    await anni.page.getByRole("button", { name: "End call for everyone" }).click();
     await expect(anni.page.getByTestId("call-panel")).toHaveCount(0);
+    await expect(lukky.page.getByTestId("call-panel")).toHaveCount(0, { timeout: 45_000 });
+    await expect(lukky.page.getByTestId("call-error")).toContainText("ended it for everyone");
+    await expect(lukky.page.getByTestId("call-banner")).toHaveCount(0);
   } finally {
     await anni.ctx.close();
     await lukky.ctx.close();

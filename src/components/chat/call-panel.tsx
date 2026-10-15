@@ -14,7 +14,7 @@ function Tile({ memberId, stream, local, state, video }: { memberId: MemberId; s
     const el = ref.current;
     if (el && el.srcObject !== stream) el.srcObject = stream;
   }, [stream]);
-  const showVideo = video && !!stream && stream.getVideoTracks().length > 0;
+  const showVideo = (video || !local) && !!stream && stream.getVideoTracks().length > 0;
   return (
     <div className="relative grid aspect-video min-w-0 place-items-center overflow-hidden rounded-xl border border-line bg-navy-950" data-testid={local ? "call-tile-local" : `call-tile-${memberId}`} data-state={state ?? "local"}>
       {/* Remote audio plays through this element too, so it always exists (just hidden for audio-only calls). */}
@@ -109,6 +109,11 @@ export function CallPanel({ me, call }: { me: MemberId; call: UseCall }) {
         <button type="button" onClick={() => void call.leave()} aria-label="Leave call" className="inline-flex h-12 items-center gap-2 rounded-full bg-red-600 px-5 font-semibold text-white hover:bg-red-500">
           <PhoneOff size={20} aria-hidden /> Leave
         </button>
+        {call.isStarter && (
+          <button type="button" onClick={() => void call.endForAll()} aria-label="End call for everyone" className="inline-flex h-12 items-center gap-2 rounded-full border border-red-500/70 px-5 font-semibold text-red-200 hover:bg-red-500/20">
+            <X size={20} aria-hidden /> End call
+          </button>
+        )}
       </div>
     </section>
   );

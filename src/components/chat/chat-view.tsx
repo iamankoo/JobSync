@@ -106,6 +106,7 @@ export function ChatView({ me }: { me: MemberId }) {
       </div>
 
       {call.error && <CallErrorNotice error={call.error} onDismiss={call.clearError} />}
+      {!call.error && call.endedNotice && !inCall && <CallErrorNotice error={{ title: "Call ended", message: call.endedNotice }} onDismiss={call.clearError} />}
       {inCall ? (
         <CallPanel me={me} call={call} />
       ) : (

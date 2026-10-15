@@ -53,6 +53,7 @@ const DOMAIN_STATUS: Record<DomainErrorCode, number> = {
   chat_file_not_found: 404,
   call_in_progress: 409,
   call_not_active: 409,
+  not_call_starter: 403,
 };
 
 const SHEETS_STATUS: Record<SheetsErrorCode, number> = {

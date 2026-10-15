@@ -20,6 +20,41 @@ const ICE_SERVERS: RTCIceServer[] = [{ urls: ["stun:stun.l.google.com:19302", "s
 const GATHER_TIMEOUT_MS = 3_500;
 const PING_MS = 15_000;
 const CONNECT_WARN_MS = 20_000;
+/** Video only: a modest size/rate keeps the offer small and the stream steady on phone and home connections. */
+const VIDEO_CONSTRAINTS: MediaTrackConstraints = { facingMode: "user", width: { ideal: 640, max: 1280 }, height: { ideal: 360, max: 720 }, frameRate: { ideal: 24, max: 30 } };
+const VIDEO_MAX_BITRATE = 800_000;
+/** Video only: if the first attempt has not connected after this long, the offering side sends a fresh offer once. */
+const VIDEO_RETRY_MS = 14_000;
+
+/**
+ * Video only: offer just VP8 and H.264 (every browser decodes one of them), without the extra codecs (VP9 profile
+ * mismatches are a known cause of black video between different browsers) and with a much shorter description.
+ */
+function preferCommonVideoCodecs(pc: RTCPeerConnection): void {
+  try {
+    const caps = RTCRtpReceiver.getCapabilities?.("video")?.codecs;
+    if (!caps) return;
+    const keep = caps.filter((c) => /^video\/(VP8|H264)$/i.test(c.mimeType) || /^video\/(rtx)$/i.test(c.mimeType));
+    if (!keep.some((c) => /VP8|H264/i.test(c.mimeType))) return;
+    for (const t of pc.getTransceivers()) if (t.receiver.track.kind === "video") t.setCodecPreferences?.(keep);
+  } catch {
+    /* unsupported: the browser's defaults still work */
+  }
+}
+
+function capVideoBitrate(pc: RTCPeerConnection): void {
+  for (const s of pc.getSenders()) {
+    if (s.track?.kind !== "video") continue;
+    try {
+      const p = s.getParameters();
+      p.encodings = p.encodings?.length ? p.encodings : [{}];
+      p.encodings[0].maxBitrate = VIDEO_MAX_BITRATE;
+      void s.setParameters(p).catch(() => undefined);
+    } catch {
+      /* ignore */
+    }
+  }
+}
 
 export type CallPhase = "idle" | "starting" | "joining" | "active";
 export type PeerState = "connecting" | "connected" | "failed";
@@ -48,6 +83,12 @@ export interface UseCall {
   start: (media: "audio" | "video") => Promise<void>;
   join: (call: ActiveCallInfo, withVideo: boolean) => Promise<void>;
   leave: () => Promise<void>;
+  /** True when this member started the live call (and so may end it for everyone). */
+  isStarter: boolean;
+  /** Starter only: ends the call for every participant. */
+  endForAll: () => Promise<void>;
+  /** Set when the call was ended by its starter while this member was in it. */
+  endedNotice: string | null;
   toggleMic: () => void;
   toggleCam: () => void;
 }
@@ -90,7 +131,7 @@ function waitForIce(pc: RTCPeerConnection): Promise<void> {
   });
 }
 
-export function useCall(me: MemberId, chat: Pick<UseChat, "setSignalHandler" | "setInCall" | "refresh">): UseCall {
+export function useCall(me: MemberId, chat: Pick<UseChat, "setSignalHandler" | "setInCall" | "refresh" | "activeCall" | "pollTick">): UseCall {
   const [phase, setPhase] = useState<CallPhase>("idle");
   const [media, setMedia] = useState<"audio" | "video">("audio");
   const [callId, setCallId] = useState<string | null>(null);
@@ -99,6 +140,10 @@ export function useCall(me: MemberId, chat: Pick<UseChat, "setSignalHandler" | "
   const [peers, setPeers] = useState<Record<string, Peer>>({});
   const [micOn, setMicOn] = useState(true);
   const [camOn, setCamOn] = useState(true);
+  const [isStarter, setIsStarter] = useState(false);
+  const [endedNotice, setEndedNotice] = useState<string | null>(null);
+  const nullPolls = useRef(0);
+  const activeSince = useRef(0);
 
   const local = useRef<MediaStream | null>(null);
   const pcs = useRef(new Map<MemberId, RTCPeerConnection>());
@@ -152,7 +197,17 @@ export function useCall(me: MemberId, chat: Pick<UseChat, "setSignalHandler" | "
       pcs.current.set(remote, pc);
       setPeer(remote, { state: "connecting", stream: null });
       local.current?.getTracks().forEach((t) => pc.addTrack(t, local.current!));
-      pc.ontrack = (e) => setPeer(remote, { stream: e.streams[0] ?? new MediaStream([e.track]) });
+      if ((local.current?.getVideoTracks().length ?? 0) > 0) {
+        preferCommonVideoCodecs(pc);
+        capVideoBitrate(pc);
+      }
+      pc.ontrack = (e) => {
+        const stream = e.streams[0] ?? new MediaStream([e.track]);
+        setPeer(remote, { stream });
+        // A video track often unmutes (first frames) after the stream is already attached: re-render when it does.
+        e.track.onunmute = () => setPeer(remote, { stream });
+        stream.onaddtrack = () => setPeer(remote, { stream });
+      };
       const warn = setTimeout(() => {
         if (pcs.current.get(remote) === pc && pc.connectionState !== "connected") setPeer(remote, { state: "failed" });
       }, CONNECT_WARN_MS + GATHER_TIMEOUT_MS);
@@ -170,17 +225,28 @@ export function useCall(me: MemberId, chat: Pick<UseChat, "setSignalHandler" | "
     [closePeer, setPeer],
   );
 
+  const retryOffer = useRef<((remote: MemberId, retried?: boolean) => Promise<void>) | null>(null);
   const sendOffer = useCallback(
-    async (remote: MemberId) => {
+    async (remote: MemberId, retried = false): Promise<void> => {
       if (!call.current) return;
       const pc = newPeer(remote);
       await pc.setLocalDescription(await pc.createOffer());
       await waitForIce(pc);
       if (!call.current || pcs.current.get(remote) !== pc || !pc.localDescription) return;
       await post({ action: "offer", callId: call.current.id, to: remote, payload: JSON.stringify(pc.localDescription) });
+      // Video calls only: one automatic fresh attempt if this one has not connected.
+      if ((local.current?.getVideoTracks().length ?? 0) > 0 && !retried) {
+        setTimeout(() => {
+          if (call.current && pcs.current.get(remote) === pc && pc.connectionState !== "connected") void retryOffer.current?.(remote, true);
+        }, VIDEO_RETRY_MS);
+      }
     },
     [newPeer],
   );
+
+  useEffect(() => {
+    retryOffer.current = sendOffer;
+  }, [sendOffer]);
 
   const answerOffer = useCallback(
     async (remote: MemberId, payload: string) => {
@@ -235,7 +301,7 @@ export function useCall(me: MemberId, chat: Pick<UseChat, "setSignalHandler" | "
       let stream: MediaStream;
       try {
         if (!navigator.mediaDevices?.getUserMedia) throw Object.assign(new Error("unsupported"), { name: "Unsupported" });
-        stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true }, video: wantVideo ? { facingMode: "user", width: { ideal: 640 }, height: { ideal: 480 } } : false });
+        stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true }, video: wantVideo ? VIDEO_CONSTRAINTS : false });
       } catch (err) {
         setError(describeMediaError(err, wantVideo));
         setPhase("idle");
@@ -269,13 +335,17 @@ export function useCall(me: MemberId, chat: Pick<UseChat, "setSignalHandler" | "
         return;
       }
       call.current = { id: info.callId, at: res.data.at };
+      setIsStarter(info.startedBy === me);
+      setEndedNotice(null);
+      nullPolls.current = 0;
+      activeSince.current = Date.now();
       setCallId(info.callId);
       setPhase("active");
       chat.setInCall(true);
       pingTimer.current = setInterval(() => void post({ action: "ping", callId: info.callId }), PING_MS);
       chat.refresh();
     },
-    [chat, teardown],
+    [chat, teardown, me],
   );
 
   const start = useCallback(
@@ -298,6 +368,34 @@ export function useCall(me: MemberId, chat: Pick<UseChat, "setSignalHandler" | "
     if (id) await post({ action: "leave", callId: id });
     chat.refresh();
   }, [teardown, chat]);
+
+  const endForAll = useCallback(async () => {
+    const id = call.current?.id;
+    teardown();
+    if (id) await post({ action: "end", callId: id });
+    chat.refresh();
+  }, [teardown, chat]);
+
+  // The starter ended the call: the live call disappears from the server's view while this member is still in it.
+  // (Two consecutive empty polls, and not within the first seconds, so a stale read cannot drop anyone.)
+  const live = chat.activeCall;
+  const tick = chat.pollTick;
+  const teardownRef = useRef(teardown);
+  useEffect(() => {
+    teardownRef.current = teardown;
+  });
+  useEffect(() => {
+    if (phase !== "active") return;
+    if (live) {
+      nullPolls.current = 0;
+      return;
+    }
+    nullPolls.current += 1;
+    if (nullPolls.current >= 2 && Date.now() - activeSince.current > 8_000) {
+      setEndedNotice("The person who started the call ended it for everyone.");
+      teardownRef.current();
+    }
+  }, [live, phase, tick]);
 
   // Closing or navigating away ends this member's side of the call (best effort; the server also expires silent members).
   useEffect(() => {
@@ -336,8 +434,11 @@ export function useCall(me: MemberId, chat: Pick<UseChat, "setSignalHandler" | "
   }, []);
 
   return {
-    phase, media, callId, error, clearError: () => setError(null), localStream,
+    phase, media, callId, error, clearError: () => {
+      setError(null);
+      setEndedNotice(null);
+    }, localStream,
     peers: MEMBER_IDS.filter((m) => m !== me && peers[m]).map((m) => peers[m]),
-    micOn, camOn, start, join, leave, toggleMic, toggleCam,
+    micOn, camOn, start, join, leave, isStarter, endForAll, endedNotice, toggleMic, toggleCam,
   };
 }

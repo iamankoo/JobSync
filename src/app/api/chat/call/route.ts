@@ -9,7 +9,7 @@ import { ID_PATTERN } from "@/lib/validation/applications";
 import { notifyCallStarted } from "@/lib/push/notify";
 
 const callSchema = z.strictObject({
-  action: z.enum(["start", "join", "offer", "answer", "leave", "ping"]),
+  action: z.enum(["start", "join", "offer", "answer", "leave", "ping", "end"]),
   callId: z.string().regex(ID_PATTERN).optional(),
   to: z.enum(MEMBER_IDS).optional(),
   media: z.enum(["audio", "video"]).optional(),

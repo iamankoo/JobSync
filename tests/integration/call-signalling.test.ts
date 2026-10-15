@@ -117,6 +117,23 @@ describe("call signalling", () => {
     expect((await act("rishii", { action: "start", media: "audio" })).status).toBe(201);
   });
 
+  it("only the member who started the call can end it for everyone; it then disappears for all and a new call can start", async () => {
+    const { body } = await act("anni", { action: "start", media: "video" });
+    const callId = body.data.call.callId;
+    await act("lukky", { action: "join", callId });
+    await act("rishii", { action: "join", callId });
+    for (const m of ["lukky", "rishii"] as MemberId[]) {
+      const denied = await act(m, { action: "end", callId });
+      expect(denied.status).toBe(403);
+      expect(denied.body.error.code).toBe("not_call_starter");
+    }
+    expect((await poll("lukky")).call.active?.participants.sort()).toEqual(["anni", "lukky", "rishii"]);
+    expect((await act("anni", { action: "end", callId })).status).toBe(200);
+    for (const m of ["anni", "lukky", "rishii"] as MemberId[]) expect((await poll(m)).call.active, m).toBeNull();
+    expect((await act("anni", { action: "end", callId })).status).toBe(409); // already over
+    expect((await act("lukky", { action: "start", media: "audio" })).status).toBe(201);
+  });
+
   it("a call whose participants stopped pinging (closed tab, lost network) is treated as over", () => {
     const t0 = Date.parse("2026-10-15T10:00:00.000Z");
     const sig = (type: CallSignal["type"], from: MemberId, at: number): CallSignal => ({ signalId: `sig_${type}${from}${at}`, callId: "call_1", from, type, payload: type === "start" ? '{"media":"audio"}' : "", createdAt: new Date(t0 + at).toISOString() });

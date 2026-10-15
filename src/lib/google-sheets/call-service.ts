@@ -74,7 +74,7 @@ export async function getCallState(memberId: MemberId, since: string | null, now
 }
 
 export interface CallAction {
-  action: "start" | "join" | "offer" | "answer" | "leave" | "ping";
+  action: "start" | "join" | "offer" | "answer" | "leave" | "ping" | "end";
   callId?: string;
   to?: MemberId;
   media?: CallMedia;
@@ -119,6 +119,11 @@ export async function applyCallAction(memberId: MemberId, input: CallAction, now
         if (!input.to || input.to === memberId) throw new DomainError("validation_failed", "A target member is required.");
         if (!input.payload) throw new DomainError("validation_failed", "A session description is required.");
         await push(active.callId, input.action, input.payload, input.to);
+        break;
+      case "end":
+        // Ends the call for everyone; only the member who started it may do this.
+        if (active.startedBy !== memberId) throw new DomainError("not_call_starter", "Only the member who started the call can end it for everyone.");
+        await push(active.callId, "end");
         break;
       case "leave": {
         await push(active.callId, "leave");

@@ -22,6 +22,8 @@ export interface UseChat {
   /** Row of the last message this member had read when the chat was opened (for the "new messages" divider). */
   openedReadRow: number;
   activeCall: ActiveCallInfo | null;
+  /** Increments on every poll while this member is in a call (so the call hook can count polls). */
+  pollTick: number;
   callsAvailable: boolean;
   sendText: (text: string) => Promise<boolean>;
   retry: (localId: string) => void;
@@ -43,6 +45,7 @@ export function useChat(me: MemberId): UseChat {
   const [openedReadRow, setOpenedReadRow] = useState(0);
   const [activeCall, setActiveCall] = useState<ActiveCallInfo | null>(null);
   const [callsAvailable, setCallsAvailable] = useState(true);
+  const [pollTick, setPollTick] = useState(0);
 
   const cursor = useRef(0);
   const signalCursorMs = useRef(0);
@@ -112,6 +115,7 @@ export function useChat(me: MemberId): UseChat {
         }
         setCallsAvailable(d.callsAvailable);
         setActiveCall(d.call.active);
+        if (inCall.current) setPollTick((t) => t + 1);
         if (d.call.signals.length) {
           const fresh = d.call.signals.filter((s) => !seenSignals.current.has(s.signalId));
           for (const s of fresh) seenSignals.current.add(s.signalId);
@@ -208,5 +212,5 @@ export function useChat(me: MemberId): UseChat {
     onSignals.current = fn;
   }, []);
 
-  return { status, statusMessage, messages, openedReadRow, activeCall, callsAvailable, sendText, retry, uploadFile, refresh, setSignalHandler, setInCall };
+  return { status, statusMessage, messages, openedReadRow, activeCall, pollTick, callsAvailable, sendText, retry, uploadFile, refresh, setSignalHandler, setInCall };
 }
