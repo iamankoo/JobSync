@@ -75,6 +75,62 @@ test("every member's message reaches the other two without a refresh, with sende
   }
 });
 
+test("seen-by: a viewer's small photo appears under the message once they have seen it, and moves on with newer messages", async ({ browser }, info) => {
+  test.setTimeout(120_000);
+  const anni = await join(browser, info, "Anni");
+  const lukky = await join(browser, info, "Lukky");
+  try {
+    await say(anni.page, "Did you see this?");
+    // Lukky has the chat open, so it counts as seen: his photo appears under Anni's message (for Anni)
+    const mine = bubble(anni.page, "Did you see this?");
+    await expect(mine.getByTestId("seen-by").locator('[data-viewer="lukky"]')).toBeVisible({ timeout: 25_000 });
+    await expect(mine.getByTestId("seen-by")).toHaveAttribute("aria-label", "Seen by Lukky");
+    expect(await mine.getByTestId("seen-by").locator('[data-viewer="anni"]').count()).toBe(0); // never her own photo
+    // a newer message from Lukky seen by Anni: her photo goes under it, and Lukky's stays under hers
+    await say(lukky.page, "Yes, got it");
+    await expect(bubble(lukky.page, "Yes, got it").getByTestId("seen-by").locator('[data-viewer="anni"]')).toBeVisible({ timeout: 25_000 });
+  } finally {
+    await anni.ctx.close();
+    await lukky.ctx.close();
+  }
+});
+
+test("seen-by with two viewers: both photos, each at the LAST message that member saw (a member who stops reading stays behind)", async ({ browser }, info) => {
+  test.setTimeout(150_000);
+  const anni = await join(browser, info, "Anni");
+  const lukky = await join(browser, info, "Lukky");
+  const rishii = await join(browser, info, "Rishii");
+  try {
+    await say(anni.page, "First message");
+    const first = bubble(anni.page, "First message").getByTestId("seen-by");
+    await expect(first.locator('[data-viewer="lukky"]')).toBeVisible({ timeout: 25_000 });
+    await expect(first.locator('[data-viewer="rishii"]')).toBeVisible({ timeout: 25_000 });
+    await expect(first).toHaveAttribute("aria-label", /Seen by .* and .*/);
+    // Rishii leaves the chat; Anni sends two more messages in a row that only Lukky sees
+    await goViaNav(rishii.page, "Dashboard", "/dashboard");
+    await say(anni.page, "Second message");
+    await say(anni.page, "Third message");
+    const third = bubble(anni.page, "Third message").getByTestId("seen-by");
+    await expect(third.locator('[data-viewer="lukky"]')).toBeVisible({ timeout: 25_000 });
+    await expect(third.locator('[data-viewer="rishii"]')).toHaveCount(0);
+    // Lukky's photo moved off the first message; Rishii's stays where he last saw
+    await expect(bubble(anni.page, "First message").getByTestId("seen-by").locator('[data-viewer="lukky"]')).toHaveCount(0);
+    await expect(bubble(anni.page, "First message").getByTestId("seen-by").locator('[data-viewer="rishii"]')).toBeVisible();
+    await expect(bubble(anni.page, "Second message").getByTestId("seen-by")).toHaveCount(0);
+    // the time is inside the bubble itself, and consecutive messages from one person touch (no gap)
+    const second = bubble(anni.page, "Second message");
+    await expect(second.locator("p time")).toHaveText(/\d{1,2}:\d{2}/);
+    const gap = await anni.page.evaluate(() => {
+      const els = Array.from(document.querySelectorAll('[data-testid="chat-message"]')).filter((e) => e.textContent?.includes("Second message") || e.textContent?.includes("Third message"));
+      const b = els.map((e) => (e.querySelector("[data-bubble]") ?? e).getBoundingClientRect());
+      return Math.round(b[1].top - b[0].bottom);
+    });
+    expect(gap).toBeLessThanOrEqual(8);
+  } finally {
+    await Promise.all([anni, lukky, rishii].map((x) => x.ctx.close()));
+  }
+});
+
 test("auto-scrolls to the newest message, keeps the reader's place when scrolled up, and offers a jump button", async ({ browser, request }, info) => {
   test.setTimeout(120_000);
   const rows = Array.from({ length: 60 }, (_, i) => [`msg_seed${i}`, i % 2 ? "lukky" : "rishii", "text", `Seed message number ${i + 1}`, "", "", "", "", "", new Date(Date.now() - (70 - i) * 60_000).toISOString()]);

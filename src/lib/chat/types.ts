@@ -19,6 +19,7 @@ export interface PollData {
   messages: (ChatMessage & { seq: number })[];
   cursor: number;
   lastReadRow: number;
+  readers: Partial<Record<MemberId, number>>;
   recentCall: boolean;
   callsAvailable: boolean;
   call: { active: ActiveCallInfo | null; signals: CallSignal[]; cursor: string };

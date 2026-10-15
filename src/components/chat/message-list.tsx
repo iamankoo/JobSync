@@ -86,16 +86,30 @@ interface Props {
   messages: ClientMessage[];
   /** Messages with a row above this and not sent by me were new when the chat was opened. */
   openedReadRow: number;
+  /** Each member's read position, to show who has seen what. */
+  readers: Partial<Record<MemberId, number>>;
   onRetry: (localId: string) => void;
 }
 
-export function MessageList({ me, messages, openedReadRow, onRetry }: Props) {
+export function MessageList({ me, messages, openedReadRow, readers, onRetry }: Props) {
   const box = useRef<HTMLDivElement>(null);
   const stuck = useRef(true);
   const prevCount = useRef(0);
   const [away, setAway] = useState(0);
 
   const firstUnreadSeq = useMemo(() => messages.find((m) => !m.local && m.seq > openedReadRow && m.memberId !== me)?.seq ?? null, [messages, me, openedReadRow]);
+
+  // "Seen by": a member's avatar sits under the latest message from someone else that they have read (like LinkedIn).
+  const seenBy = useMemo(() => {
+    const out = new Map<string, MemberId[]>();
+    for (const viewer of Object.keys(readers) as MemberId[]) {
+      if (viewer === me) continue;
+      const upTo = readers[viewer] ?? 0;
+      const last = [...messages].reverse().find((m) => !m.local && m.kind !== "call" && m.memberId !== viewer && m.seq <= upTo);
+      if (last) out.set(last.messageId, [...(out.get(last.messageId) ?? []), viewer]);
+    }
+    return out;
+  }, [messages, readers, me]);
 
   function scrollToEnd(smooth = false) {
     const el = box.current;
@@ -168,7 +182,7 @@ export function MessageList({ me, messages, openedReadRow, onRetry }: Props) {
                     <Phone size={13} aria-hidden /> {m.text} · {timeOf(m.createdAt)}
                   </p>
                 ) : (
-                  <div className={`flex items-end gap-2 ${mine ? "flex-row-reverse" : ""} ${grouped ? "mt-0.5" : "mt-2"}`} data-testid="chat-message" data-sender={m.memberId}>
+                  <div className={`flex items-end gap-2 ${mine ? "flex-row-reverse" : ""} ${grouped ? "mt-px" : "mt-2.5"}`} data-testid="chat-message" data-sender={m.memberId}>
                     <span className={`w-8 shrink-0 ${grouped ? "invisible" : ""}`} aria-hidden>
                       {member && !grouped && <Avatar member={member} size={32} />}
                     </span>
@@ -179,33 +193,53 @@ export function MessageList({ me, messages, openedReadRow, onRetry }: Props) {
                         </p>
                       )}
                       <div
-                        className={`min-w-0 max-w-full rounded-2xl px-3.5 py-2 text-[0.95rem] leading-relaxed ${
-                          mine ? "rounded-br-md bg-accent-strong text-on-accent" : "rounded-bl-md border border-line bg-navy-800 text-ink"
+                        data-bubble
+                        className={`min-w-0 max-w-full rounded-[1.15rem] px-4 pb-2 pt-2.5 text-base leading-snug shadow-sm ${
+                          mine
+                            ? `bg-accent-strong text-on-accent ${grouped ? "rounded-tr-md" : ""} rounded-br-md`
+                            : `border border-line bg-navy-800 text-ink ${grouped ? "rounded-tl-md" : ""} rounded-bl-md`
                         } ${m.local === "failed" ? "opacity-70 ring-1 ring-red-400" : ""}`}
                       >
                         {m.fileId && <Attachment m={m} mine={mine} />}
-                        {m.text && (
+                        {m.text ? (
                           <p className={`whitespace-pre-wrap break-words [overflow-wrap:anywhere] ${m.fileId ? "mt-2" : ""}`}>
                             <Linkified text={m.text} />
+                            {/* The time lives inside the bubble, floated to the bottom-right of the last line (like WhatsApp). */}
+                            <span className="float-right ml-3 mt-2 translate-y-1 select-none text-[0.68rem] font-medium leading-none tabular-nums opacity-70">
+                              <time dateTime={m.createdAt}>{timeOf(m.createdAt)}</time>
+                            </span>
+                          </p>
+                        ) : (
+                          <p className="mt-1 text-right text-[0.68rem] font-medium leading-none tabular-nums opacity-70">
+                            <time dateTime={m.createdAt}>{timeOf(m.createdAt)}</time>
                           </p>
                         )}
                       </div>
-                      <p className="mt-0.5 flex items-center gap-1.5 px-1 text-[0.7rem] text-muted">
-                        {m.local === "sending" ? (
-                          <>
-                            <Loader2 size={11} className="animate-spin" aria-hidden /> Sending…
-                          </>
-                        ) : m.local === "failed" ? (
-                          <>
-                            <AlertCircle size={11} className="text-red-300" aria-hidden /> Not sent
-                            <button type="button" onClick={() => onRetry(m.messageId)} className="inline-flex items-center gap-1 rounded px-1 font-semibold text-ink underline">
-                              <RotateCw size={11} aria-hidden /> Retry
-                            </button>
-                          </>
-                        ) : (
-                          <time dateTime={m.createdAt}>{timeOf(m.createdAt)}</time>
-                        )}
-                      </p>
+                      {m.local === "sending" && (
+                        <p className="mt-0.5 flex items-center gap-1.5 px-1 text-[0.7rem] text-muted">
+                          <Loader2 size={11} className="animate-spin" aria-hidden /> Sending…
+                        </p>
+                      )}
+                      {m.local === "failed" && (
+                        <p className="mt-0.5 flex items-center gap-1.5 px-1 text-[0.7rem] text-muted">
+                          <AlertCircle size={11} className="text-red-300" aria-hidden /> Not sent
+                          <button type="button" onClick={() => onRetry(m.messageId)} className="inline-flex items-center gap-1 rounded px-1 font-semibold text-ink underline">
+                            <RotateCw size={11} aria-hidden /> Retry
+                          </button>
+                        </p>
+                      )}
+                      {(seenBy.get(m.messageId) ?? []).length > 0 && (
+                        <ul className="mt-1 flex items-center -space-x-1 px-1" data-testid="seen-by" aria-label={`Seen by ${(seenBy.get(m.messageId) ?? []).map((v) => getMember(v)?.name).join(" and ")}`}>
+                          {(seenBy.get(m.messageId) ?? []).map((v) => {
+                            const viewer = getMember(v);
+                            return viewer ? (
+                              <li key={v} data-viewer={v} title={`Seen by ${viewer.name}`} className="list-none rounded-full ring-2 ring-navy-900">
+                                <Avatar member={viewer} size={18} />
+                              </li>
+                            ) : null;
+                          })}
+                        </ul>
+                      )}
                     </div>
                   </div>
                 )}

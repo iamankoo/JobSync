@@ -27,6 +27,8 @@ export interface MessagePage {
   cursor: number;
   /** The row the caller has read up to. */
   lastReadRow: number;
+  /** How far each member has read (spreadsheet row), for the seen-by avatars. */
+  readers: Partial<Record<MemberId, number>>;
   /** A call was announced in the last few hours, so the signalling log is worth reading. */
   recentCall: boolean;
 }
@@ -45,7 +47,8 @@ export async function listMessages(memberId: MemberId, afterRow: number, options
   const cursor = picked.length ? picked[picked.length - 1].seq : Math.max(afterRow, all.length ? all[all.length - 1].seq : 0);
   const mine = reads.items.find((r) => r.value.memberId === memberId);
   const recentCall = all.some((m) => m.kind === "call" && now.getTime() - Date.parse(m.createdAt) < CALL_WINDOW_MS);
-  return { messages: picked, cursor, lastReadRow: mine?.value.lastReadRow ?? 0, recentCall };
+  const readers = Object.fromEntries(reads.items.map((r) => [r.value.memberId, r.value.lastReadRow])) as Partial<Record<MemberId, number>>;
+  return { messages: picked, cursor, lastReadRow: mine?.value.lastReadRow ?? 0, readers, recentCall };
 }
 
 export async function sendTextMessage(memberId: MemberId, text: string, now: Date = new Date()): Promise<ChatMessage> {

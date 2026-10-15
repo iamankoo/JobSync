@@ -97,7 +97,7 @@ export function AppShell({
       )}
 
       <div className="lg:pl-72">
-        <header className="sticky top-0 z-20 flex flex-wrap items-center gap-3 border-b border-line bg-navy-950/90 px-4 py-3 backdrop-blur sm:px-6">
+        <header className={`sticky top-0 z-20 flex flex-wrap items-center gap-3 border-b border-line bg-navy-950/90 px-4 py-3 backdrop-blur sm:px-6 ${pathname === "/group-chat" ? "max-lg:hidden" : ""}`}>
           <div className="flex items-center gap-3 lg:hidden">
             <button className="relative rounded-lg border border-line p-2" aria-label={unread > 0 && pathname !== "/group-chat" ? `Open menu (${unread} unread chat messages)` : "Open menu"} aria-expanded={open} onClick={() => setOpen(true)}>
               <Menu size={20} aria-hidden />
@@ -139,7 +139,7 @@ export function AppShell({
             </div>
           </div>
         </header>
-        <main id="main" key={pathname} className="p-4 sm:p-6">
+        <main id="main" key={pathname} className={pathname === "/group-chat" ? "p-0 lg:p-6" : "p-4 sm:p-6"}>
           {children}
         </main>
       </div>

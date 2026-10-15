@@ -185,6 +185,15 @@ describe("group chat: unread state", () => {
     expect(sheets.dataRows("ChatReads")).toHaveLength(1);
   });
 
+  it("every member's read position is shared with the others so 'seen by' can be shown", async () => {
+    await say("anni", "hello");
+    const page = await poll("lukky");
+    as("lukky");
+    await readRoute(json("/api/chat/read", "POST", { upToRow: page.cursor }));
+    const forAnni = (await poll("anni")) as unknown as { readers: Record<string, number> };
+    expect(forAnni.readers).toEqual({ lukky: page.cursor });
+  });
+
   it("a member's own messages are never unread for them", async () => {
     await say("rishii", "mine");
     expect(await unread("rishii")).toBe(0);

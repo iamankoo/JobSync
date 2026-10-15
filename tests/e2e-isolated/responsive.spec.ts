@@ -62,6 +62,8 @@ test("every page: no overflow, readable layout, accessible, account pinned top-r
     expect(await horizontalOverflow(page), `${p.label}: horizontal page overflow`).toBeLessThanOrEqual(0);
     expect(await elementsOutsideViewport(page), `${p.label}: elements sticking out`).toEqual([]);
 
+    // (On phones and tablets the Group Chat is full screen and hides the app header; every other page keeps it.)
+    if (!(p.label === "Group Chat" && vp.width < 1024)) {
     // header: search usable; Log out sits just left of the account, which is the right-most item
     const header = page.locator("header");
     const search = header.getByRole("searchbox");
@@ -85,6 +87,7 @@ test("every page: no overflow, readable layout, accessible, account pinned top-r
     const nav = page.getByRole("navigation", { name: "Main" });
     await expect(nav.getByRole("link")).toHaveText(["Dashboard", "All Jobs", "Add Job", "My Applications", "Analytics", "Connections", "Group Chat"]);
     if (await menu.isVisible()) await page.getByRole("button", { name: "Close menu" }).last().click();
+    }
 
     expect((await new AxeBuilder({ page }).analyze()).violations, `${p.label}: accessibility`).toEqual([]);
     await shot(page, info.project.name, p.label.replace(/\s/g, "-").toLowerCase());
