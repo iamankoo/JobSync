@@ -68,10 +68,10 @@ Setting `CRON_SECRET` also lets the bearer token call `/api/cron/retention`, whi
 ## Security
 
 - Subscription routes use the existing session + same-origin + active-member checks. The body is strict (a `memberId` is rejected). Registration always stores the session member.
-- An endpoint already registered with different keys is refused (409): nobody can take over another member's subscription. The same endpoint + keys moves to the new member when someone else signs in on that browser.
+- An endpoint already registered with different keys is refused (409): nobody can take over another member's subscription. One browser can be registered for several members at once (one row per member, same endpoint and keys): signing in as someone else on it ADDS a registration and never takes the device away from the previous member. A job message goes to such a browser once; the scheduled 10 AM / 10 PM messages are sent per member, each with that member's own name.
 - The server POSTs to subscription endpoints, so only real push hosts are accepted (`fcm.googleapis.com`, Mozilla autopush, `*.push.apple.com`, `*.notify.windows.com`; https, no port or credentials) — no SSRF.
 - Click targets: the server only emits `/all-jobs?job=<JobID>`, `/add-job` or `/dashboard`; `public/sw.js` re-validates (same origin + allow-listed path) and falls back to `/dashboard`.
-- **Logout** removes only *that browser's* subscription (best effort) so the next person on a shared browser doesn't receive the previous member's notifications; the member's other devices are untouched and the browser permission is kept, so the next login re-registers silently. If a session simply expires on a shared browser, the next login by anyone re-binds that browser to them.
+- **Logout** removes only the logging-out member's registration of *that browser* (best effort) so the next person on a shared browser doesn't receive the previous member's notifications; the member's other devices are untouched and the browser permission is kept, so the next login re-registers silently. If a session simply expires on a shared browser, the next login by anyone re-binds that browser to them.
 - The cron endpoint requires `Authorization: Bearer $CRON_SECRET` (constant-time comparison), is `no-store`, and never logs the secret, endpoints or message text. Scheduled runs write only `PushSubscriptions` (expired devices) and `NotificationLog`; they never modify `Jobs` or `Applications`.
 
 ## Scheduling (10:00 AM and 10:00 PM) — read this
@@ -105,3 +105,18 @@ No schedule is configured in `vercel.json` until one of these is chosen. Vercel 
 - *Blocked*: Chrome → lock icon → Site settings → Notifications → Allow, then **Check again**.
 - *Nothing arrives*: check `/api/sheets/status`, that `PushSubscriptions` has rows for the other members, that `VAPID_*` are set in Production and redeployed, and the OS notification settings. Logs show `[push] delivered x/y, expired n, failed m` (counts only).
 - *Scheduled message missing*: call the endpoint manually with the bearer token; a `409` means wrong local time, `503` lists which member failed, and `NotificationLog` shows each member's status.
+
+
+## Multi-member browsers (fix for "Anni/Rishii actions did not notify")
+
+Root cause: a browser subscription could belong to only one member, so signing in as another member on the same browser silently re-assigned it, and the previous member stopped receiving notifications. Production data showed the pattern (one person's browser registered under whichever member signed in last). Server-side delivery itself was healthy: every stored production subscription was accepted by the push service (HTTP 201). Now `PushSubscriptions` may hold the same endpoint once per member; deliveries to the other two members are de-duplicated per browser and the actor's own registration is never used. Each send also logs `[push] <event> by <actor>: devices per recipient {...}, delivered x/y` (counts only).
+
+## Scheduler (cron-job.org) setup and verification
+
+Application endpoints (verified: 401 without/with a wrong secret, 400 for a bad slot, 409 outside the window, 200 inside it with each member sent once):
+
+- `GET https://jobsbyarillabs.vercel.app/api/cron/daily-notifications?slot=morning` at **10:00** `Asia/Kolkata`
+- `GET https://jobsbyarillabs.vercel.app/api/cron/daily-notifications?slot=night` at **22:00** `Asia/Kolkata`
+- Header `Authorization: Bearer <CRON_SECRET>`; success = any 2xx; enable retry on failure (a retry never double-sends).
+
+cron-job.org's own delivery cannot be verified from this repository. The reliable proof is the ledger: after a scheduled time has passed, `NotificationLog` must contain one `sent` row per member for that slot and date. An EMPTY ledger after a scheduled time means the scheduler never reached the app in its window (typical causes: job not created, wrong timezone such as UTC, or a wrong/missing header).

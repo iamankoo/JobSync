@@ -23,27 +23,28 @@ export interface SubscribeInput {
 }
 
 /**
- * Registers (or refreshes) a device subscription for `memberId` (from the session). Idempotent per endpoint.
+ * Registers (or refreshes) a device subscription for `memberId` (from the session). Idempotent per endpoint+member.
  * An endpoint already registered with DIFFERENT keys is refused: only the browser that holds the keys can
  * legitimately re-register it, so this stops one member from taking over another member's subscription.
- * The same endpoint+keys under another member (a shared browser, new login) moves to the current member.
+ *
+ * One browser can serve several members (everyone who has signed in on it and not logged out): the same endpoint
+ * +keys is stored once PER MEMBER. Signing in as someone else on that browser therefore ADDS a row instead of
+ * taking the device away from the previous member (which used to silently stop their notifications).
  */
 export async function saveSubscription(memberId: MemberId, input: SubscribeInput, now: Date = new Date()): Promise<{ created: boolean }> {
   const subscriptionId = subscriptionIdFor(input.endpoint);
   return withWriteLock(async () => {
     const { items } = await readPushSubscriptionsLocated({ fresh: true });
-    const existing = items.find((i) => i.value.subscriptionId === subscriptionId);
+    const sameEndpoint = items.filter((i) => i.value.subscriptionId === subscriptionId);
+    if (sameEndpoint.some((i) => i.value.p256dh !== input.keys.p256dh || i.value.auth !== input.keys.auth)) {
+      throw new DomainError("subscription_conflict", "This subscription cannot be registered.");
+    }
     const stamp = nowIso(now);
 
+    const existing = sameEndpoint.find((i) => i.value.memberId === memberId);
     if (existing) {
-      const v = existing.value;
-      if (v.p256dh !== input.keys.p256dh || v.auth !== input.keys.auth) {
-        throw new DomainError("subscription_conflict", "This subscription cannot be registered.");
-      }
-      const stale = now.getTime() - Date.parse(v.lastSeenAt) > TOUCH_AFTER_MS;
-      if (v.memberId !== memberId || stale) {
-        await updatePushSubscriptionRow(existing.row, { ...v, memberId, lastSeenAt: stamp });
-      }
+      const stale = now.getTime() - Date.parse(existing.value.lastSeenAt) > TOUCH_AFTER_MS;
+      if (stale) await updatePushSubscriptionRow(existing.row, { ...existing.value, lastSeenAt: stamp });
       return { created: false };
     }
 

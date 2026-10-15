@@ -1,5 +1,6 @@
 import { optionalHeaders, TABS, type TabKey } from "@/lib/google-sheets/schema";
 import { mapGoogleError, type SheetsClient } from "@/lib/google-sheets/client";
+import { sliceA1 } from "@/lib/google-sheets/a1";
 
 /** In-memory stand-in for the Google Sheets API. Stores each tab as rows of strings (header = row 1). */
 export class FakeSheets implements SheetsClient {
@@ -72,7 +73,7 @@ export class FakeSheets implements SheetsClient {
     const t = this.tabOf(range);
     // Sheets omits trailing empty rows/cells; mimic by returning copies.
     if (/!1:1$/.test(range)) return t.slice(0, 1).map((r) => [...r]);
-    return t.map((r) => [...r]);
+    return sliceA1(t, range);
   }
 
   async appendValues(range: string, rows: string[][]): Promise<void> {

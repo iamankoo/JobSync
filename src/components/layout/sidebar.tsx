@@ -2,11 +2,12 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { BarChart3, Briefcase, Home, PlusCircle, Send, type LucideIcon } from "lucide-react";
+import { BarChart3, Briefcase, Handshake, Home, MessagesSquare, PlusCircle, Send, type LucideIcon } from "lucide-react";
 import { NAV_ITEMS } from "@/config/nav";
 import { MEMBERS, type Member } from "@/config/members";
 import { Avatar } from "@/components/ui/avatar";
 import { Logo } from "@/components/ui/logo";
+import { ChatUnreadBadge } from "./chat-unread-badge";
 
 const ICONS: Record<string, LucideIcon> = {
   "/dashboard": Home,
@@ -14,6 +15,8 @@ const ICONS: Record<string, LucideIcon> = {
   "/add-job": PlusCircle,
   "/my-applications": Send,
   "/analytics": BarChart3,
+  "/connections": Handshake,
+  "/group-chat": MessagesSquare,
 };
 
 export function Sidebar({ current, onNavigate }: { current: Member; onNavigate?: () => void }) {
@@ -39,6 +42,7 @@ export function Sidebar({ current, onNavigate }: { current: Member; onNavigate?:
             >
               <Icon size={22} aria-hidden />
               {item.label}
+              {item.href === "/group-chat" && <ChatUnreadBadge active={active} />}
             </Link>
           );
         })}

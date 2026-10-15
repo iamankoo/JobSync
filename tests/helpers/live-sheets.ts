@@ -6,8 +6,8 @@ const require = createRequire(import.meta.url);
 const ROOT = path.resolve(__dirname, "..", "..");
 const { auth, sheets } = require(path.join(ROOT, "node_modules/@googleapis/sheets"));
 
-const TAB_NAMES = ["Jobs", "Applications", "Members", "Activity", "PushSubscriptions", "NotificationLog"] as const;
-const WIDTH: Record<(typeof TAB_NAMES)[number], string> = { Jobs: "M", Applications: "I", Members: "D", Activity: "F", PushSubscriptions: "G", NotificationLog: "I" };
+const TAB_NAMES = ["Jobs", "Applications", "Members", "Activity", "PushSubscriptions", "NotificationLog", "Connections", "ChatMessages", "ChatFiles", "ChatReads", "CallSignals"] as const;
+const WIDTH: Record<(typeof TAB_NAMES)[number], string> = { Jobs: "M", Applications: "I", Members: "D", Activity: "F", PushSubscriptions: "G", NotificationLog: "I", Connections: "L", ChatMessages: "J", ChatFiles: "C", ChatReads: "C", CallSignals: "G" };
 
 const MEMBER_ROWS = [
   ["anni", "Anni", "/assets/anni.jpeg", "TRUE"],

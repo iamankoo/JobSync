@@ -98,7 +98,7 @@ describe("real Google Sheets API", () => {
     const res = await s.status.checkSheetsStatus();
     log("status", res);
     expect(res.ok).toBe(true);
-    expect(res.tabs.map((t) => t.tab.toLowerCase()).sort()).toEqual(["activity", "applications", "jobs", "members", "notificationlog", "pushsubscriptions"]);
+    expect(res.tabs.map((t) => t.tab.toLowerCase()).sort()).toEqual(["activity", "applications", "callsignals", "chatfiles", "chatmessages", "chatreads", "connections", "jobs", "members", "notificationlog", "pushsubscriptions"]);
     expect(res.tabs.every((t) => t.ok)).toBe(true);
     const header = (await sheet.readTab("Applications"))[0];
     expect(header.slice(7, 9)).toEqual(["FollowUpAnswer", "FollowUpAnsweredAt"]);

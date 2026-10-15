@@ -2,7 +2,10 @@ import "server-only";
 import { isMemoryBackend } from "./client";
 import { loadSheetsConfig } from "./config";
 import { SheetsError } from "./errors";
-import { readActivity, readApplications, readJobs, readMembers, readNotificationLogLocated, readPushSubscriptionsLocated } from "./repositories";
+import {
+  readActivity, readApplications, readCallSignalsLocated, readChatMessagesLocated, readChatReadsLocated, readConnectionsLocated, readJobs, readMembers,
+  readNotificationLogLocated, readPushSubscriptionsLocated,
+} from "./repositories";
 import { isOptionalTab, TABS, TAB_KEYS, type TabKey } from "./schema";
 import { checkTabHeader } from "./table";
 
@@ -23,6 +26,12 @@ const READERS: Record<TabKey, () => Promise<{ items: unknown[]; issues: unknown[
   activity: readActivity,
   pushSubscriptions: readPushSubscriptionsLocated,
   notificationLog: readNotificationLogLocated,
+  connections: readConnectionsLocated,
+  chatMessages: readChatMessagesLocated,
+  // Attachment bytes are never bulk-read: only the header is verified.
+  chatFiles: async () => ({ items: [], issues: [] }),
+  chatReads: readChatReadsLocated,
+  callSignals: readCallSignalsLocated,
 };
 
 /**

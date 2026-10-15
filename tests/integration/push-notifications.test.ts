@@ -372,11 +372,32 @@ describe("subscription endpoints", () => {
     expect(sheets.dataRows("PushSubscriptions")[0][1]).toBe("anni");
   });
 
-  it("moves a device to the new member when the same browser signs in as someone else", async () => {
+  it("keeps a shared browser registered for EVERY member who signed in on it (no silent takeover)", async () => {
     await subscribe("anni");
     as("lukky");
-    expect((await postSub(req("/api/push/subscriptions", "POST", subBody("anni")))).status).toBe(200);
-    expect(sheets.dataRows("PushSubscriptions")[0][1]).toBe("lukky");
+    const res = await postSub(req("/api/push/subscriptions", "POST", subBody("anni")));
+    expect(res.status).toBe(201);
+    expect(sheets.dataRows("PushSubscriptions").map((r) => r[1]).sort()).toEqual(["anni", "lukky"]);
+    // Both members are individually confirmed by the server for this browser.
+    for (const m of ["anni", "lukky"] as MemberId[]) {
+      as(m);
+      expect((await (await postStatus(req("/api/push/status", "POST", { endpoint: endpointOf("anni") }))).json()).data.registered).toBe(true);
+    }
+    // Logging out as Lukky removes only Lukky's registration of that browser.
+    as("lukky");
+    await deleteSub(req("/api/push/subscriptions", "DELETE", { endpoint: endpointOf("anni") }));
+    expect(sheets.dataRows("PushSubscriptions").map((r) => r[1])).toEqual(["anni"]);
+  });
+
+  it("notifies a browser shared by two recipients once, and the actor's own registration never counts", async () => {
+    // One physical browser signed in as Anni, Lukky AND Rishii.
+    for (const m of MEMBERS) {
+      as(m);
+      expect((await postSub(req("/api/push/subscriptions", "POST", subBody("anni")))).status).toBeLessThan(300);
+    }
+    await addJob("anni"); // recipients: lukky + rishii, both live on this single browser
+    expect(sent).toHaveLength(1);
+    expect(sent[0].member).not.toBe("anni");
   });
 
   it("removes only the caller's own device on DELETE (other devices keep working)", async () => {

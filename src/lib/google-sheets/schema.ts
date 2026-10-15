@@ -37,6 +37,36 @@ export const TABS = {
     headers: ["LogKey", "ClaimID", "MemberID", "Type", "LocalDate", "Status", "ClaimedAt", "UpdatedAt", "Detail"],
     optional: true,
   },
+  // Connections tracker: people a member wants to reach out to (private to that member). Optional tab.
+  connections: {
+    name: "Connections",
+    headers: ["ConnectionID", "MemberID", "Name", "Company", "Role", "ProfileUrl", "OtherUrl", "Message", "Notes", "Status", "CreatedAt", "UpdatedAt"],
+    optional: true,
+  },
+  // Group chat (all three members). Optional tabs: without them the chat page says it is not set up.
+  chatMessages: {
+    name: "ChatMessages",
+    headers: ["MessageID", "MemberID", "Kind", "Text", "FileID", "FileName", "MimeType", "SizeBytes", "DurationSec", "CreatedAt"],
+    optional: true,
+  },
+  // Attachment bytes as base64 chunks (one row per chunk). Only ever read through the authorised download route.
+  chatFiles: {
+    name: "ChatFiles",
+    headers: ["FileID", "Seq", "Data"],
+    optional: true,
+  },
+  // Per-member read marker (the last message row they have seen) for the unread indicator.
+  chatReads: {
+    name: "ChatReads",
+    headers: ["MemberID", "LastReadRow", "UpdatedAt"],
+    optional: true,
+  },
+  // Short-lived WebRTC signalling for audio/video calls (offers, answers, presence). Pruned automatically.
+  callSignals: {
+    name: "CallSignals",
+    headers: ["SignalID", "CallID", "FromMemberID", "ToMemberID", "Type", "Payload", "CreatedAt"],
+    optional: true,
+  },
 } as const;
 
 export type TabKey = keyof typeof TABS;

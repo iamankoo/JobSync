@@ -53,8 +53,14 @@ export default defineConfig({
     },
   },
   projects: [
-    { name: "workflow-desktop", testMatch: /(workflow|notifications)\.spec\.ts/, use: { ...devices["Desktop Chrome"], viewport: { width: 1366, height: 768 } } },
-    { name: "workflow-mobile", testMatch: /(workflow|notifications)\.spec\.ts/, use: { ...devices["Pixel 7"] } },
+    { name: "workflow-desktop", testMatch: /(workflow|notifications|connections)\.spec\.ts/, use: { ...devices["Desktop Chrome"], viewport: { width: 1366, height: 768 } } },
+    { name: "workflow-mobile", testMatch: /(workflow|notifications|connections)\.spec\.ts/, use: { ...devices["Pixel 7"] } },
+    // Group chat: several browser contexts (one per member), real WebRTC between them using Chromium's fake camera/microphone.
+    {
+      name: "chat-desktop",
+      testMatch: /chat\.spec\.ts/,
+      use: { ...devices["Desktop Chrome"], viewport: { width: 1366, height: 768 }, launchOptions: { args: ["--use-fake-ui-for-media-stream", "--use-fake-device-for-media-stream"] } },
+    },
     ...VIEWPORTS.map((v) => ({
       name: `responsive-${v.name}`,
       testMatch: /responsive\.spec\.ts/,

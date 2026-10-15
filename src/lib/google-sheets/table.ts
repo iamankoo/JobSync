@@ -76,12 +76,13 @@ export function setTableCacheTtlForTesting(ms: number | null): void {
  * Reads a whole tab, verifying its header row first. Blank rows are skipped.
  * Never writes: a wrong header is reported, not repaired.
  */
-export async function readTable(tab: TabKey, options: { fresh?: boolean } = {}): Promise<RawRow[]> {
+export async function readTable(tab: TabKey, options: { fresh?: boolean; maxAgeMs?: number } = {}): Promise<RawRow[]> {
   return (await readTableWithMeta(tab, options)).rows;
 }
 
-export async function readTableWithMeta(tab: TabKey, options: { fresh?: boolean } = {}): Promise<{ rows: RawRow[]; meta: TableMeta }> {
-  const ttl = ttlMs();
+export async function readTableWithMeta(tab: TabKey, options: { fresh?: boolean; maxAgeMs?: number } = {}): Promise<{ rows: RawRow[]; meta: TableMeta }> {
+  // `maxAgeMs` can only SHORTEN the shared TTL (chat polling wants fresher data than the dashboards).
+  const ttl = options.maxAgeMs === undefined ? ttlMs() : Math.min(ttlMs(), options.maxAgeMs);
   const hit = cache.get(tab);
   if (!options.fresh && ttl > 0 && hit && Date.now() - hit.at < ttl) return { rows: hit.rows, meta: hit.meta };
   const result = await readTableUncached(tab);

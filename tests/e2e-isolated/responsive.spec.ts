@@ -15,6 +15,8 @@ const PAGES = [
   { label: "Add Job", path: "/add-job", h1: "Add New Job" },
   { label: "My Applications", path: "/my-applications", h1: "My Applications" },
   { label: "Analytics", path: "/analytics", h1: "Analytics" },
+  { label: "Connections", path: "/connections", h1: "Connections" },
+  { label: "Group Chat", path: "/group-chat", h1: "Group Chat" },
 ] as const;
 
 async function press(locator: Locator, touch: boolean) {
@@ -49,7 +51,7 @@ test("login page fits the viewport and works", async ({ page }, info) => {
   await shot(page, info.project.name, "login");
 });
 
-test("every page: no overflow, readable layout, accessible, account pinned top-right, five nav items", async ({ page }, info) => {
+test("every page: no overflow, readable layout, accessible, account pinned top-right, seven nav items", async ({ page }, info) => {
   const vp = page.viewportSize()!;
   await signIn(page, "Anni", "0001");
   for (const p of PAGES) {
@@ -77,11 +79,11 @@ test("every page: no overflow, readable layout, accessible, account pinned top-r
     expect(searchBox.x).toBeGreaterThanOrEqual(0);
     expect(searchBox.x + searchBox.width).toBeLessThanOrEqual(vp.width);
 
-    // navigation: exactly the five required items (drawer or sidebar)
+    // navigation: the five original items plus Connections and Group Chat (drawer or sidebar)
     const menu = page.getByRole("button", { name: "Open menu" });
     if (await menu.isVisible()) await menu.click();
     const nav = page.getByRole("navigation", { name: "Main" });
-    await expect(nav.getByRole("link")).toHaveText(["Dashboard", "All Jobs", "Add Job", "My Applications", "Analytics"]);
+    await expect(nav.getByRole("link")).toHaveText(["Dashboard", "All Jobs", "Add Job", "My Applications", "Analytics", "Connections", "Group Chat"]);
     if (await menu.isVisible()) await page.getByRole("button", { name: "Close menu" }).last().click();
 
     expect((await new AxeBuilder({ page }).analyze()).violations, `${p.label}: accessibility`).toEqual([]);
@@ -310,4 +312,73 @@ test("follow-up modal: fits the viewport, can't be dismissed, has touch-sized ch
   // reload: it does not come back
   await page.reload();
   await expect(page.getByRole("alertdialog")).toHaveCount(0);
+});
+
+test("Connections and Group Chat: usable layouts at this viewport (form, cards, composer, message list, controls)", async ({ page, request }, info) => {
+  const vp = page.viewportSize()!;
+  const touch = Boolean(info.project.use.hasTouch);
+  await appendRows(request, "Connections", [
+    ["conn_e2e1", "anni", "Priya Sharma With A Rather Long Name Indeed", "A Synthetic Company With A Rather Long Name Incorporated", "Senior Staff Software Development Engineer In Test", "https://www.linkedin.com/in/a-very-long-profile-name-that-keeps-going-and-going-and-going-12345", "", "Hi Priya, ".repeat(40), "Notes ".repeat(30), "Messaged", hoursAgoIso(5), hoursAgoIso(5)],
+    ["conn_e2e2", "anni", "Rahul", "Globex", "", "", "", "Short", "", "Not Connected", hoursAgoIso(6), hoursAgoIso(6)],
+  ]);
+  await appendRows(request, "ChatMessages", Array.from({ length: 24 }, (_, i) => [
+    `msg_e2e${i}`, ["lukky", "rishii", "anni"][i % 3], "text",
+    i % 5 === 0 ? "A long message with an unbroken string " + "x".repeat(80) + " and a link https://example.com/" + "path/".repeat(12) : `Message ${i + 1} in the group chat`,
+    "", "", "", "", "", hoursAgoIso(2 - i * 0.05),
+  ]));
+  await signIn(page, "Anni", "0001");
+
+  // Connections: cards stay inside the viewport and the form fits
+  await goViaNav(page, "Connections", "/connections");
+  await expect(page.getByTestId("connection-card")).toHaveCount(2);
+  expect(await horizontalOverflow(page), "connections overflow").toBeLessThanOrEqual(0);
+  expect(await elementsOutsideViewport(page), "connections: elements sticking out").toEqual([]);
+  await page.getByRole("button", { name: "Add connection" }).first().click();
+  const dialog = page.getByRole("dialog");
+  await expect(dialog).toBeVisible();
+  const box = (await dialog.boundingBox())!;
+  expect(box.x).toBeGreaterThanOrEqual(0);
+  expect(box.x + box.width).toBeLessThanOrEqual(vp.width);
+  await dialog.getByLabel(/Person's name/).fill("Layout Test");
+  expect((await new AxeBuilder({ page }).analyze()).violations, "connections form accessibility").toEqual([]);
+  await shot(page, info.project.name, "connections-form");
+  await dialog.getByRole("button", { name: "Cancel" }).click();
+  await shot(page, info.project.name, "connections-list");
+
+  // Group Chat
+  // (The sidebar link's accessible name carries the unread count here, so match by prefix.)
+  const menu = page.getByRole("button", { name: /Open menu/ });
+  if (await menu.isVisible()) await menu.click();
+  await page.getByRole("navigation", { name: "Main" }).getByRole("link", { name: /^Group Chat/ }).click();
+  await page.waitForURL("**/group-chat");
+  const log = page.getByRole("log", { name: "Chat messages" });
+  await expect(log).toBeVisible();
+  await expect(page.getByTestId("chat-message")).toHaveCount(24);
+  await settle(page);
+  expect(await horizontalOverflow(page), "chat overflow").toBeLessThanOrEqual(0);
+  expect(await elementsOutsideViewport(page), "chat: elements sticking out").toEqual([]);
+
+  // the newest message is in view and the composer + controls are fully on screen and touch-sized
+  await expect(page.getByTestId("chat-message").last()).toBeInViewport();
+  for (const name of ["Attach a file, image or PDF", "Record a voice note", "Start an audio call", "Start a video call"]) {
+    const b = (await page.getByRole("button", { name }).boundingBox())!;
+    expect(b, name).not.toBeNull();
+    expect(b.x, name).toBeGreaterThanOrEqual(0);
+    expect(b.x + b.width, name).toBeLessThanOrEqual(vp.width);
+    expect(b.y + b.height, name).toBeLessThanOrEqual(vp.height + 1);
+    expect(b.height, `${name} height`).toBeGreaterThanOrEqual(40);
+  }
+  const composer = (await page.getByLabel("Message", { exact: true }).boundingBox())!;
+  expect(composer.width).toBeGreaterThan(Math.min(160, vp.width * 0.4));
+  expect(composer.y + composer.height).toBeLessThanOrEqual(vp.height + 1);
+  // the page itself does not scroll: only the message list does
+  expect(await page.evaluate(() => document.documentElement.scrollHeight - document.documentElement.clientHeight)).toBeLessThanOrEqual(24);
+
+  // typing and sending works (with the on-screen keyboard's Enter adding a line on touch devices, the button sending)
+  await page.getByLabel("Message", { exact: true }).fill("Layout check message");
+  await press(page.getByRole("button", { name: "Send message" }), touch);
+  await expect(page.getByTestId("chat-message").last()).toContainText("Layout check message");
+  await expect(page.getByTestId("chat-message").last()).toBeInViewport();
+  expect((await new AxeBuilder({ page }).analyze()).violations, "chat accessibility").toEqual([]);
+  await shot(page, info.project.name, "group-chat");
 });

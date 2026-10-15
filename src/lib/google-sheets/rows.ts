@@ -15,6 +15,12 @@ import {
   NOTIFICATION_STATUSES,
   NOTIFICATION_TYPES,
   type PushSubscriptionRecord,
+  CALL_SIGNAL_TYPES,
+  CHAT_KINDS,
+  CONNECTION_STATUSES,
+  type CallSignal,
+  type ChatMessage,
+  type Connection,
 } from "@/types/domain";
 import { ID_PATTERN } from "@/lib/validation/applications";
 import { parseHttpUrl } from "@/lib/utils/url";
@@ -183,4 +189,101 @@ export function parseNotificationLogRow(cells: string[]): RowParse<NotificationL
 
 export function serializeNotificationLog(r: NotificationLogRecord): string[] {
   return [r.logKey, r.claimId, r.memberId, r.type, r.localDate, r.status, r.claimedAt, r.updatedAt, r.detail];
+}
+
+// ---- Connections --------------------------------------------------------
+
+export function parseConnectionRow(cells: string[]): RowParse<Connection> {
+  const [connectionId, memberId, name, company, role, profileUrl, otherUrl, message, notes, status, createdAt, updatedAt] = cells.map((c) => c.trim());
+  if (!ID_PATTERN.test(connectionId)) return { ok: false, problem: "missing or invalid ConnectionID" };
+  if (!isMemberId(memberId)) return { ok: false, problem: "missing or unknown MemberID" };
+  if (!name) return { ok: false, problem: "missing Name" };
+  if (!oneOf(CONNECTION_STATUSES, status)) return { ok: false, problem: "missing or invalid Status" };
+  if (!isIsoTimestamp(createdAt)) return { ok: false, problem: "missing or invalid CreatedAt" };
+  if (!isIsoTimestamp(updatedAt)) return { ok: false, problem: "missing or invalid UpdatedAt" };
+  const warnings: string[] = [];
+  const url = (label: string, v: string) => {
+    if (!v) return undefined;
+    if (parseHttpUrl(v)) return v;
+    warnings.push(`${label} ignored (not an http(s) URL)`);
+    return undefined;
+  };
+  const profile = url("ProfileUrl", profileUrl);
+  const other = url("OtherUrl", otherUrl);
+  return {
+    ok: true,
+    value: {
+      connectionId, memberId, name, status, createdAt, updatedAt,
+      ...(company ? { company } : {}), ...(role ? { role } : {}),
+      ...(profile ? { profileUrl: profile } : {}), ...(other ? { otherUrl: other } : {}),
+      ...(message ? { message } : {}), ...(notes ? { notes } : {}),
+    },
+    warnings,
+  };
+}
+
+export function serializeConnection(c: Connection): string[] {
+  return [c.connectionId, c.memberId, c.name, c.company ?? "", c.role ?? "", c.profileUrl ?? "", c.otherUrl ?? "", c.message ?? "", c.notes ?? "", c.status, c.createdAt, c.updatedAt];
+}
+
+// ---- Chat ---------------------------------------------------------------
+
+export function parseChatMessageRow(cells: string[]): RowParse<ChatMessage> {
+  const [messageId, memberId, kind, text, fileId, fileName, mimeType, sizeBytes, durationSec, createdAt] = cells.map((c) => c.trim());
+  if (!ID_PATTERN.test(messageId)) return { ok: false, problem: "missing or invalid MessageID" };
+  if (!isMemberId(memberId)) return { ok: false, problem: "missing or unknown MemberID" };
+  if (!oneOf(CHAT_KINDS, kind)) return { ok: false, problem: "missing or invalid Kind" };
+  if (!isIsoTimestamp(createdAt)) return { ok: false, problem: "missing or invalid CreatedAt" };
+  if ((kind === "text" || kind === "call") && !text) return { ok: false, problem: "empty message" };
+  if ((kind === "file" || kind === "voice") && !ID_PATTERN.test(fileId)) return { ok: false, problem: "attachment without a valid FileID" };
+  const size = Number(sizeBytes);
+  const dur = Number(durationSec);
+  return {
+    ok: true,
+    value: {
+      messageId, memberId, kind, text, createdAt,
+      ...(fileId ? { fileId } : {}), ...(fileName ? { fileName } : {}), ...(mimeType ? { mimeType } : {}),
+      ...(sizeBytes && Number.isFinite(size) ? { sizeBytes: size } : {}), ...(durationSec && Number.isFinite(dur) ? { durationSec: dur } : {}),
+    },
+    warnings: [],
+  };
+}
+
+export function serializeChatMessage(m: ChatMessage): string[] {
+  return [m.messageId, m.memberId, m.kind, m.text, m.fileId ?? "", m.fileName ?? "", m.mimeType ?? "", m.sizeBytes === undefined ? "" : String(m.sizeBytes), m.durationSec === undefined ? "" : String(m.durationSec), m.createdAt];
+}
+
+export interface ChatReadRecord {
+  memberId: MemberId;
+  /** Spreadsheet row number of the last ChatMessages row this member has seen. */
+  lastReadRow: number;
+  updatedAt: string;
+}
+
+export function parseChatReadRow(cells: string[]): RowParse<ChatReadRecord> {
+  const [memberId, lastReadRow, updatedAt] = cells.map((c) => c.trim());
+  if (!isMemberId(memberId)) return { ok: false, problem: "missing or unknown MemberID" };
+  const n = Number(lastReadRow);
+  if (!Number.isInteger(n) || n < 1) return { ok: false, problem: "invalid LastReadRow" };
+  if (!isIsoTimestamp(updatedAt)) return { ok: false, problem: "missing or invalid UpdatedAt" };
+  return { ok: true, value: { memberId, lastReadRow: n, updatedAt }, warnings: [] };
+}
+
+export function serializeChatRead(r: ChatReadRecord): string[] {
+  return [r.memberId, String(r.lastReadRow), r.updatedAt];
+}
+
+export function parseCallSignalRow(cells: string[]): RowParse<CallSignal> {
+  const [signalId, callId, from, to, type, payload, createdAt] = cells.map((c) => c.trim());
+  if (!ID_PATTERN.test(signalId)) return { ok: false, problem: "missing or invalid SignalID" };
+  if (!ID_PATTERN.test(callId)) return { ok: false, problem: "missing or invalid CallID" };
+  if (!isMemberId(from)) return { ok: false, problem: "missing or unknown FromMemberID" };
+  if (to && !isMemberId(to)) return { ok: false, problem: "unknown ToMemberID" };
+  if (!oneOf(CALL_SIGNAL_TYPES, type)) return { ok: false, problem: "missing or invalid Type" };
+  if (!isIsoTimestamp(createdAt)) return { ok: false, problem: "missing or invalid CreatedAt" };
+  return { ok: true, value: { signalId, callId, from, ...(to ? { to: to as MemberId } : {}), type, payload, createdAt }, warnings: [] };
+}
+
+export function serializeCallSignal(s: CallSignal): string[] {
+  return [s.signalId, s.callId, s.from, s.to ?? "", s.type, s.payload, s.createdAt];
 }

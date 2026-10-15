@@ -8,6 +8,7 @@ import { Avatar } from "@/components/ui/avatar";
 import { Logo } from "@/components/ui/logo";
 import { FollowUpGate, type DueFollowUpItem } from "@/components/follow-up/follow-up-gate";
 import { NotificationGate } from "@/components/notifications/notification-gate";
+import { useChatUnread } from "@/lib/chat/use-unread";
 import { removeThisDevice } from "@/lib/push/browser";
 import { AutoRefresh } from "./auto-refresh";
 import { Sidebar } from "./sidebar";
@@ -29,6 +30,7 @@ export function AppShell({
   const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const [query, setQuery] = useState("");
+  const unread = useChatUnread();
   const searchRef = useRef<HTMLInputElement>(null);
 
   // Ctrl/Cmd + K focuses the search box.
@@ -97,8 +99,9 @@ export function AppShell({
       <div className="lg:pl-72">
         <header className="sticky top-0 z-20 flex flex-wrap items-center gap-3 border-b border-line bg-navy-950/90 px-4 py-3 backdrop-blur sm:px-6">
           <div className="flex items-center gap-3 lg:hidden">
-            <button className="rounded-lg border border-line p-2" aria-label="Open menu" aria-expanded={open} onClick={() => setOpen(true)}>
+            <button className="relative rounded-lg border border-line p-2" aria-label={unread > 0 && pathname !== "/group-chat" ? `Open menu (${unread} unread chat messages)` : "Open menu"} aria-expanded={open} onClick={() => setOpen(true)}>
               <Menu size={20} aria-hidden />
+              {unread > 0 && pathname !== "/group-chat" && <span aria-hidden className="absolute -right-1 -top-1 h-3 w-3 rounded-full border-2 border-navy-950 bg-accent-strong" />}
             </button>
             <Logo />
           </div>

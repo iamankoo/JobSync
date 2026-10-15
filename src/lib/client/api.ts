@@ -1,4 +1,4 @@
-import type { Application, ApplicationStage, ApplicationStatus, Job } from "@/types/domain";
+import type { Application, ApplicationStage, ApplicationStatus, Connection, Job } from "@/types/domain";
 
 export type ApiResult<T> =
   | { ok: true; data: T }
@@ -57,4 +57,16 @@ export function deleteJobRequest(jobId: string) {
 
 export function createJobRequest(body: Record<string, unknown>) {
   return apiRequest<Job>("/api/jobs", { method: "POST", body: JSON.stringify(body) });
+}
+
+export function createConnectionRequest(body: Record<string, unknown>) {
+  return apiRequest<Connection>("/api/connections", { method: "POST", body: JSON.stringify(body) });
+}
+
+export function updateConnectionRequest(connectionId: string, body: Record<string, unknown>) {
+  return apiRequest<Connection>(`/api/connections/${encodeURIComponent(connectionId)}`, { method: "PUT", body: JSON.stringify(body) });
+}
+
+export function deleteConnectionRequest(connectionId: string) {
+  return apiRequest<{ connectionId: string }>(`/api/connections/${encodeURIComponent(connectionId)}`, { method: "DELETE" });
 }

@@ -1,6 +1,7 @@
 import "server-only";
 import { TABS, optionalHeaders, type TabKey } from "./schema";
 import type { SheetsClient } from "./client";
+import { sliceA1 } from "./a1";
 
 /**
  * In-memory stand-in for Google Sheets, used ONLY by the isolated browser E2E suite
@@ -44,7 +45,7 @@ export class MemorySheets implements SheetsClient {
   async getValues(range: string): Promise<string[][]> {
     const t = this.tabOf(range);
     if (/!1:1$/.test(range)) return t.slice(0, 1).map((r) => [...r]);
-    return t.map((r) => [...r]);
+    return sliceA1(t, range);
   }
 
   async appendValues(range: string, rows: string[][]): Promise<void> {

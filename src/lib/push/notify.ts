@@ -5,7 +5,7 @@ import type { MemberId } from "@/config/members";
 import type { PushSubscriptionRecord } from "@/types/domain";
 import { listSubscriptionsFor, removeSubscriptionsById } from "@/lib/google-sheets/push-service";
 import { loadVapidConfig } from "./config";
-import { jobAddedPayload, jobAppliedPayload, recipientsFor, type PushPayload } from "./payload";
+import { callStartedPayload, jobAddedPayload, jobAppliedPayload, recipientsFor, type PushPayload } from "./payload";
 
 /** Outcome of one delivery attempt to one subscription. `gone` = the push service says it no longer exists. */
 export type SendResult = { ok: true } | { ok: false; gone: boolean; status?: number };
@@ -89,15 +89,27 @@ async function deliver(subs: PushSubscriptionRecord[], payload: PushPayload): Pr
  * is logged by name/status only (no endpoints, keys or payloads) so the saved job/application is unaffected.
  */
 export async function notifyOthers(actor: MemberId, payload: PushPayload, eventKey: string): Promise<NotifyOutcome> {
+  const none: NotifyOutcome = { attempted: 0, delivered: 0, removed: 0, failed: 0 };
   try {
-    if (!loadVapidConfig()) return { attempted: 0, delivered: 0, removed: 0, failed: 0 };
-    if (!claim(eventKey)) return { attempted: 0, delivered: 0, removed: 0, failed: 0 };
-    // Defence in depth: whatever the store returned, the actor is never a recipient.
-    const subs = (await listSubscriptionsFor(recipientsFor(actor))).filter((s) => s.memberId !== actor);
-    return await deliver(subs, payload);
+    if (!loadVapidConfig()) return none;
+    if (!claim(eventKey)) return none;
+    try {
+      // Defence in depth: whatever the store returned, the actor is never a recipient.
+      const all = (await listSubscriptionsFor(recipientsFor(actor))).filter((s) => s.memberId !== actor);
+      // One browser can be registered for two recipients: it still gets this (identical) message once.
+      const subs = [...new Map(all.map((s) => [s.endpoint, s])).values()];
+      const outcome = await deliver(subs, payload);
+      const perMember = Object.fromEntries(recipientsFor(actor).map((m) => [m, all.filter((s) => s.memberId === m).length]));
+      console.info(`[push] ${eventKey.split(":")[0]} by ${actor}: devices per recipient ${JSON.stringify(perMember)}, delivered ${outcome.delivered}/${outcome.attempted}`);
+      return outcome;
+    } catch (err) {
+      // The subscription list could not be read: nothing was sent, so let a retry of this event try again.
+      seen().delete(eventKey);
+      throw err;
+    }
   } catch (err) {
     console.error("[push] notification failed", err instanceof Error ? err.name : typeof err);
-    return { attempted: 0, delivered: 0, removed: 0, failed: 0 };
+    return none;
   }
 }
 
@@ -137,4 +149,9 @@ export function notifyJobAdded(actor: MemberId, job: JobFacts): Promise<void> {
 /** Call ONLY after the Not Applied -> Applied change is persisted. `appliedAt` identifies this apply cycle. */
 export function notifyJobApplied(actor: MemberId, job: JobFacts, appliedAt: string): Promise<void> {
   return afterResponse(() => notifyOthers(actor, jobAppliedPayload(actor, job), `job-applied:${job.jobId}:${actor}:${appliedAt}`));
+}
+
+/** Tells the other two members that `actor` started a call, so they can join. Never throws. */
+export function notifyCallStarted(actor: MemberId, callId: string, media: "audio" | "video"): Promise<void> {
+  return afterResponse(() => notifyOthers(actor, callStartedPayload(actor, callId, media), `call:${callId}`));
 }

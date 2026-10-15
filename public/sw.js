@@ -1,7 +1,7 @@
 /* JobSync service worker: shows Web Push notifications and opens the right page when one is clicked.
  * It caches nothing and intercepts no requests, so it cannot change how the site loads. */
 
-const SAFE_PATHS = ["/dashboard", "/all-jobs", "/my-applications", "/add-job"];
+const SAFE_PATHS = ["/dashboard", "/all-jobs", "/my-applications", "/add-job", "/group-chat"];
 
 self.addEventListener("install", () => self.skipWaiting());
 self.addEventListener("activate", (event) => event.waitUntil(self.clients.claim()));

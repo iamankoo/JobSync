@@ -6,7 +6,7 @@ const MEMBERS = [
   { id: "lukky", name: "Lukky", code: "0002", accent: "rgb(245, 197, 24)" },
   { id: "rishii", name: "Rishii", code: "0003", accent: "rgb(255, 77, 94)" },
 ];
-const ROUTES = ["/dashboard", "/all-jobs", "/add-job", "/my-applications", "/analytics"];
+const ROUTES = ["/dashboard", "/all-jobs", "/add-job", "/my-applications", "/analytics", "/connections", "/group-chat"];
 
 async function signIn(page: Page, name: string, code: string) {
   await page.goto("/login");
@@ -80,9 +80,9 @@ test("unauthenticated users are redirected from every protected route", async ({
   }
 });
 
-test("navigation has exactly five working items", async ({ page, isMobile }) => {
+test("navigation has the seven working items", async ({ page, isMobile }) => {
   await signIn(page, "Anni", "0001");
-  const expected = ["Dashboard", "All Jobs", "Add Job", "My Applications", "Analytics"];
+  const expected = ["Dashboard", "All Jobs", "Add Job", "My Applications", "Analytics", "Connections", "Group Chat"];
   for (let i = 0; i < expected.length; i++) {
     if (isMobile) await page.getByRole("button", { name: "Open menu" }).click();
     const nav = page.getByRole("navigation", { name: "Main" });

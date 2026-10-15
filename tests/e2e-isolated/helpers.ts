@@ -28,10 +28,10 @@ export const appendRows = (request: APIRequestContext, tab: string, rows: string
 export const updateRows = (request: APIRequestContext, tab: string, where: Record<string, string>, set: Record<string, string>) =>
   seed(request, { action: "update", tab, where, set });
 /** Raw spreadsheet rows (header first) as persisted by the app. */
-export async function dumpTab(request: APIRequestContext, tab: "Jobs" | "Applications" | "Members" | "Activity" | "PushSubscriptions" | "NotificationLog"): Promise<string[][]> {
+export async function dumpTab(request: APIRequestContext, tab: "Jobs" | "Applications" | "Members" | "Activity" | "PushSubscriptions" | "NotificationLog" | "Connections" | "ChatMessages" | "ChatFiles" | "ChatReads" | "CallSignals"): Promise<string[][]> {
   return (await seed(request, { action: "dump", tab })).rows;
 }
-export async function dataRows(request: APIRequestContext, tab: "Jobs" | "Applications" | "Members" | "Activity" | "PushSubscriptions" | "NotificationLog") {
+export async function dataRows(request: APIRequestContext, tab: Parameters<typeof dumpTab>[1]) {
   return (await dumpTab(request, tab)).slice(1);
 }
 

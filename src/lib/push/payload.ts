@@ -26,7 +26,7 @@ export function recipientsFor(actor: MemberId): MemberId[] {
 }
 
 /** Pages a notification may open. Everything else falls back to the dashboard. */
-const SAFE_PATHS = new Set(["/dashboard", "/all-jobs", "/my-applications", "/add-job"]);
+const SAFE_PATHS = new Set(["/dashboard", "/all-jobs", "/my-applications", "/add-job", "/group-chat"]);
 
 /** Same-origin, allow-listed destination for a job. The JobID must be a well-formed ID. */
 export function jobUrl(jobId: string): string {
@@ -70,6 +70,18 @@ export function jobAppliedPayload(actor: MemberId, job: JobFacts): PushPayload {
     body: clean(`${job.company} — open JobSync to apply too.`, 140),
     url: jobUrl(job.jobId),
     tag: `job-applied-${job.jobId}-${actor}`,
+    icon: m?.photo,
+  };
+}
+
+export function callStartedPayload(actor: MemberId, callId: string, media: "audio" | "video"): PushPayload {
+  const m = getMember(actor);
+  const name = m?.name ?? "A teammate";
+  return {
+    title: clean(`${name} started a ${media} call`, 110),
+    body: "Open Group Chat to join.",
+    url: "/group-chat",
+    tag: `call-${callId}`,
     icon: m?.photo,
   };
 }

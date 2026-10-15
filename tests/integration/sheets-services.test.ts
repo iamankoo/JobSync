@@ -365,7 +365,7 @@ describe("checkSheetsStatus", () => {
     await createJob("anni", input(), NOW);
     const res = await checkSheetsStatus();
     expect(res.ok).toBe(true);
-    expect(res.tabs.map((t) => t.tab)).toEqual(["Jobs", "Applications", "Members", "Activity", "PushSubscriptions", "NotificationLog"]);
+    expect(res.tabs.map((t) => t.tab)).toEqual(["Jobs", "Applications", "Members", "Activity", "PushSubscriptions", "NotificationLog", "Connections", "ChatMessages", "ChatFiles", "ChatReads", "CallSignals"]);
     expect(res.tabs.find((t) => t.tab === "Jobs")).toMatchObject({ ok: true, rows: 1, rowIssues: 0 });
     const text = JSON.stringify(res);
     expect(text).not.toContain("PRIVATE KEY");

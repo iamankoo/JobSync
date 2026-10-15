@@ -48,6 +48,11 @@ const DOMAIN_STATUS: Record<DomainErrorCode, number> = {
   retention_disabled: 403,
   retention_limit: 409,
   subscription_conflict: 409,
+  connection_not_found: 404,
+  not_connection_owner: 403,
+  chat_file_not_found: 404,
+  call_in_progress: 409,
+  call_not_active: 409,
 };
 
 const SHEETS_STATUS: Record<SheetsErrorCode, number> = {

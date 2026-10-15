@@ -135,6 +135,68 @@ export interface NotificationLogRecord {
   detail: string;
 }
 
+// ---- Connections --------------------------------------------------------
+
+export const CONNECTION_STATUSES = ["Not Connected", "Connected", "Messaged", "Reply"] as const;
+export type ConnectionStatus = (typeof CONNECTION_STATUSES)[number];
+
+/** A person a member wants to connect with, and the message to send them. Private to its owner. */
+export interface Connection {
+  connectionId: string;
+  memberId: MemberId;
+  name: string;
+  company?: string;
+  role?: string;
+  /** LinkedIn / profile URL (http/https only). */
+  profileUrl?: string;
+  /** Any other useful profile or contact URL (http/https only). */
+  otherUrl?: string;
+  /** Suggested message to send. */
+  message?: string;
+  notes?: string;
+  status: ConnectionStatus;
+  /** ISO 8601 UTC. */
+  createdAt: string;
+  /** ISO 8601 UTC. */
+  updatedAt: string;
+}
+
+// ---- Group chat ---------------------------------------------------------
+
+export const CHAT_KINDS = ["text", "file", "voice", "call"] as const;
+export type ChatKind = (typeof CHAT_KINDS)[number];
+
+export interface ChatMessage {
+  messageId: string;
+  memberId: MemberId;
+  kind: ChatKind;
+  /** The message text; for a call event, a short description. Empty for bare attachments. */
+  text: string;
+  fileId?: string;
+  fileName?: string;
+  mimeType?: string;
+  sizeBytes?: number;
+  durationSec?: number;
+  /** ISO 8601 UTC. */
+  createdAt: string;
+}
+
+export const CALL_SIGNAL_TYPES = ["start", "join", "offer", "answer", "leave", "ping", "end"] as const;
+export type CallSignalType = (typeof CALL_SIGNAL_TYPES)[number];
+
+export interface CallSignal {
+  signalId: string;
+  callId: string;
+  from: MemberId;
+  /** Addressee; absent = everyone in the call. */
+  to?: MemberId;
+  type: CallSignalType;
+  /** Small JSON string (an SDP description, or call metadata). */
+  payload: string;
+  /** ISO 8601 UTC. */
+  createdAt: string;
+}
+
 export interface MemberRecord {
   memberId: MemberId;
   name: string;

@@ -96,8 +96,8 @@ describe("validation and config", () => {
     expect(loginSchema.safeParse({ memberId: "anni", code: "" }).success).toBe(false);
   });
 
-  it("has exactly the five navigation items", () => {
-    expect(NAV_ITEMS.map((n) => n.label)).toEqual(["Dashboard", "All Jobs", "Add Job", "My Applications", "Analytics"]);
+  it("has the five original navigation items followed by Connections and Group Chat", () => {
+    expect(NAV_ITEMS.map((n) => n.label)).toEqual(["Dashboard", "All Jobs", "Add Job", "My Applications", "Analytics", "Connections", "Group Chat"]);
   });
 
   it("defines the three members with distinct accents", () => {

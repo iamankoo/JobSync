@@ -41,7 +41,12 @@ export type DomainErrorCode =
   | "follow_ups_unavailable"
   | "retention_disabled"
   | "retention_limit"
-  | "subscription_conflict";
+  | "subscription_conflict"
+  | "connection_not_found"
+  | "not_connection_owner"
+  | "chat_file_not_found"
+  | "call_in_progress"
+  | "call_not_active";
 
 export class DomainError extends Error {
   constructor(

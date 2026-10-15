@@ -1,15 +1,24 @@
 import "server-only";
-import type { Activity, Application, Job, MemberRecord, NotificationLogRecord, PushSubscriptionRecord, ReadResult, RowIssue } from "@/types/domain";
+import type { Activity, Application, CallSignal, ChatMessage, Connection, Job, MemberRecord, NotificationLogRecord, PushSubscriptionRecord, ReadResult, RowIssue } from "@/types/domain";
 import { getSheetsClient } from "./client";
 import {
   parseActivityRow,
   parseApplicationRow,
+  parseCallSignalRow,
+  parseChatMessageRow,
+  parseChatReadRow,
+  parseConnectionRow,
   parseJobRow,
   parseMemberRow,
   parseNotificationLogRow,
   parsePushSubscriptionRow,
   serializeActivity,
   serializeApplication,
+  serializeCallSignal,
+  serializeChatMessage,
+  serializeChatRead,
+  serializeConnection,
+  type ChatReadRecord,
   serializeJob,
   serializeNotificationLog,
   serializePushSubscription,
@@ -21,6 +30,8 @@ import { invalidateTableCache, readTableWithMeta } from "./table";
 export interface ReadOptions {
   /** Bypass the short-lived read cache (use inside read-check-write sequences). */
   fresh?: boolean;
+  /** Accept a cached read no older than this (never longer than the global TTL). */
+  maxAgeMs?: number;
 }
 
 export interface Located<T> {
@@ -166,7 +177,7 @@ export async function appendActivity(activity: Activity): Promise<void> {
 // ---- Push subscriptions -------------------------------------------------
 
 export function readPushSubscriptionsLocated(options: ReadOptions = {}) {
-  return readParsed("pushSubscriptions", parsePushSubscriptionRow, (s) => s.subscriptionId, options);
+  return readParsed("pushSubscriptions", parsePushSubscriptionRow, (s) => `${s.subscriptionId}|${s.memberId}`, options);
 }
 
 export async function appendPushSubscription(sub: PushSubscriptionRecord): Promise<void> {
@@ -202,6 +213,74 @@ export async function appendNotificationLog(rec: NotificationLogRecord): Promise
 export async function updateNotificationLogRow(row: number, rec: NotificationLogRecord): Promise<void> {
   try {
     await getSheetsClient().updateValues(rowRange("notificationLog", row), [serializeNotificationLog(rec)]);
+  } finally {
+    invalidateTableCache();
+  }
+}
+
+// ---- Connections --------------------------------------------------------
+
+export function readConnectionsLocated(options: ReadOptions = {}) {
+  return readParsed("connections", parseConnectionRow, (c) => c.connectionId, options);
+}
+
+export async function appendConnection(c: Connection): Promise<void> {
+  try {
+    await getSheetsClient().appendValues(tableRange("connections"), [serializeConnection(c)]);
+  } finally {
+    invalidateTableCache();
+  }
+}
+
+export async function updateConnectionRow(row: number, c: Connection): Promise<void> {
+  try {
+    await getSheetsClient().updateValues(rowRange("connections", row), [serializeConnection(c)]);
+  } finally {
+    invalidateTableCache();
+  }
+}
+
+// ---- Group chat ---------------------------------------------------------
+
+export function readChatMessagesLocated(options: ReadOptions = {}) {
+  return readParsed("chatMessages", parseChatMessageRow, (m) => m.messageId, options);
+}
+
+export async function appendChatMessage(m: ChatMessage): Promise<void> {
+  try {
+    await getSheetsClient().appendValues(tableRange("chatMessages"), [serializeChatMessage(m)]);
+  } finally {
+    invalidateTableCache();
+  }
+}
+
+export function readChatReadsLocated(options: ReadOptions = {}) {
+  return readParsed("chatReads", parseChatReadRow, (r) => r.memberId, options);
+}
+
+export async function appendChatRead(r: ChatReadRecord): Promise<void> {
+  try {
+    await getSheetsClient().appendValues(tableRange("chatReads"), [serializeChatRead(r)]);
+  } finally {
+    invalidateTableCache();
+  }
+}
+
+export async function updateChatReadRow(row: number, r: ChatReadRecord): Promise<void> {
+  try {
+    await getSheetsClient().updateValues(rowRange("chatReads", row), [serializeChatRead(r)]);
+  } finally {
+    invalidateTableCache();
+  }
+}
+
+export function readCallSignalsLocated(options: ReadOptions = {}) {
+  return readParsed("callSignals", parseCallSignalRow, (s) => s.signalId, options);
+}
+
+export async function appendCallSignal(s: CallSignal): Promise<void> {
+  try {
+    await getSheetsClient().appendValues(tableRange("callSignals"), [serializeCallSignal(s)]);
   } finally {
     invalidateTableCache();
   }
