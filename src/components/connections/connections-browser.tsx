@@ -17,7 +17,6 @@ import { formatDisplayDate } from "@/lib/jobs/query";
 import { CONNECTION_STATUSES, type Connection, type ConnectionStatus } from "@/types/domain";
 import { ConnectionDetailsDialog } from "./connection-details-dialog";
 import { ConnectionForm } from "./connection-form";
-import { ConnectionStatusControl } from "./connection-status";
 
 /** The SHARED people-to-connect-with list (everyone sees everything; only the adder edits). Tracking only: nothing is ever sent to LinkedIn or anyone else. */
 export function ConnectionsBrowser({ connections: initial, me, timeZone }: { connections: Connection[]; me: MemberId; timeZone: string }) {
@@ -167,7 +166,7 @@ export function ConnectionsBrowser({ connections: initial, me, timeZone }: { con
                   <th role="columnheader" scope="col" className={TH_CLASS}>Name</th>
                   <th role="columnheader" scope="col" className={TH_CLASS}>Company</th>
                   <th role="columnheader" scope="col" className={TH_CLASS}>Role / Title</th>
-                  <th role="columnheader" scope="col" className={TH_CLASS}>Status</th>
+                  <th role="columnheader" scope="col" className={TH_CLASS}>Email</th>
                   <th role="columnheader" scope="col" className={TH_CLASS}>Added by</th>
                   <th role="columnheader" scope="col" className={TH_CLASS}>Added on</th>
                   <th role="columnheader" scope="col" className={TH_CLASS}>Actions</th>
@@ -198,8 +197,14 @@ export function ConnectionsBrowser({ connections: initial, me, timeZone }: { con
                       <td role="cell" data-label="Role / Title" className={cellClass("")}>
                         {c.role ? <span className="min-w-0 break-words max-xl:text-right">{c.role}</span> : <span className="text-muted">—</span>}
                       </td>
-                      <td role="cell" data-label="Status" className={cellClass("")}>
-                        <ConnectionStatusControl c={c} mine={mine} busy={busyId === c.connectionId} onStatus={(s) => changeStatus(c, s)} />
+                      <td role="cell" data-label="Email" className={cellClass("")}>
+                        {c.email ? (
+                          <a href={`mailto:${c.email}`} className="min-w-0 break-all text-electric-soft hover:underline max-xl:text-right" data-testid="connection-row-email">
+                            {c.email}
+                          </a>
+                        ) : (
+                          <span className="text-muted">—</span>
+                        )}
                       </td>
                       <td role="cell" data-label="Added by" className={cellClass("whitespace-nowrap")}>
                         {adder ? (

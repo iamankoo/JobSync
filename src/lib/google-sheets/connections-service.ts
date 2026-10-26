@@ -23,6 +23,7 @@ export async function createConnection(memberId: MemberId, input: CreateConnecti
     name: input.name,
     company: input.company,
     role: input.role,
+    email: input.email,
     profileUrl: input.profileUrl,
     otherUrl: input.otherUrl,
     message: input.message,
@@ -46,7 +47,7 @@ export async function updateConnection(memberId: MemberId, connectionId: string,
     if (hit.value.memberId !== memberId) throw new DomainError("not_connection_owner", "Only the member who added this connection can change it.");
     const next: Connection = { ...hit.value, updatedAt: nowIso(now) };
     // Only the fields present in the request change; an empty optional value clears it.
-    for (const key of ["name", "company", "role", "profileUrl", "otherUrl", "message", "notes", "status"] as const) {
+    for (const key of ["name", "company", "role", "email", "profileUrl", "otherUrl", "message", "notes", "status"] as const) {
       if (key in input) (next as unknown as Record<string, unknown>)[key] = input[key];
     }
     await updateConnectionRow(hit.row, next);

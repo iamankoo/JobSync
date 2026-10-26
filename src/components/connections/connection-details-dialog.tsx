@@ -81,6 +81,15 @@ export function ConnectionDetailsDialog({ c, mine, timeZone, busy, onStatus, onE
         <dl className="mt-5 grid grid-cols-1 gap-4 sm:grid-cols-2">
           <Field label="Company">{c.company ?? "—"}</Field>
           <Field label="Role / title">{c.role ?? "—"}</Field>
+          <Field label="Email">
+            {c.email ? (
+              <a href={`mailto:${c.email}`} className="break-all text-electric-soft hover:underline" data-testid="connection-email">
+                {c.email}
+              </a>
+            ) : (
+              "—"
+            )}
+          </Field>
           <Field label="Status">
             <ConnectionStatusControl c={c} mine={mine} busy={busy} onStatus={onStatus} />
           </Field>

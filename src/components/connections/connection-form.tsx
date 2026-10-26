@@ -4,16 +4,16 @@ import { useId, useState } from "react";
 import { Save } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { createConnectionRequest, updateConnectionRequest } from "@/lib/client/api";
-import { createConnectionSchema, MESSAGE_MAX, NOTES_MAX } from "@/lib/validation/connections";
+import { createConnectionSchema, EMAIL_MAX, MESSAGE_MAX, NOTES_MAX } from "@/lib/validation/connections";
 import { CONNECTION_STATUSES, type Connection } from "@/types/domain";
 
-type Field = "name" | "company" | "role" | "profileUrl" | "otherUrl" | "message" | "notes" | "status";
+type Field = "name" | "company" | "role" | "email" | "profileUrl" | "otherUrl" | "message" | "notes" | "status";
 type Values = Record<Field, string>;
 
-const EMPTY: Values = { name: "", company: "", role: "", profileUrl: "", otherUrl: "", message: "", notes: "", status: "Not Connected" };
+const EMPTY: Values = { name: "", company: "", role: "", email: "", profileUrl: "", otherUrl: "", message: "", notes: "", status: "Not Connected" };
 
 const fromConnection = (c: Connection): Values => ({
-  name: c.name, company: c.company ?? "", role: c.role ?? "", profileUrl: c.profileUrl ?? "", otherUrl: c.otherUrl ?? "",
+  name: c.name, company: c.company ?? "", role: c.role ?? "", email: c.email ?? "", profileUrl: c.profileUrl ?? "", otherUrl: c.otherUrl ?? "",
   message: c.message ?? "", notes: c.notes ?? "", status: c.status,
 });
 
@@ -82,15 +82,21 @@ export function ConnectionForm({ connection, onSaved, onCancel }: { connection?:
         <Labeled id={id("role")} label="Role / designation" error={errors.role}>
           <input {...aria("role")} value={values.role} onChange={set("role")} maxLength={120} autoComplete="off" placeholder="e.g. Engineering Manager" className={`${input} h-11`} />
         </Labeled>
-        <Labeled id={id("status")} label="Status" required error={errors.status}>
-          <select {...aria("status")} value={values.status} onChange={set("status")} className={`${input} h-11`}>
-            {CONNECTION_STATUSES.map((s) => (
-              <option key={s} value={s}>
-                {s}
-              </option>
-            ))}
-          </select>
+        <Labeled id={id("email")} label="Email" error={errors.email}>
+          <input {...aria("email")} type="email" value={values.email} onChange={set("email")} maxLength={EMAIL_MAX} inputMode="email" autoComplete="off" placeholder="e.g. priya@acme.com" className={`${input} h-11`} />
         </Labeled>
+        {/* New connections start as "Not Connected"; the status is changed later (here when editing, or from the details). */}
+        {connection && (
+          <Labeled id={id("status")} label="Status" required error={errors.status}>
+            <select {...aria("status")} value={values.status} onChange={set("status")} className={`${input} h-11`}>
+              {CONNECTION_STATUSES.map((s) => (
+                <option key={s} value={s}>
+                  {s}
+                </option>
+              ))}
+            </select>
+          </Labeled>
+        )}
         <Labeled id={id("profileUrl")} label="LinkedIn / profile URL" error={errors.profileUrl}>
           <input {...aria("profileUrl")} value={values.profileUrl} onChange={set("profileUrl")} inputMode="url" autoComplete="off" placeholder="https://www.linkedin.com/in/…" className={`${input} h-11`} />
         </Labeled>

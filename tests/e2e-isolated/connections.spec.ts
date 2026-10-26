@@ -14,7 +14,7 @@ async function open(page: Page) {
   await expect(page.getByRole("heading", { level: 1, name: "Connections" })).toBeVisible();
 }
 
-async function add(page: Page, fields: Partial<Record<"name" | "company" | "role" | "profile" | "message" | "notes", string>>) {
+async function add(page: Page, fields: Partial<Record<"name" | "company" | "role" | "email" | "profile" | "message" | "notes", string>>) {
   const dialog = page.getByRole("dialog");
   if (fields.name !== undefined) await dialog.getByLabel(/Person's name/).fill(fields.name);
   if (fields.company !== undefined) await dialog.getByLabel(/^Company/).fill(fields.company);
@@ -22,6 +22,7 @@ async function add(page: Page, fields: Partial<Record<"name" | "company" | "role
   if (fields.profile !== undefined) await dialog.getByLabel(/LinkedIn \/ profile URL/).fill(fields.profile);
   if (fields.message !== undefined) await dialog.getByLabel(/Message to send/).fill(fields.message);
   if (fields.notes !== undefined) await dialog.getByLabel(/^Notes/).fill(fields.notes);
+  if (fields.email !== undefined) await dialog.getByLabel(/^Email/).fill(fields.email);
 }
 
 test("create, view message, change status, copy, open profile, edit, search/filter, persist, delete", async ({ page, request }) => {
@@ -43,9 +44,14 @@ test("create, view message, change status, copy, open profile, edit, search/filt
   await add(page, { name: "Priya Sharma", profile: "not a url" });
   await page.getByRole("dialog").getByRole("button", { name: "Add connection" }).click();
   await expect(page.getByRole("dialog").getByText("Enter a valid http(s) URL")).toBeVisible();
+  // the Add form asks for an Email instead of a Status, and validates it
+  await expect(page.getByRole("dialog").getByLabel(/^Status/)).toHaveCount(0);
+  await add(page, { profile: "", email: "not-an-email" });
+  await page.getByRole("dialog").getByRole("button", { name: "Add connection" }).click();
+  await expect(page.getByRole("dialog").getByText("Enter a valid email address")).toBeVisible();
   expect(await dataRows(request, "Connections")).toHaveLength(0);
 
-  await add(page, { profile: "https://www.linkedin.com/in/priya-test", company: "Acme Corp", role: "Engineering Manager", message: MESSAGE, notes: "Met at a meetup" });
+  await add(page, { profile: "https://www.linkedin.com/in/priya-test", company: "Acme Corp", role: "Engineering Manager", email: "priya@acme.example", message: MESSAGE, notes: "Met at a meetup" });
   await page.getByRole("dialog").getByRole("button", { name: "Add connection" }).click();
   await expect(page.getByRole("dialog")).toHaveCount(0);
 
@@ -54,7 +60,12 @@ test("create, view message, change status, copy, open profile, edit, search/filt
   await expect(row.getByRole("button", { name: "Priya Sharma", exact: true })).toBeVisible();
   await expect(row.getByText("Acme Corp")).toBeVisible();
   await expect(row.getByText("Engineering Manager")).toBeVisible();
-  await expect(row.getByRole("combobox", { name: "Status of Priya Sharma" })).toHaveValue("Not Connected");
+  // Email replaces the Status column in the list
+  await expect(row.getByTestId("connection-row-email")).toHaveText("priya@acme.example");
+  await expect(row.getByTestId("connection-row-email")).toHaveAttribute("href", "mailto:priya@acme.example");
+  await expect(row.getByRole("combobox")).toHaveCount(0);
+  await expect(page.getByRole("columnheader", { name: "Email" })).toBeAttached();
+  await expect(page.getByRole("columnheader", { name: "Status" })).toHaveCount(0);
   await expect(row.getByTestId("connection-row-added-by")).toHaveText("You");
   await expect(row.locator("time")).toHaveAttribute("dateTime", /^\d{4}-\d{2}-\d{2}T/);
   await expect(row.getByText("Met at a meetup")).toHaveCount(0);
@@ -66,7 +77,8 @@ test("create, view message, change status, copy, open profile, edit, search/filt
   await expect(details.getByTestId("connection-message")).toHaveText(MESSAGE.replace("\n", " ").replace(/\s+/g, " "));
   await expect(details.getByText("Met at a meetup")).toBeVisible();
   await expect(details.getByTestId("connection-added-by")).toContainText("Added by you");
-  await expect(details.getByRole("combobox", { name: "Status of Priya Sharma" })).toHaveValue("Not Connected");
+  await expect(details.getByRole("combobox", { name: "Status of Priya Sharma" })).toHaveValue("Not Connected"); // new entries start Not Connected
+  await expect(details.getByTestId("connection-email")).toHaveText("priya@acme.example");
 
   // the profile link is external and safe
   const link = details.getByRole("link", { name: /Open profile/ });
@@ -85,17 +97,21 @@ test("create, view message, change status, copy, open profile, edit, search/filt
   await expect(page.getByRole("status").filter({ hasText: "marked as Connected" })).toBeVisible();
   await page.keyboard.press("Escape");
   await expect(page.getByRole("dialog")).toHaveCount(0);
-  await expect(row.getByRole("combobox", { name: "Status of Priya Sharma" })).toHaveValue("Connected");
+  await expect(page.getByRole("button", { name: /^Connected \(1\)/ })).toBeVisible();
 
-  // every status can be set from the list and persists across a reload
-  for (const status of ["Connected", "Messaged", "Reply", "Not Connected"]) {
-    await page.getByTestId("connection-row").first().getByRole("combobox", { name: "Status of Priya Sharma" }).selectOption(status);
-    if (status !== "Connected") await expect(page.getByRole("status").filter({ hasText: `marked as ${status}` })).toBeVisible();
+  // every status can still be set (from the details) and persists across a reload
+  for (const status of ["Messaged", "Reply", "Not Connected"]) {
+    await page.getByRole("button", { name: "View Priya Sharma" }).click();
+    await page.getByRole("dialog").getByRole("combobox", { name: "Status of Priya Sharma" }).selectOption(status);
+    await expect(page.getByRole("status").filter({ hasText: `marked as ${status}` })).toBeVisible();
     await page.reload();
-    await expect(page.getByTestId("connection-row").first().getByRole("combobox", { name: "Status of Priya Sharma" })).toHaveValue(status);
+    await page.getByRole("button", { name: "View Priya Sharma" }).click();
+    await expect(page.getByRole("dialog").getByRole("combobox", { name: "Status of Priya Sharma" })).toHaveValue(status);
+    await page.keyboard.press("Escape");
   }
   expect((await dataRows(request, "Connections"))[0].slice(1, 3)).toEqual(["anni", "Priya Sharma"]);
   expect((await dataRows(request, "Connections"))[0][9]).toBe("Not Connected");
+  expect((await dataRows(request, "Connections"))[0][12]).toBe("priya@acme.example");
 
   // a second connection, then search and filter
   await page.getByRole("button", { name: "Add connection" }).first().click();
@@ -110,7 +126,9 @@ test("create, view message, change status, copy, open profile, edit, search/filt
   await page.getByRole("searchbox", { name: /Search connections/ }).fill("zzz-nothing");
   await expect(page.getByText("No matching connections")).toBeVisible();
   await page.getByRole("button", { name: "Clear filters" }).click();
-  await page.getByTestId("connection-row").filter({ hasText: "Rahul Verma" }).getByRole("combobox").selectOption("Reply");
+  await page.getByRole("button", { name: "View Rahul Verma" }).click();
+  await page.getByRole("dialog").getByRole("combobox", { name: "Status of Rahul Verma" }).selectOption("Reply");
+  await page.keyboard.press("Escape");
   await page.getByRole("button", { name: /^Reply \(1\)/ }).click();
   await expect(page.getByTestId("connection-row")).toHaveCount(1);
   await page.getByRole("button", { name: /^All \(2\)/ }).click();
@@ -119,12 +137,16 @@ test("create, view message, change status, copy, open profile, edit, search/filt
   await page.getByRole("button", { name: "View Priya Sharma" }).click();
   await page.getByRole("dialog").getByRole("button", { name: "Edit Priya Sharma" }).click();
   await expect(page.getByRole("dialog", { name: "Edit connection" })).toBeVisible();
+  await expect(page.getByRole("dialog").getByLabel(/^Email/)).toHaveValue("priya@acme.example");
+  await expect(page.getByRole("dialog").getByLabel(/^Status/)).toHaveValue("Not Connected"); // status stays editable when editing
   await page.getByRole("dialog").getByLabel(/^Company/).fill("New Corp");
+  await page.getByRole("dialog").getByLabel(/^Email/).fill("priya.sharma@newcorp.example");
   await page.getByRole("dialog").getByLabel(/^Notes/).fill("");
   await page.getByRole("dialog").getByRole("button", { name: "Save changes" }).click();
   await expect(page.getByTestId("connection-row").filter({ hasText: "Priya Sharma" }).getByText("New Corp")).toBeVisible();
   await page.reload();
   await expect(page.getByTestId("connection-row").filter({ hasText: "Priya Sharma" }).getByText("New Corp")).toBeVisible();
+  await expect(page.getByTestId("connection-row").filter({ hasText: "Priya Sharma" }).getByTestId("connection-row-email")).toHaveText("priya.sharma@newcorp.example");
   await page.getByRole("button", { name: "View Priya Sharma" }).click();
   await expect(page.getByRole("dialog").getByText("Met at a meetup")).toHaveCount(0);
   await page.keyboard.press("Escape");
@@ -171,7 +193,7 @@ test("connections are SHARED: every member sees every entry; only the adder can 
   await expect(row.getByTestId("connection-row-added-by")).toHaveText("Anni");
   // not the adder: status is read-only and there is no edit/delete menu
   await expect(row.getByRole("combobox")).toHaveCount(0);
-  await expect(row.getByText("Not Connected")).toBeVisible();
+  await expect(row.getByText("—").first()).toBeVisible(); // no email saved
   await expect(row.getByRole("button", { name: /More actions/ })).toHaveCount(0);
   await row.getByRole("button", { name: "View Shared contact" }).click();
   const details = lukky.getByRole("dialog", { name: "Connection details" });

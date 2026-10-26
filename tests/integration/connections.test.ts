@@ -118,6 +118,43 @@ describe("Connections API", () => {
     expect(c.message).toContain("love to connect");
   });
 
+  it("saves an email with the connection (column M), returns it to every member, and edits/clears it", async () => {
+    const { connectionId } = await add("anni", { email: "  priya@acme.example " });
+    expect(sheets.dataRows("Connections")[0][12]).toBe("priya@acme.example");
+    expect(sheets.dataRows("Connections")[0][9]).toBe("Not Connected"); // status still stored
+    const [seen] = (await list("rishii")) as unknown as { email?: string }[];
+    expect(seen.email).toBe("priya@acme.example");
+    as("anni");
+    expect((await updateRoute(req("PUT", { email: "p.sharma@new.example" }), ctx(connectionId))).status).toBe(200);
+    expect(sheets.dataRows("Connections")[0][12]).toBe("p.sharma@new.example");
+    expect((await updateRoute(req("PUT", { status: "Messaged" }), ctx(connectionId))).status).toBe(200);
+    expect(sheets.dataRows("Connections")[0][12]).toBe("p.sharma@new.example"); // untouched by a status change
+    expect((await updateRoute(req("PUT", { email: "" }), ctx(connectionId))).status).toBe(200);
+    expect(((await list("anni"))[0] as unknown as { email?: string }).email).toBeUndefined();
+  });
+
+  it("rejects an invalid email and saves nothing", async () => {
+    as("anni");
+    for (const email of ["not-an-email", "a@b", "two words@x.com", "x".repeat(250) + "@a.com"]) {
+      const res = await createRoute(req("POST", person({ email })));
+      expect(res.status, email).toBe(400);
+    }
+    expect(sheets.dataRows("Connections")).toHaveLength(0);
+  });
+
+  it("existing rows without an email (and a sheet without the Email header) keep working", async () => {
+    // A 12-column header, as in the current production sheet.
+    sheets.rows("Connections")[0] = sheets.rows("Connections")[0].slice(0, 12);
+    sheets.rows("Connections").push(["conn_old1", "lukky", "Old Contact", "Globex", "", "", "", "", "", "Reply", "2026-10-01T10:00:00.000Z", "2026-10-01T10:00:00.000Z"]);
+    const before = await list("anni");
+    expect(before).toHaveLength(1);
+    expect(before[0]).toMatchObject({ name: "Old Contact", status: "Reply" });
+    expect((before[0] as unknown as { email?: string }).email).toBeUndefined();
+    await add("anni", { email: "new@acme.example" });
+    const after = (await list("anni")) as unknown as { name: string; email?: string }[];
+    expect(after.find((c) => c.name === "Priya Sharma")?.email).toBe("new@acme.example");
+  });
+
   it("rejects an empty update", async () => {
     const { connectionId } = await add("anni");
     as("anni");

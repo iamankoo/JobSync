@@ -24,6 +24,7 @@ import {
 } from "@/types/domain";
 import { ID_PATTERN } from "@/lib/validation/applications";
 import { parseHttpUrl } from "@/lib/utils/url";
+import { isEmailAddress } from "@/lib/validation/connections";
 import { isIsoDate, isIsoTimestamp } from "@/lib/utils/time";
 
 /** Outcome of parsing one spreadsheet row. `warnings` are optional fields that were dropped. */
@@ -194,7 +195,7 @@ export function serializeNotificationLog(r: NotificationLogRecord): string[] {
 // ---- Connections --------------------------------------------------------
 
 export function parseConnectionRow(cells: string[]): RowParse<Connection> {
-  const [connectionId, memberId, name, company, role, profileUrl, otherUrl, message, notes, status, createdAt, updatedAt] = cells.map((c) => c.trim());
+  const [connectionId, memberId, name, company, role, profileUrl, otherUrl, message, notes, status, createdAt, updatedAt, email = ""] = cells.map((c) => c.trim());
   if (!ID_PATTERN.test(connectionId)) return { ok: false, problem: "missing or invalid ConnectionID" };
   if (!isMemberId(memberId)) return { ok: false, problem: "missing or unknown MemberID" };
   if (!name) return { ok: false, problem: "missing Name" };
@@ -210,11 +211,16 @@ export function parseConnectionRow(cells: string[]): RowParse<Connection> {
   };
   const profile = url("ProfileUrl", profileUrl);
   const other = url("OtherUrl", otherUrl);
+  let mail: string | undefined;
+  if (email) {
+    if (isEmailAddress(email)) mail = email;
+    else warnings.push("Email ignored (not an email address)");
+  }
   return {
     ok: true,
     value: {
       connectionId, memberId, name, status, createdAt, updatedAt,
-      ...(company ? { company } : {}), ...(role ? { role } : {}),
+      ...(company ? { company } : {}), ...(role ? { role } : {}), ...(mail ? { email: mail } : {}),
       ...(profile ? { profileUrl: profile } : {}), ...(other ? { otherUrl: other } : {}),
       ...(message ? { message } : {}), ...(notes ? { notes } : {}),
     },
@@ -223,7 +229,7 @@ export function parseConnectionRow(cells: string[]): RowParse<Connection> {
 }
 
 export function serializeConnection(c: Connection): string[] {
-  return [c.connectionId, c.memberId, c.name, c.company ?? "", c.role ?? "", c.profileUrl ?? "", c.otherUrl ?? "", c.message ?? "", c.notes ?? "", c.status, c.createdAt, c.updatedAt];
+  return [c.connectionId, c.memberId, c.name, c.company ?? "", c.role ?? "", c.profileUrl ?? "", c.otherUrl ?? "", c.message ?? "", c.notes ?? "", c.status, c.createdAt, c.updatedAt, c.email ?? ""];
 }
 
 // ---- Chat ---------------------------------------------------------------

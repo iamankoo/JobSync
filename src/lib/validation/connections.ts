@@ -17,6 +17,13 @@ const url = z
   .max(MAX_URL_LENGTH, "URL is too long")
   .refine((u) => parseHttpUrl(u) !== null, "Enter a valid http(s) URL");
 
+export const EMAIL_MAX = 254;
+/** Simple, permissive address check (something@domain.tld, no spaces); the mail client is the real judge. */
+export function isEmailAddress(v: string): boolean {
+  return v.length <= EMAIL_MAX && /^[^\s@<>()",;:]+@[^\s@<>()",;:]+\.[^\s@<>()",;:]{2,}$/.test(v);
+}
+const email = z.string().trim().max(EMAIL_MAX, "Email is too long").refine((v) => isEmailAddress(v), "Enter a valid email address");
+
 export const MESSAGE_MAX = 2000;
 export const NOTES_MAX = 2000;
 
@@ -24,6 +31,7 @@ const fields = {
   name: line(120).min(1, "Required"),
   company: optional(line(120)),
   role: optional(line(120)),
+  email: optional(email),
   profileUrl: optional(url),
   otherUrl: optional(url),
   message: optional(longText(MESSAGE_MAX)),

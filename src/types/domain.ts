@@ -147,6 +147,8 @@ export interface Connection {
   name: string;
   company?: string;
   role?: string;
+  /** Contact email address. */
+  email?: string;
   /** LinkedIn / profile URL (http/https only). */
   profileUrl?: string;
   /** Any other useful profile or contact URL (http/https only). */
