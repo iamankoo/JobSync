@@ -53,6 +53,14 @@ export function optionalColumnsPresent(tab: TabKey, header: string[] | undefined
  * Other instances can be stale for at most the TTL (default 5 s; 0 disables, as under test).
  */
 const cache = new Map<TabKey, { at: number; rows: RawRow[]; meta: TableMeta }>();
+/**
+ * Reads of a tab currently in progress, so simultaneous requests (several tabs auto-refreshing,
+ * a layout and its page) share one Google call instead of each spending quota. Tagged with the
+ * cache generation: a write on this instance bumps it, so no read that started before the write
+ * is ever reused after it.
+ */
+const inflight = new Map<TabKey, { generation: number; promise: Promise<{ rows: RawRow[]; meta: TableMeta }> }>();
+let generation = 0;
 let ttlOverride: number | null = null;
 
 function ttlMs(): number {
@@ -63,13 +71,15 @@ function ttlMs(): number {
 }
 
 export function invalidateTableCache(): void {
+  generation += 1;
   cache.clear();
+  inflight.clear();
 }
 
 /** Test hook: set the cache TTL in ms (null restores the default). */
 export function setTableCacheTtlForTesting(ms: number | null): void {
   ttlOverride = ms;
-  cache.clear();
+  invalidateTableCache();
 }
 
 /**
@@ -85,10 +95,23 @@ export async function readTableWithMeta(tab: TabKey, options: { fresh?: boolean;
   const ttl = options.maxAgeMs === undefined ? ttlMs() : Math.min(ttlMs(), options.maxAgeMs);
   const hit = cache.get(tab);
   if (!options.fresh && ttl > 0 && hit && Date.now() - hit.at < ttl) return { rows: hit.rows, meta: hit.meta };
-  const result = await readTableUncached(tab);
-  if (ttl > 0) cache.set(tab, { at: Date.now(), ...result });
-  else cache.delete(tab);
-  return result;
+  // A non-fresh read may join one already under way (it returns data at least as new as a cache
+  // hit would). A fresh read (read-check-write) always starts its own.
+  const running = inflight.get(tab);
+  if (!options.fresh && running && running.generation === generation) return running.promise;
+
+  const startedIn = generation;
+  const promise = readTableUncached(tab);
+  inflight.set(tab, { generation: startedIn, promise });
+  try {
+    const result = await promise;
+    // Only cache a read that no local write has overtaken.
+    if (ttl > 0 && startedIn === generation) cache.set(tab, { at: Date.now(), ...result });
+    else if (ttl <= 0) cache.delete(tab);
+    return result;
+  } finally {
+    if (inflight.get(tab)?.promise === promise) inflight.delete(tab);
+  }
 }
 
 async function readTableUncached(tab: TabKey): Promise<{ rows: RawRow[]; meta: TableMeta }> {

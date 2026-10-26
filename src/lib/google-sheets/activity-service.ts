@@ -2,6 +2,7 @@ import "server-only";
 import type { MemberId } from "@/config/members";
 import type { ActivityAction } from "@/types/domain";
 import { dateInTimezone, nowIso } from "@/lib/utils/time";
+import { getSheetsClient } from "./client";
 import { appTimezone } from "./config";
 import { newId } from "./ids";
 import { isPresence } from "@/lib/analytics/activity";
@@ -36,6 +37,21 @@ export async function recordActivity(
 /** A visit is recorded at most once per member per 30 minutes (see recordVisit). */
 export const VISIT_WINDOW_MS = 30 * 60 * 1000;
 
+/** Latest persisted presence time per member seen by this instance, kept per data client (so tests stay isolated). */
+const presenceByClient = new WeakMap<object, Map<MemberId, number>>();
+
+function knownPresence(): Map<MemberId, number> {
+  const client = getSheetsClient();
+  let map = presenceByClient.get(client);
+  if (!map) presenceByClient.set(client, (map = new Map()));
+  return map;
+}
+
+function rememberPresence(memberId: MemberId, at: number): void {
+  const map = knownPresence();
+  if (at > (map.get(memberId) ?? 0)) map.set(memberId, at);
+}
+
 /**
  * Records a server-validated page visit for `memberId` (the caller has already validated the
  * session). DEDUPLICATION RULE: at most ONE visit/login per member per 30-minute window, judged
@@ -44,17 +60,24 @@ export const VISIT_WINDOW_MS = 30 * 60 * 1000;
  * actually written; failures are logged and reported as not recorded.
  */
 export async function recordVisit(memberId: MemberId, now: Date = new Date()): Promise<boolean> {
+  // Every page render and 30-second auto-refresh calls this. A presence event this instance has
+  // already seen persisted inside the window settles the question without re-reading the whole
+  // Activity tab (Activity rows are only ever added, so a persisted event cannot disappear).
   try {
+    const known = knownPresence().get(memberId);
+    if (known !== undefined && now.getTime() - known < VISIT_WINDOW_MS) return false;
     return await withWriteLock(async () => {
       const { items } = await readActivityLocated({ fresh: true });
       let last = 0;
       for (const { value: a } of items) {
         if (a.memberId === memberId && isPresence(a.action)) last = Math.max(last, Date.parse(a.timestamp));
       }
+      if (last) rememberPresence(memberId, last);
       if (last && now.getTime() - last < VISIT_WINDOW_MS) return false;
       await appendActivity({
         activityId: newId("act"), memberId, date: dateInTimezone(now, appTimezone()), action: "visit", timestamp: nowIso(now),
       });
+      rememberPresence(memberId, now.getTime());
       return true;
     });
   } catch (err) {

@@ -72,6 +72,23 @@ describe("short-lived read cache (keeps polling within Google's quota)", () => {
     expect(reads("Jobs")).toBeGreaterThanOrEqual(2);
   });
 
+  it("simultaneous reads of a tab share one in-flight request", async () => {
+    await Promise.all(Array.from({ length: 8 }, () => readJobs()));
+    expect(reads("Jobs")).toBe(1);
+  });
+
+  it("a fresh read never joins an in-flight read (read-check-write stays safe)", async () => {
+    await Promise.all([readJobs(), readJobs({ fresh: true })]);
+    expect(reads("Jobs")).toBe(2);
+  });
+
+  it("a read started before a local write is never reused or cached after it", async () => {
+    const stale = readJobs(); // in flight, sees the empty tab
+    await createJob("anni", { company: "Synthetic Co", jobRole: "Test Role", jobType: "Internship", location: "Testville", jobUrl: "https://jobs.example.test/1" });
+    await stale;
+    expect((await readJobs()).items).toHaveLength(1);
+  });
+
   it("is disabled when the TTL is 0", async () => {
     setTableCacheTtlForTesting(0);
     await readJobs();

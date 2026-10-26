@@ -3,6 +3,7 @@ import { auth, sheets as sheetsApi } from "@googleapis/sheets";
 import { loadSheetsConfig, type SheetsConfig } from "./config";
 import { SheetsError } from "./errors";
 import { memorySheets } from "./memory-client";
+import { createReadBatcher } from "./read-batcher";
 import { invalidateTableCache } from "./table";
 
 /** The only operations the data layer needs. Small on purpose so it can be faked in tests. */
@@ -15,13 +16,26 @@ export interface SheetsClient {
 }
 
 const REQUEST_TIMEOUT_MS = 10_000;
+/** Timeouts / 5xx / network blips: a couple of quick retries. */
 const MAX_ATTEMPTS = 3;
-const BASE_BACKOFF_MS = 250;
+const BASE_BACKOFF_MS = 500;
+/**
+ * Quota (429) errors: Google's read/write quotas are per MINUTE and shared by every server instance,
+ * so sub-second retries just hit the same exhausted window. Back off for seconds (with jitter so
+ * instances do not retry in lock-step), as Google recommends, for up to ~15 s in total.
+ */
+const RATE_LIMIT_MAX_ATTEMPTS = 5;
+const RATE_LIMIT_BASE_BACKOFF_MS = 1_000;
+const MAX_BACKOFF_MS = 8_000;
 
 interface GoogleLikeError {
   code?: number | string;
   status?: number;
-  response?: { status?: number; data?: { error?: { errors?: { reason?: string }[]; status?: string } } };
+  response?: {
+    status?: number;
+    headers?: Record<string, string | undefined> | { get?: (name: string) => string | null };
+    data?: { error?: { errors?: { reason?: string }[]; status?: string } };
+  };
 }
 
 /** Maps any Google/network failure to a SheetsError with a safe public message. */
@@ -58,21 +72,74 @@ function isRetryable(err: SheetsError): boolean {
   return err.code === "rate_limited" || err.code === "timeout" || err.code === "upstream_error";
 }
 
-const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+/**
+ * A quota rejection (429 / rateLimitExceeded) is refused by Google BEFORE the request is executed,
+ * so even a non-idempotent append or row delete can be repeated safely after one. Timeouts and 5xx
+ * are ambiguous (the write may have happened) and are never retried for those operations.
+ */
+export function isDefinitelyNotApplied(err: SheetsError): boolean {
+  return err.code === "rate_limited";
+}
 
-/** Runs `op`, retrying transient failures with exponential backoff. */
-export async function withRetry<T>(op: () => Promise<T>, sleepFn: (ms: number) => Promise<void> = sleep): Promise<T> {
-  let last: SheetsError | undefined;
-  for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
+/** Server-suggested wait in ms from a Retry-After header (seconds), if Google sent one. */
+function retryAfterMs(err: SheetsError): number | undefined {
+  const headers = (err.cause as GoogleLikeError | undefined)?.response?.headers;
+  if (!headers) return undefined;
+  const raw = typeof (headers as { get?: unknown }).get === "function"
+    ? (headers as { get: (n: string) => string | null }).get("retry-after")
+    : (headers as Record<string, string | undefined>)["retry-after"];
+  const seconds = Number(raw);
+  return Number.isFinite(seconds) && seconds > 0 ? seconds * 1000 : undefined;
+}
+
+const realSleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+let sleepImpl = realSleep;
+const sleep = (ms: number) => sleepImpl(ms);
+
+/** Test hook: replace the backoff sleep (null restores real waiting). */
+export function setRetrySleepForTesting(fn: ((ms: number) => Promise<void>) | null): void {
+  sleepImpl = fn ?? realSleep;
+}
+
+export interface RetryOptions {
+  /** Which mapped errors may be retried (default: every transient one). */
+  retryOn?: (err: SheetsError) => boolean;
+  /** Source of jitter in [0, 1) (injectable for tests). */
+  random?: () => number;
+}
+
+/** Delay before retry number `attempt` (0-based) after `err`. Exported for tests. */
+export function backoffMs(err: SheetsError, attempt: number, random: () => number = Math.random): number {
+  const base = err.code === "rate_limited" ? RATE_LIMIT_BASE_BACKOFF_MS : BASE_BACKOFF_MS;
+  const jittered = Math.min(base * 2 ** attempt, MAX_BACKOFF_MS) * (0.75 + 0.5 * random());
+  const hinted = retryAfterMs(err);
+  return Math.round(Math.min(Math.max(jittered, hinted ?? 0), MAX_BACKOFF_MS * 1.25));
+}
+
+/** Runs `op`, retrying transient failures with exponential backoff and jitter. */
+export async function withRetry<T>(
+  op: () => Promise<T>,
+  sleepFn: (ms: number) => Promise<void> = sleep,
+  { retryOn = isRetryable, random = Math.random }: RetryOptions = {},
+): Promise<T> {
+  for (let attempt = 0; ; attempt++) {
     try {
       return await op();
     } catch (err) {
-      last = mapGoogleError(err);
-      if (!isRetryable(last) || attempt === MAX_ATTEMPTS - 1) throw last;
-      await sleepFn(BASE_BACKOFF_MS * 2 ** attempt);
+      const mapped = mapGoogleError(err);
+      const limit = mapped.code === "rate_limited" ? RATE_LIMIT_MAX_ATTEMPTS : MAX_ATTEMPTS;
+      if (!retryOn(mapped) || attempt >= limit - 1) throw mapped;
+      console.warn(`[sheets] ${mapped.code}, retrying (attempt ${attempt + 2} of ${limit})`);
+      await sleepFn(backoffMs(mapped, attempt, random));
     }
   }
-  throw last!;
+}
+
+/** Converts a Sheets API values grid to strings (missing cells become ""). */
+function normaliseValues(values: unknown): string[][] {
+  if (values === undefined || values === null) return [];
+  if (!Array.isArray(values)) throw new SheetsError("malformed_response", "The data service returned an unexpected response.");
+  return values.map((row) => (Array.isArray(row) ? row.map((c) => (c == null ? "" : String(c))) : []));
 }
 
 function createGoogleClient(config: SheetsConfig): SheetsClient {
@@ -100,27 +167,36 @@ function createGoogleClient(config: SheetsConfig): SheetsClient {
     return id;
   }
 
+  const readOne = (range: string) =>
+    withRetry(async () => {
+      const res = await api.spreadsheets.values.get({ spreadsheetId, range, majorDimension: "ROWS" }, opts);
+      return normaliseValues(res.data.values);
+    });
+  const readMany = (ranges: string[]) =>
+    withRetry(async () => {
+      const res = await api.spreadsheets.values.batchGet({ spreadsheetId, ranges, majorDimension: "ROWS" }, opts);
+      const valueRanges = res.data.valueRanges ?? [];
+      if (valueRanges.length !== ranges.length) throw new SheetsError("malformed_response", "The data service returned an unexpected response.");
+      return valueRanges.map((vr) => normaliseValues(vr.values));
+    });
+  // Reads issued together (a page's tabs, a layout + its page, a chat poll's two tabs) share one request.
+  const batchedRead = createReadBatcher(readMany, readOne);
+
   return {
-    async getValues(range) {
-      return withRetry(async () => {
-        const res = await api.spreadsheets.values.get({ spreadsheetId, range, majorDimension: "ROWS" }, opts);
-        const values = res.data.values;
-        if (values === undefined || values === null) return [];
-        if (!Array.isArray(values)) throw new SheetsError("malformed_response", "The data service returned an unexpected response.");
-        return values.map((row) => (Array.isArray(row) ? row.map((c) => (c == null ? "" : String(c))) : []));
-      });
-    },
+    getValues: batchedRead,
     async appendValues(range, rows) {
       // RAW: values are stored as literal text and never interpreted as formulas.
-      // Appends are not retried automatically after an ambiguous failure to avoid duplicate rows.
-      try {
-        await api.spreadsheets.values.append(
-          { spreadsheetId, range, valueInputOption: "RAW", insertDataOption: "INSERT_ROWS", requestBody: { values: rows } },
-          opts,
-        );
-      } catch (err) {
-        throw mapGoogleError(err);
-      }
+      // Retried ONLY after a quota rejection (never executed); an ambiguous failure (timeout/5xx)
+      // is not retried, to avoid duplicate rows.
+      await withRetry(
+        () =>
+          api.spreadsheets.values.append(
+            { spreadsheetId, range, valueInputOption: "RAW", insertDataOption: "INSERT_ROWS", requestBody: { values: rows } },
+            opts,
+          ),
+        sleep,
+        { retryOn: isDefinitelyNotApplied },
+      );
     },
     async deleteRows(tabName, rows) {
       if (rows.length === 0) return;
@@ -129,12 +205,11 @@ function createGoogleClient(config: SheetsConfig): SheetsClient {
       const requests = [...new Set(rows)]
         .sort((a, b) => b - a)
         .map((row) => ({ deleteDimension: { range: { sheetId, dimension: "ROWS", startIndex: row - 1, endIndex: row } } }));
-      // Not auto-retried: repeating an ambiguous delete could remove the wrong rows.
-      try {
-        await api.spreadsheets.batchUpdate({ spreadsheetId, requestBody: { requests } }, opts);
-      } catch (err) {
-        throw mapGoogleError(err);
-      }
+      // Retried ONLY after a quota rejection (never executed): repeating an ambiguous delete
+      // (timeout/5xx) could remove the wrong rows.
+      await withRetry(() => api.spreadsheets.batchUpdate({ spreadsheetId, requestBody: { requests } }, opts), sleep, {
+        retryOn: isDefinitelyNotApplied,
+      });
     },
     async updateValues(range, rows) {
       await withRetry(async () => {

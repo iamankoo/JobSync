@@ -76,15 +76,19 @@ describe("withRetry", () => {
   it("retries transient failures with exponential backoff, then succeeds", async () => {
     const sleeps: number[] = [];
     const op = vi.fn().mockRejectedValueOnce(googleError(429)).mockRejectedValueOnce(googleError(503)).mockResolvedValue("ok");
-    expect(await withRetry(op, async (ms) => void sleeps.push(ms))).toBe("ok");
+    // random() = 0.5 removes the jitter: quota waits start at 1 s, other transient waits at 0.5 s.
+    expect(await withRetry(op, async (ms) => void sleeps.push(ms), { random: () => 0.5 })).toBe("ok");
     expect(op).toHaveBeenCalledTimes(3);
-    expect(sleeps).toEqual([250, 500]);
+    expect(sleeps).toEqual([1000, 1000]);
   });
 
   it("gives up after the maximum attempts with a mapped error", async () => {
     const op = vi.fn().mockRejectedValue(googleError(429));
     await expect(withRetry(op, async () => {})).rejects.toMatchObject({ code: "rate_limited" });
-    expect(op).toHaveBeenCalledTimes(3);
+    expect(op).toHaveBeenCalledTimes(5);
+    const op5xx = vi.fn().mockRejectedValue(googleError(503));
+    await expect(withRetry(op5xx, async () => {})).rejects.toMatchObject({ code: "upstream_error" });
+    expect(op5xx).toHaveBeenCalledTimes(3);
   });
 
   it("does not retry permanent failures", async () => {
