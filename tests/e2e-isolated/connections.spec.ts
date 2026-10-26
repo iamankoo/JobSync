@@ -97,7 +97,9 @@ test("create, view message, change status, copy, open profile, edit, search/filt
   await expect(page.getByRole("status").filter({ hasText: "marked as Connected" })).toBeVisible();
   await page.keyboard.press("Escape");
   await expect(page.getByRole("dialog")).toHaveCount(0);
-  await expect(page.getByRole("button", { name: /^Connected \(1\)/ })).toBeVisible();
+  // the page itself is only the title, the Add button and the list: no search box or status filters
+  await expect(page.getByRole("searchbox", { name: /Search connections/ })).toHaveCount(0);
+  await expect(page.getByRole("group", { name: "Filter by status" })).toHaveCount(0);
 
   // every status can still be set (from the details) and persists across a reload
   for (const status of ["Messaged", "Reply", "Not Connected"]) {
@@ -113,25 +115,16 @@ test("create, view message, change status, copy, open profile, edit, search/filt
   expect((await dataRows(request, "Connections"))[0][9]).toBe("Not Connected");
   expect((await dataRows(request, "Connections"))[0][12]).toBe("priya@acme.example");
 
-  // a second connection, then search and filter
+  // a second connection
   await page.getByRole("button", { name: "Add connection" }).first().click();
   await add(page, { name: "Rahul Verma", company: "Globex", message: "Hello Rahul" });
   await page.getByRole("dialog").getByRole("button", { name: "Add connection" }).click();
   await expect(page.getByTestId("connection-row")).toHaveCount(2);
-  await page.getByRole("searchbox", { name: /Search connections/ }).fill("globex");
-  await expect(page.getByTestId("connection-row")).toHaveCount(1);
-  await expect(page.getByRole("button", { name: "Rahul Verma", exact: true })).toBeVisible();
-  await page.getByRole("searchbox", { name: /Search connections/ }).fill("hello rahul"); // search still covers the message
-  await expect(page.getByTestId("connection-row")).toHaveCount(1);
-  await page.getByRole("searchbox", { name: /Search connections/ }).fill("zzz-nothing");
-  await expect(page.getByText("No matching connections")).toBeVisible();
-  await page.getByRole("button", { name: "Clear filters" }).click();
+  await expect(page.getByTestId("connection-row").first().getByRole("button", { name: "Rahul Verma", exact: true })).toBeVisible(); // newest first
   await page.getByRole("button", { name: "View Rahul Verma" }).click();
   await page.getByRole("dialog").getByRole("combobox", { name: "Status of Rahul Verma" }).selectOption("Reply");
+  await expect(page.getByRole("status").filter({ hasText: "marked as Reply" })).toBeVisible();
   await page.keyboard.press("Escape");
-  await page.getByRole("button", { name: /^Reply \(1\)/ }).click();
-  await expect(page.getByTestId("connection-row")).toHaveCount(1);
-  await page.getByRole("button", { name: /^All \(2\)/ }).click();
 
   // edit from the details (clear the notes, change company)
   await page.getByRole("button", { name: "View Priya Sharma" }).click();
@@ -208,8 +201,7 @@ test("connections are SHARED: every member sees every entry; only the adder can 
   await add(lukky, { name: "Lukky's find" });
   await lukky.getByRole("dialog").getByRole("button", { name: "Add connection" }).click();
   await expect(lukky.getByTestId("connection-row")).toHaveCount(2);
-  await lukky.getByRole("searchbox", { name: /Search connections/ }).fill("anni");
-  await expect(lukky.getByTestId("connection-row")).toHaveCount(1); // search also matches "added by"
+  await expect(lukky.getByTestId("connection-row").filter({ hasText: "Lukky's find" }).getByTestId("connection-row-added-by")).toHaveText("You");
   const attempts = await lukky.evaluate(async (cid) => {
     const put = await fetch(`/api/connections/${cid}`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ status: "Reply" }) });
     const del = await fetch(`/api/connections/${cid}`, { method: "DELETE" });

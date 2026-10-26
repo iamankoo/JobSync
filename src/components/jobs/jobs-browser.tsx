@@ -13,7 +13,7 @@ import { Notice, type NoticeState } from "@/components/ui/notice";
 import { Pagination } from "@/components/ui/pagination";
 import { updateApplication } from "@/lib/client/api";
 import {
-  compareOptional, distinctValues, EMPTY_FILTERS, filterByJobFields, formatDisplayDate, hasActiveFilters, paginate,
+  compareOptional, distinctValues, EMPTY_FILTERS, filterByJobFields, formatDisplayDate, paginate,
   type JobFilters, type SortDirection,
 } from "@/lib/jobs/query";
 import { countApplications, notAppliedCount } from "@/lib/counting";
@@ -22,7 +22,6 @@ import type { Job, JobWithMyStatus } from "@/types/domain";
 import { DeleteJobDialog } from "./delete-job-dialog";
 import { EditJobDialog } from "./edit-job-dialog";
 import { DeadlineText } from "./deadline-text";
-import { FilterBar } from "./filter-bar";
 import { JobDetailsDialog } from "./job-details-dialog";
 import { SortableTh } from "./sortable-th";
 import { StatusToggle } from "./status-toggle";
@@ -178,15 +177,7 @@ export function JobsBrowser({ jobs: initialJobs, currentMemberId, initialQuery =
         </EmptyState>
       ) : (
         <>
-          <FilterBar
-            filters={filters}
-            options={options}
-            searchLabel="Search jobs"
-            searchPlaceholder="Search jobs…"
-            onChange={changeFilters}
-            onReset={() => changeFilters(EMPTY_FILTERS)}
-            canReset={hasActiveFilters(filters)}
-          />
+          {/* No filter panel: the list follows the summary cards. A search from the global header still applies. */}
 
           {sorted.length === 0 ? (
             <EmptyState icon={SearchX} title="No jobs match your search" message="Try different keywords or clear the filters.">

@@ -1,8 +1,7 @@
 "use client";
 
-import { useMemo, useState } from "react";
-import { Eye, Plus, Search, SearchX, Trash2, UserPlus, Users } from "lucide-react";
-import { PageHeader } from "@/components/layout/page-header";
+import { useState } from "react";
+import { Eye, Plus, Trash2, UserPlus, Users } from "lucide-react";
 import { ActionMenu } from "@/components/ui/action-menu";
 import { Avatar } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
@@ -14,7 +13,7 @@ import { cellClass, HEAD_ROW_CLASS, ROW_CLASS, TABLE_CLASS, TBODY_CLASS, TH_CLAS
 import { getMember, type MemberId } from "@/config/members";
 import { deleteConnectionRequest, updateConnectionRequest } from "@/lib/client/api";
 import { formatDisplayDate } from "@/lib/jobs/query";
-import { CONNECTION_STATUSES, type Connection, type ConnectionStatus } from "@/types/domain";
+import type { Connection, ConnectionStatus } from "@/types/domain";
 import { ConnectionDetailsDialog } from "./connection-details-dialog";
 import { ConnectionForm } from "./connection-form";
 
@@ -22,8 +21,6 @@ import { ConnectionForm } from "./connection-form";
 export function ConnectionsBrowser({ connections: initial, me, timeZone }: { connections: Connection[]; me: MemberId; timeZone: string }) {
   const [items, setItems] = useState(initial);
   const [seen, setSeen] = useState(initial);
-  const [query, setQuery] = useState("");
-  const [status, setStatus] = useState<"" | ConnectionStatus>("");
   const [editing, setEditing] = useState<Connection | "new" | null>(null);
   const [deleting, setDeleting] = useState<Connection | null>(null);
   // By id, so the open details always show the latest saved values (status changes, background refresh).
@@ -36,21 +33,6 @@ export function ConnectionsBrowser({ connections: initial, me, timeZone }: { con
     setSeen(initial);
     setItems(initial);
   }
-
-  const counts = useMemo(() => {
-    const out = Object.fromEntries(CONNECTION_STATUSES.map((s) => [s, 0])) as Record<ConnectionStatus, number>;
-    for (const c of items) out[c.status] += 1;
-    return out;
-  }, [items]);
-
-  const visible = useMemo(() => {
-    const q = query.trim().toLowerCase();
-    return items.filter((c) => {
-      if (status && c.status !== status) return false;
-      if (!q) return true;
-      return [c.name, c.company, c.role, c.message, c.notes, c.profileUrl, getMember(c.memberId)?.name].some((v) => v?.toLowerCase().includes(q));
-    });
-  }, [items, query, status]);
 
   const viewing = viewingId ? items.find((c) => c.connectionId === viewingId) ?? null : null;
   const copiedNotice = (ok: boolean) =>
@@ -88,71 +70,21 @@ export function ConnectionsBrowser({ connections: initial, me, timeZone }: { con
   }
 
   return (
-    <div className="space-y-5">
-      <div className="flex flex-wrap items-start justify-between gap-4">
-        <PageHeader title="Connections" subtitle="Whom should I connect with, and what message should I send?" />
-        <Button variant="primary" onClick={() => setEditing("new")}>
+    <div className="space-y-3">
+      {/* Just the title and the Add button: the list starts right below. */}
+      <div className="flex items-center justify-between gap-3">
+        <h1 className="text-xl font-semibold">Connections</h1>
+        <Button variant="primary" onClick={() => setEditing("new")} className="h-10 py-0">
           <Plus size={16} aria-hidden /> Add connection
         </Button>
       </div>
 
       <Notice notice={notice} onDismiss={() => setNotice(null)} />
 
-      {items.length > 0 && (
-        <>
-          <div className="flex flex-wrap gap-2" role="group" aria-label="Filter by status">
-            <button
-              type="button"
-              onClick={() => setStatus("")}
-              aria-pressed={status === ""}
-              className={`rounded-lg border px-3 py-1.5 text-sm font-medium ${status === "" ? "border-accent bg-accent-strong text-on-accent" : "border-line bg-navy-900 hover:border-electric-soft"}`}
-            >
-              All ({items.length})
-            </button>
-            {CONNECTION_STATUSES.map((s) => (
-              <button
-                key={s}
-                type="button"
-                onClick={() => setStatus(status === s ? "" : s)}
-                aria-pressed={status === s}
-                className={`rounded-lg border px-3 py-1.5 text-sm font-medium ${status === s ? "border-accent bg-accent-strong text-on-accent" : "border-line bg-navy-900 hover:border-electric-soft"}`}
-              >
-                {s} ({counts[s]})
-              </button>
-            ))}
-          </div>
-          <div className="relative max-w-xl">
-            <label htmlFor="connections-search" className="sr-only">
-              Search connections by name, company, role or message
-            </label>
-            <Search size={18} aria-hidden className="pointer-events-none absolute left-3.5 top-1/2 -translate-y-1/2 text-muted" />
-            <input
-              id="connections-search"
-              type="search"
-              value={query}
-              onChange={(e) => setQuery(e.target.value)}
-              placeholder="Search name, company, role, message…"
-              className="h-11 w-full rounded-lg border border-line bg-navy-900 pl-10 pr-3 text-sm text-ink outline-none placeholder:text-muted hover:border-electric-soft focus-visible:border-electric-soft"
-            />
-          </div>
-        </>
-      )}
-
       {items.length === 0 ? (
         <EmptyState icon={Users} title="No connections yet" message="Add the people you want to reach out to, with the message you plan to send each of them.">
           <Button variant="primary" onClick={() => setEditing("new")}>
             <UserPlus size={16} aria-hidden /> Add your first connection
-          </Button>
-        </EmptyState>
-      ) : visible.length === 0 ? (
-        <EmptyState icon={SearchX} title="No matching connections" message="Try a different search or status filter.">
-          <Button
-            onClick={() => {
-              setQuery("");
-              setStatus("");
-            }}
-          >
-            Clear filters
           </Button>
         </EmptyState>
       ) : (
@@ -173,7 +105,7 @@ export function ConnectionsBrowser({ connections: initial, me, timeZone }: { con
                 </tr>
               </thead>
               <tbody role="rowgroup" className={TBODY_CLASS}>
-                {visible.map((c, i) => {
+                {items.map((c, i) => {
                   const mine = c.memberId === me;
                   const adder = getMember(c.memberId);
                   return (
@@ -242,7 +174,7 @@ export function ConnectionsBrowser({ connections: initial, me, timeZone }: { con
             </table>
           </div>
           <p className="border-t border-line px-4 py-3 text-sm text-muted">
-            Showing {visible.length} of {items.length} connection{items.length === 1 ? "" : "s"}
+            {items.length} connection{items.length === 1 ? "" : "s"}
           </p>
         </div>
       )}

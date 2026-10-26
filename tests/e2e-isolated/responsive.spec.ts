@@ -113,14 +113,21 @@ test("All Jobs: table, filters, sorting, pagination and row actions work by touc
   }
   expect(await horizontalOverflow(page)).toBeLessThanOrEqual(0);
 
-  // filters are tappable (min touch size) and work
-  const jobType = page.getByLabel("Job Type");
-  expect((await jobType.boundingBox())!.height).toBeGreaterThanOrEqual(40);
-  await jobType.selectOption("Internship");
+  // no filter panel (and no search indicator) under the summary cards; the global header search still narrows the list
+  await expect(page.getByRole("searchbox", { name: "Search jobs", exact: true })).toHaveCount(0);
+  await expect(page.getByLabel("Job Type")).toHaveCount(0);
   const rows = page.locator("tbody tr");
-  expect(await rows.count()).toBeGreaterThan(0);
-  await press(page.getByRole("button", { name: "Reset" }), touch);
-  await expect(page.getByLabel("Job Type")).toHaveValue("");
+  const all = await rows.count();
+  const headerSearch = page.locator("header").getByRole("searchbox");
+  await headerSearch.fill("E2E Test Role 4");
+  await headerSearch.press("Enter");
+  await page.waitForURL(/\/all-jobs\?q=/);
+  await expect.poll(() => rows.count()).toBeLessThan(all);
+  await expect(page.getByText(/Showing results for/)).toHaveCount(0);
+  await headerSearch.fill("");
+  await headerSearch.press("Enter");
+  await page.waitForURL(/\/all-jobs$/);
+  await expect(rows).toHaveCount(all);
 
   // sorting: header buttons on the table, the "Sort by" control on cards
   if (cards) await page.getByLabel("Sort by").selectOption("deadline:asc");

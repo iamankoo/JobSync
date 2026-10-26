@@ -46,13 +46,13 @@ describe("All Jobs: data and empty states", () => {
     expect(screen.getByText(/2 spreadsheet rows were skipped/)).toBeInTheDocument();
   });
 
-  it("shows only dropdown options that exist in the real data", () => {
+  it("has no search/filter panel between the summary cards and the list", () => {
     setup({ jobs: makeJobs(4) });
-    const company = screen.getByLabelText("Company");
-    expect(within(company).getAllByRole("option").map((o) => o.textContent)).toEqual([
-      "Company", "Synthetic Co 1", "Synthetic Co 2", "Synthetic Co 3", "Synthetic Co 4",
-    ]);
-    expect(within(screen.getByLabelText("Job Type")).getAllByRole("option").map((o) => o.textContent)).toEqual(["Job Type", "Full-time", "Internship"]);
+    expect(screen.queryByRole("searchbox", { name: "Search jobs" })).not.toBeInTheDocument();
+    for (const label of ["Company", "Location", "Job Type", "Experience", "Status"]) expect(screen.queryByRole("combobox", { name: label })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Reset" })).not.toBeInTheDocument();
+    expect(screen.queryByText(/Showing results for/)).not.toBeInTheDocument();
+    expect(bodyRows()).toHaveLength(4);
   });
 
   it("each row links to the external job posting safely", () => {
@@ -65,46 +65,23 @@ describe("All Jobs: data and empty states", () => {
 });
 
 describe("All Jobs: search, filters, sorting, pagination", () => {
-  it("search narrows the list and updates the summary; no match shows an empty state that Reset clears", async () => {
-    const user = userEvent.setup();
-    setup({ jobs: makeJobs(5) });
-    await user.type(screen.getByRole("searchbox", { name: "Search jobs" }), "role 4");
+  it("a search from the global header still narrows the list, with nothing extra shown above it", () => {
+    setup({ jobs: makeJobs(5), initialQuery: "role 4" });
     expect(bodyRows()).toHaveLength(1);
     expect(screen.getByText(/Showing 1–1 of 1 job \(filtered from 5\)/)).toBeInTheDocument();
+    expect(screen.queryByText(/Showing results for/)).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Clear" })).not.toBeInTheDocument();
+  });
 
-    await user.clear(screen.getByRole("searchbox", { name: "Search jobs" }));
-    await user.type(screen.getByRole("searchbox", { name: "Search jobs" }), "nothing-matches-this");
+  it("a header search with no match shows the empty state, whose Reset restores the list", async () => {
+    const user = userEvent.setup();
+    setup({ jobs: makeJobs(5), initialQuery: "nothing-matches-this" });
     expect(screen.getByRole("heading", { name: "No jobs match your search" })).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Reset filters" }));
     expect(bodyRows()).toHaveLength(5);
   });
 
-  it("is prefilled from the global search (initialQuery)", () => {
-    setup({ jobs: makeJobs(5), initialQuery: "role 2" });
-    expect(screen.getByRole("searchbox", { name: "Search jobs" })).toHaveValue("role 2");
-    expect(bodyRows()).toHaveLength(1);
-  });
-
-  it("filters by dropdowns, combines them, and Reset restores everything", async () => {
-    const user = userEvent.setup();
-    setup({ jobs: makeJobs(6, { 1: "Applied", 2: "Applied" }) });
-    const reset = screen.getByRole("button", { name: "Reset" });
-    expect(reset).toBeDisabled();
-
-    await user.selectOptions(screen.getByLabelText("Job Type"), "Internship");
-    expect(bodyRows()).toHaveLength(3); // jobs 2, 4, 6
-    expect(reset).toBeEnabled();
-    await user.selectOptions(screen.getByLabelText("Status"), "Applied");
-    expect(bodyRows()).toHaveLength(1); // only job 2 is an applied internship
-    expect(within(bodyRows()[0]).getByText("Test Role 2")).toBeInTheDocument();
-
-    await user.click(reset);
-    expect(bodyRows()).toHaveLength(6);
-    expect(screen.getByLabelText("Job Type")).toHaveValue("");
-    expect(reset).toBeDisabled();
-  });
-
-  it("paginates 10 per page with working next/previous/number controls, and filtering returns to page 1", async () => {
+  it("paginates 10 per page with working next/previous/number controls", async () => {
     const user = userEvent.setup();
     setup({ jobs: makeJobs(25) });
     expect(bodyRows()).toHaveLength(10);
@@ -119,9 +96,6 @@ describe("All Jobs: search, filters, sorting, pagination", () => {
     expect(bodyRows()).toHaveLength(5);
     expect(screen.getByText("Showing 21–25 of 25 jobs")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Next page" })).toBeDisabled();
-
-    await user.selectOptions(screen.getByLabelText("Job Type"), "Internship");
-    expect(screen.getByText(/Showing 1–10 of 12 jobs/)).toBeInTheDocument();
   });
 
   it("hides pagination controls when everything fits on one page", () => {
