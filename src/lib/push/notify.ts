@@ -5,7 +5,18 @@ import type { MemberId } from "@/config/members";
 import type { PushSubscriptionRecord } from "@/types/domain";
 import { listSubscriptionsFor, removeSubscriptionsById } from "@/lib/google-sheets/push-service";
 import { loadVapidConfig } from "./config";
-import { callStartedPayload, jobAddedPayload, jobAppliedPayload, recipientsFor, type PushPayload } from "./payload";
+import {
+  callStartedPayload,
+  chatMessagePayload,
+  connectionAddedPayload,
+  jobAddedPayload,
+  jobAppliedPayload,
+  recipientsFor,
+  type ChatFacts,
+  type PushPayload,
+} from "./payload";
+
+type ConnectionFacts = Parameters<typeof connectionAddedPayload>[1];
 
 /** Outcome of one delivery attempt to one subscription. `gone` = the push service says it no longer exists. */
 export type SendResult = { ok: true } | { ok: false; gone: boolean; status?: number };
@@ -149,6 +160,16 @@ export function notifyJobAdded(actor: MemberId, job: JobFacts): Promise<void> {
 /** Call ONLY after the Not Applied -> Applied change is persisted. `appliedAt` identifies this apply cycle. */
 export function notifyJobApplied(actor: MemberId, job: JobFacts, appliedAt: string): Promise<void> {
   return afterResponse(() => notifyOthers(actor, jobAppliedPayload(actor, job), `job-applied:${job.jobId}:${actor}:${appliedAt}`));
+}
+
+/** Call ONLY after the connection row is persisted. Tells the other members about the new person/company. */
+export function notifyConnectionAdded(actor: MemberId, c: ConnectionFacts): Promise<void> {
+  return afterResponse(() => notifyOthers(actor, connectionAddedPayload(actor, c), `connection-added:${c.connectionId}`));
+}
+
+/** Call ONLY after the chat message row is persisted. The sender is never notified of their own message. */
+export function notifyChatMessage(actor: MemberId, msg: ChatFacts): Promise<void> {
+  return afterResponse(() => notifyOthers(actor, chatMessagePayload(actor, msg), `chat:${msg.messageId}`));
 }
 
 /** Tells the other two members that `actor` started a call, so they can join. Never throws. */

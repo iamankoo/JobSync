@@ -331,11 +331,27 @@ test("Connections and Group Chat: usable layouts at this viewport (form, cards, 
   ]));
   await signIn(page, "Anni", "0001");
 
-  // Connections: cards stay inside the viewport and the form fits
+  // Connections: the list and its details stay inside the viewport and the form fits
   await goViaNav(page, "Connections", "/connections");
-  await expect(page.getByTestId("connection-card")).toHaveCount(2);
+  await expect(page.getByTestId("connection-row")).toHaveCount(2);
   expect(await horizontalOverflow(page), "connections overflow").toBeLessThanOrEqual(0);
   expect(await elementsOutsideViewport(page), "connections: elements sticking out").toEqual([]);
+  // every row has a touch-sized View button, and the details (long message, notes, links) fit the screen
+  for (const name of ["View Priya Sharma With A Rather Long Name Indeed", "View Rahul"]) {
+    const b = (await page.getByRole("button", { name }).boundingBox())!;
+    expect(b.x + b.width, name).toBeLessThanOrEqual(vp.width);
+    expect(b.height, `${name} height`).toBeGreaterThanOrEqual(36);
+  }
+  await press(page.getByRole("button", { name: "View Priya Sharma With A Rather Long Name Indeed" }), touch);
+  const details = page.getByRole("dialog", { name: "Connection details" });
+  await expect(details.getByTestId("connection-message")).toBeVisible();
+  const dbox = (await details.boundingBox())!;
+  expect(dbox.x).toBeGreaterThanOrEqual(0);
+  expect(dbox.x + dbox.width).toBeLessThanOrEqual(vp.width);
+  expect(await horizontalOverflow(page), "connection details overflow").toBeLessThanOrEqual(0);
+  await shot(page, info.project.name, "connections-details");
+  await page.keyboard.press("Escape");
+  await expect(page.getByRole("dialog")).toHaveCount(0);
   await page.getByRole("button", { name: "Add connection" }).first().click();
   const dialog = page.getByRole("dialog");
   await expect(dialog).toBeVisible();

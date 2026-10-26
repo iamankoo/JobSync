@@ -2,6 +2,7 @@ import "server-only";
 import type { MemberId } from "@/config/members";
 import type { ChatMessage } from "@/types/domain";
 import { nowIso } from "@/lib/utils/time";
+import { notifyChatMessage } from "@/lib/push/notify";
 import { newId } from "./ids";
 import { withWriteLock } from "./lock";
 import { appendChatMessage, appendChatRead, readChatMessagesLocated, readChatReadsLocated, updateChatReadRow } from "./repositories";
@@ -54,6 +55,8 @@ export async function listMessages(memberId: MemberId, afterRow: number, options
 export async function sendTextMessage(memberId: MemberId, text: string, now: Date = new Date()): Promise<ChatMessage> {
   const message: ChatMessage = { messageId: newId("msg"), memberId, kind: "text", text, createdAt: nowIso(now) };
   await withWriteLock(() => appendChatMessage(message));
+  // Only after the row is saved; never fails or delays the send (see notify.ts). The sender is never a recipient.
+  await notifyChatMessage(memberId, { messageId: message.messageId, kind: "text", text });
   return message;
 }
 
@@ -68,6 +71,7 @@ export async function sendAttachmentMessage(
     mimeType: input.mimeType, sizeBytes: input.sizeBytes, durationSec: input.durationSec, createdAt: nowIso(now),
   };
   await withWriteLock(() => appendChatMessage(message));
+  await notifyChatMessage(memberId, { messageId: message.messageId, kind: input.kind, text: input.text, fileName: input.fileName });
   return message;
 }
 

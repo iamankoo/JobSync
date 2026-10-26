@@ -2,7 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import vm from "node:vm";
 import { describe, expect, it, vi } from "vitest";
-import { clean, jobAddedPayload, jobAppliedPayload, jobUrl, recipientsFor, safeUrl } from "@/lib/push/payload";
+import { chatMessagePayload, clean, connectionAddedPayload, jobAddedPayload, jobAppliedPayload, jobUrl, recipientsFor, safeUrl } from "@/lib/push/payload";
 import { isAllowedPushEndpoint, subscribeSchema, unsubscribeSchema } from "@/lib/push/validation";
 import { loadVapidConfig } from "@/lib/push/config";
 
@@ -36,6 +36,18 @@ describe("payload text", () => {
   });
 });
 
+describe("connection and chat payloads", () => {
+  it("connection: who added whom, at which company; opens Connections; never the message or notes", () => {
+    const p = connectionAddedPayload("rishii", { connectionId: "conn_1", name: "Priya", company: "Acme", role: "Recruiter" });
+    expect(p).toEqual({ title: "Rishii added a connection: Priya", body: "Recruiter · Acme — tap to view in Connections.", url: "/connections", tag: "connection-added-conn_1", icon: "/assets/rishii.jpeg" });
+  });
+  it("chat: names the sender, previews the text, one collapsing tag per sender", () => {
+    const p = chatMessagePayload("anni", { messageId: "msg_1", kind: "text", text: "hi\nthere" });
+    expect(p).toEqual({ title: "New Group Chat message from Anni", body: "hi there", url: "/group-chat", tag: "chat-anni", icon: "/assets/anni.jpeg" });
+    expect(chatMessagePayload("anni", { messageId: "msg_2", kind: "text", text: "  " }).body).toBe("Open Group Chat to read it.");
+  });
+});
+
 describe("click destinations", () => {
   it("only emits same-origin job URLs with well-formed IDs", () => {
     expect(jobUrl("job_1")).toBe("/all-jobs?job=job_1");
@@ -48,6 +60,8 @@ describe("click destinations", () => {
     expect(safeUrl("//evil.example/x", origin)).toBe("/dashboard");
     expect(safeUrl("javascript:alert(1)", origin)).toBe("/dashboard");
     expect(safeUrl("/api/auth/logout", origin)).toBe("/dashboard");
+    expect(safeUrl("/connections", origin)).toBe("/connections");
+    expect(safeUrl("/group-chat", origin)).toBe("/group-chat");
   });
 });
 
@@ -138,6 +152,49 @@ describe("service worker (public/sw.js)", () => {
     sw.handlers.notificationclick(sw.event({ notification: { close: vi.fn(), data: { url: "/all-jobs?job=job_9" } } }));
     await sw.settle();
     expect(sw.openWindow).toHaveBeenCalledWith("/all-jobs?job=job_9");
+  });
+
+  it("opens Connections from a new-connection notification", async () => {
+    const sw = loadServiceWorker([]);
+    sw.handlers.notificationclick(sw.event({ notification: { close: vi.fn(), data: { url: "/connections" } } }));
+    await sw.settle();
+    expect(sw.openWindow).toHaveBeenCalledWith("/connections");
+  });
+
+  const chatPush = { title: "New Group Chat message from Lukky", body: "hello", url: "/group-chat", tag: "chat-lukky", icon: "/assets/lukky.jpeg" };
+  type Win = { url: string; focus: () => Promise<void>; visibilityState?: string; focused?: boolean };
+
+  it("shows Group Chat messages and re-alerts for each new one from the same sender", async () => {
+    const sw = loadServiceWorker([{ url: "https://jobsbyarillabs.vercel.app/dashboard", focus: vi.fn(), visibilityState: "visible", focused: true } as Win]);
+    sw.handlers.push(sw.event({ data: { json: () => chatPush } }));
+    await sw.settle();
+    expect(sw.showNotification).toHaveBeenCalledWith("New Group Chat message from Lukky", {
+      body: "hello", tag: "chat-lukky", data: { url: "/group-chat" }, icon: "/assets/lukky.jpeg", renotify: true,
+    });
+  });
+
+  it("skips the popup only while this member is actively looking at Group Chat", async () => {
+    const reading = loadServiceWorker([{ url: "https://jobsbyarillabs.vercel.app/group-chat", focus: vi.fn(), visibilityState: "visible", focused: true } as Win]);
+    reading.handlers.push(reading.event({ data: { json: () => chatPush } }));
+    await reading.settle();
+    expect(reading.showNotification).not.toHaveBeenCalled();
+
+    for (const win of [
+      { url: "https://jobsbyarillabs.vercel.app/group-chat", visibilityState: "hidden", focused: false }, // chat tab in the background
+      { url: "https://jobsbyarillabs.vercel.app/group-chat", visibilityState: "visible", focused: false }, // another window has focus
+    ]) {
+      const sw = loadServiceWorker([{ ...win, focus: vi.fn() } as Win]);
+      sw.handlers.push(sw.event({ data: { json: () => chatPush } }));
+      await sw.settle();
+      expect(sw.showNotification, JSON.stringify(win)).toHaveBeenCalledTimes(1);
+    }
+  });
+
+  it("other notifications are always shown, even with Group Chat open", async () => {
+    const sw = loadServiceWorker([{ url: "https://jobsbyarillabs.vercel.app/group-chat", focus: vi.fn(), visibilityState: "visible", focused: true } as Win]);
+    sw.handlers.push(sw.event({ data: { json: () => ({ title: "Anni added a connection: Priya", url: "/connections", tag: "connection-added-conn_1" }) } }));
+    await sw.settle();
+    expect(sw.showNotification).toHaveBeenCalledWith("Anni added a connection: Priya", { body: "", tag: "connection-added-conn_1", data: { url: "/connections" } });
   });
 
   it("never opens an unsafe destination", async () => {

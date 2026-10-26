@@ -49,31 +49,50 @@ test("create, view message, change status, copy, open profile, edit, search/filt
   await page.getByRole("dialog").getByRole("button", { name: "Add connection" }).click();
   await expect(page.getByRole("dialog")).toHaveCount(0);
 
-  const card = page.getByTestId("connection-card").first();
-  await expect(card.getByRole("heading", { name: "Priya Sharma" })).toBeVisible();
-  await expect(card.getByText("Engineering Manager · Acme Corp")).toBeVisible();
-  await expect(card.getByTestId("connection-message")).toHaveText(MESSAGE.replace("\n", " ").replace(/\s+/g, " "));
-  await expect(card.getByRole("combobox", { name: "Status of Priya Sharma" })).toHaveValue("Not Connected");
+  // The list shows only the headline facts...
+  const row = page.getByTestId("connection-row").first();
+  await expect(row.getByRole("button", { name: "Priya Sharma", exact: true })).toBeVisible();
+  await expect(row.getByText("Acme Corp")).toBeVisible();
+  await expect(row.getByText("Engineering Manager")).toBeVisible();
+  await expect(row.getByRole("combobox", { name: "Status of Priya Sharma" })).toHaveValue("Not Connected");
+  await expect(row.getByTestId("connection-row-added-by")).toHaveText("You");
+  await expect(row.locator("time")).toHaveAttribute("dateTime", /^\d{4}-\d{2}-\d{2}T/);
+  await expect(row.getByText("Met at a meetup")).toHaveCount(0);
+  await expect(row.getByTestId("connection-message")).toHaveCount(0);
+
+  // ...and View opens every saved detail
+  await row.getByRole("button", { name: "View Priya Sharma" }).click();
+  const details = page.getByRole("dialog", { name: "Connection details" });
+  await expect(details.getByTestId("connection-message")).toHaveText(MESSAGE.replace("\n", " ").replace(/\s+/g, " "));
+  await expect(details.getByText("Met at a meetup")).toBeVisible();
+  await expect(details.getByTestId("connection-added-by")).toContainText("Added by you");
+  await expect(details.getByRole("combobox", { name: "Status of Priya Sharma" })).toHaveValue("Not Connected");
 
   // the profile link is external and safe
-  const link = card.getByRole("link", { name: /Open profile/ });
+  const link = details.getByRole("link", { name: /Open profile/ });
   await expect(link).toHaveAttribute("href", "https://www.linkedin.com/in/priya-test");
   await expect(link).toHaveAttribute("target", "_blank");
   expect(await link.getAttribute("rel")).toContain("noopener");
 
   // copy the suggested message
-  await card.getByRole("button", { name: "Copy message" }).click();
-  await expect(card.getByRole("button", { name: "Copied" })).toBeVisible();
+  await details.getByRole("button", { name: "Copy message" }).click();
+  await expect(details.getByRole("button", { name: "Copied" })).toBeVisible();
   // Windows stores line breaks in the clipboard as CRLF.
   const copied = (await page.evaluate(() => navigator.clipboard.readText())).replace(/\r/g, "");
   expect(copied).toBe(MESSAGE);
+  // status can be changed from the details too, and the list follows
+  await details.getByRole("combobox", { name: "Status of Priya Sharma" }).selectOption("Connected");
+  await expect(page.getByRole("status").filter({ hasText: "marked as Connected" })).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(page.getByRole("dialog")).toHaveCount(0);
+  await expect(row.getByRole("combobox", { name: "Status of Priya Sharma" })).toHaveValue("Connected");
 
-  // every status can be set and persists across a reload
+  // every status can be set from the list and persists across a reload
   for (const status of ["Connected", "Messaged", "Reply", "Not Connected"]) {
-    await card.getByRole("combobox", { name: "Status of Priya Sharma" }).selectOption(status);
-    await expect(page.getByRole("status").filter({ hasText: `marked as ${status}` })).toBeVisible();
+    await page.getByTestId("connection-row").first().getByRole("combobox", { name: "Status of Priya Sharma" }).selectOption(status);
+    if (status !== "Connected") await expect(page.getByRole("status").filter({ hasText: `marked as ${status}` })).toBeVisible();
     await page.reload();
-    await expect(page.getByTestId("connection-card").first().getByRole("combobox", { name: "Status of Priya Sharma" })).toHaveValue(status);
+    await expect(page.getByTestId("connection-row").first().getByRole("combobox", { name: "Status of Priya Sharma" })).toHaveValue(status);
   }
   expect((await dataRows(request, "Connections"))[0].slice(1, 3)).toEqual(["anni", "Priya Sharma"]);
   expect((await dataRows(request, "Connections"))[0][9]).toBe("Not Connected");
@@ -82,35 +101,49 @@ test("create, view message, change status, copy, open profile, edit, search/filt
   await page.getByRole("button", { name: "Add connection" }).first().click();
   await add(page, { name: "Rahul Verma", company: "Globex", message: "Hello Rahul" });
   await page.getByRole("dialog").getByRole("button", { name: "Add connection" }).click();
-  await expect(page.getByTestId("connection-card")).toHaveCount(2);
+  await expect(page.getByTestId("connection-row")).toHaveCount(2);
   await page.getByRole("searchbox", { name: /Search connections/ }).fill("globex");
-  await expect(page.getByTestId("connection-card")).toHaveCount(1);
-  await expect(page.getByRole("heading", { name: "Rahul Verma" })).toBeVisible();
+  await expect(page.getByTestId("connection-row")).toHaveCount(1);
+  await expect(page.getByRole("button", { name: "Rahul Verma", exact: true })).toBeVisible();
+  await page.getByRole("searchbox", { name: /Search connections/ }).fill("hello rahul"); // search still covers the message
+  await expect(page.getByTestId("connection-row")).toHaveCount(1);
   await page.getByRole("searchbox", { name: /Search connections/ }).fill("zzz-nothing");
   await expect(page.getByText("No matching connections")).toBeVisible();
   await page.getByRole("button", { name: "Clear filters" }).click();
-  await page.getByTestId("connection-card").filter({ hasText: "Rahul Verma" }).getByRole("combobox").selectOption("Reply");
+  await page.getByTestId("connection-row").filter({ hasText: "Rahul Verma" }).getByRole("combobox").selectOption("Reply");
   await page.getByRole("button", { name: /^Reply \(1\)/ }).click();
-  await expect(page.getByTestId("connection-card")).toHaveCount(1);
+  await expect(page.getByTestId("connection-row")).toHaveCount(1);
   await page.getByRole("button", { name: /^All \(2\)/ }).click();
 
-  // edit (clear the notes, change company)
-  await page.getByRole("button", { name: "Edit Priya Sharma" }).click();
+  // edit from the details (clear the notes, change company)
+  await page.getByRole("button", { name: "View Priya Sharma" }).click();
+  await page.getByRole("dialog").getByRole("button", { name: "Edit Priya Sharma" }).click();
+  await expect(page.getByRole("dialog", { name: "Edit connection" })).toBeVisible();
   await page.getByRole("dialog").getByLabel(/^Company/).fill("New Corp");
   await page.getByRole("dialog").getByLabel(/^Notes/).fill("");
   await page.getByRole("dialog").getByRole("button", { name: "Save changes" }).click();
-  await expect(page.getByText("Engineering Manager · New Corp")).toBeVisible();
+  await expect(page.getByTestId("connection-row").filter({ hasText: "Priya Sharma" }).getByText("New Corp")).toBeVisible();
   await page.reload();
-  await expect(page.getByText("Engineering Manager · New Corp")).toBeVisible();
-  await expect(page.getByText("Met at a meetup")).toHaveCount(0);
+  await expect(page.getByTestId("connection-row").filter({ hasText: "Priya Sharma" }).getByText("New Corp")).toBeVisible();
+  await page.getByRole("button", { name: "View Priya Sharma" }).click();
+  await expect(page.getByRole("dialog").getByText("Met at a meetup")).toHaveCount(0);
+  await page.keyboard.press("Escape");
 
-  // delete (confirmation first)
-  await page.getByRole("button", { name: "Delete Rahul Verma" }).click();
+  // edit from the row menu
+  await page.getByRole("button", { name: "More actions: Rahul Verma" }).click();
+  await page.getByRole("menuitem", { name: "Edit connection" }).click();
+  await expect(page.getByRole("dialog", { name: "Edit connection" })).toBeVisible();
+  await page.getByRole("dialog").getByRole("button", { name: "Cancel" }).click();
+
+  // delete (confirmation first), from the row menu and from the details
+  await page.getByRole("button", { name: "More actions: Rahul Verma" }).click();
+  await page.getByRole("menuitem", { name: "Delete connection" }).click();
   await page.getByRole("dialog").getByRole("button", { name: "Keep" }).click();
-  await expect(page.getByTestId("connection-card")).toHaveCount(2);
-  await page.getByRole("button", { name: "Delete Rahul Verma" }).click();
+  await expect(page.getByTestId("connection-row")).toHaveCount(2);
+  await page.getByRole("button", { name: "View Rahul Verma" }).click();
+  await page.getByRole("dialog").getByRole("button", { name: "Delete Rahul Verma" }).click();
   await page.getByRole("dialog").getByRole("button", { name: "Remove" }).click();
-  await expect(page.getByTestId("connection-card")).toHaveCount(1);
+  await expect(page.getByTestId("connection-row")).toHaveCount(1);
   expect(await dataRows(request, "Connections")).toHaveLength(1);
   expect(await horizontalOverflow(page)).toBeLessThanOrEqual(0);
 
@@ -124,28 +157,37 @@ test("connections are SHARED: every member sees every entry; only the adder can 
   await page.getByRole("button", { name: "Add your first connection" }).click();
   await add(page, { name: "Shared contact", message: "plan for everyone" });
   await page.getByRole("dialog").getByRole("button", { name: "Add connection" }).click();
-  await expect(page.getByTestId("connection-card")).toHaveCount(1);
-  await expect(page.getByTestId("connection-added-by")).toContainText("Added by you");
+  await expect(page.getByTestId("connection-row")).toHaveCount(1);
+  await expect(page.getByTestId("connection-row-added-by")).toHaveText("You");
   const id = await page.evaluate(async () => (await (await fetch("/api/connections")).json()).data[0].connectionId as string);
 
   const other = await browser.newContext({ baseURL: info.project.use.baseURL, viewport: info.project.use.viewport ?? undefined, extraHTTPHeaders: info.project.use.extraHTTPHeaders });
   const lukky = await other.newPage();
   await signIn(lukky, "Lukky", "0002");
   await open(lukky);
-  const card = lukky.getByTestId("connection-card");
-  await expect(card).toHaveCount(1);
-  await expect(card.getByRole("heading", { name: "Shared contact" })).toBeVisible();
-  await expect(card.getByTestId("connection-message")).toHaveText("plan for everyone");
-  await expect(card.getByTestId("connection-added-by")).toContainText("Added by Anni");
-  await expect(card.getByRole("button", { name: /Edit|Delete/ })).toHaveCount(0);
-  await expect(card.getByRole("combobox")).toBeDisabled();
+  const row = lukky.getByTestId("connection-row");
+  await expect(row).toHaveCount(1);
+  await expect(row.getByRole("button", { name: "Shared contact", exact: true })).toBeVisible();
+  await expect(row.getByTestId("connection-row-added-by")).toHaveText("Anni");
+  // not the adder: status is read-only and there is no edit/delete menu
+  await expect(row.getByRole("combobox")).toHaveCount(0);
+  await expect(row.getByText("Not Connected")).toBeVisible();
+  await expect(row.getByRole("button", { name: /More actions/ })).toHaveCount(0);
+  await row.getByRole("button", { name: "View Shared contact" }).click();
+  const details = lukky.getByRole("dialog", { name: "Connection details" });
+  await expect(details.getByTestId("connection-message")).toHaveText("plan for everyone");
+  await expect(details.getByTestId("connection-added-by")).toContainText("Added by Anni");
+  await expect(details.getByRole("button", { name: /Edit|Delete/ })).toHaveCount(0);
+  await expect(details.getByRole("combobox")).toHaveCount(0);
+  await expect(details.getByText("Only Anni can edit or delete this entry.")).toBeVisible();
+  await lukky.keyboard.press("Escape");
   // Lukky adds one too; Anni then sees both
   await lukky.getByRole("button", { name: "Add connection" }).first().click();
   await add(lukky, { name: "Lukky's find" });
   await lukky.getByRole("dialog").getByRole("button", { name: "Add connection" }).click();
-  await expect(lukky.getByTestId("connection-card")).toHaveCount(2);
+  await expect(lukky.getByTestId("connection-row")).toHaveCount(2);
   await lukky.getByRole("searchbox", { name: /Search connections/ }).fill("anni");
-  await expect(lukky.getByTestId("connection-card")).toHaveCount(1); // search also matches "added by"
+  await expect(lukky.getByTestId("connection-row")).toHaveCount(1); // search also matches "added by"
   const attempts = await lukky.evaluate(async (cid) => {
     const put = await fetch(`/api/connections/${cid}`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ status: "Reply" }) });
     const del = await fetch(`/api/connections/${cid}`, { method: "DELETE" });
@@ -153,6 +195,6 @@ test("connections are SHARED: every member sees every entry; only the adder can 
   }, id);
   expect(attempts).toEqual([403, 403]);
   await page.reload();
-  await expect(page.getByTestId("connection-card")).toHaveCount(2);
+  await expect(page.getByTestId("connection-row")).toHaveCount(2);
   await other.close();
 });

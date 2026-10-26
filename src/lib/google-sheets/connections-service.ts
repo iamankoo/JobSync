@@ -2,6 +2,7 @@ import "server-only";
 import type { MemberId } from "@/config/members";
 import type { Connection } from "@/types/domain";
 import { nowIso } from "@/lib/utils/time";
+import { notifyConnectionAdded } from "@/lib/push/notify";
 import type { CreateConnectionInput, UpdateConnectionInput } from "@/lib/validation/connections";
 import { DomainError } from "./errors";
 import { newId } from "./ids";
@@ -31,6 +32,8 @@ export async function createConnection(memberId: MemberId, input: CreateConnecti
     updatedAt: stamp,
   };
   await withWriteLock(() => appendConnection(connection));
+  // Only after the row is saved; never fails or delays the save (see notify.ts).
+  await notifyConnectionAdded(memberId, connection);
   return connection;
 }
 

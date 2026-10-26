@@ -1,171 +1,23 @@
 "use client";
 
 import { useMemo, useState } from "react";
-import { Building2, Check, Copy, ExternalLink, Link2, Pencil, Plus, Search, SearchX, Trash2, UserPlus, Users } from "lucide-react";
+import { Eye, Plus, Search, SearchX, Trash2, UserPlus, Users } from "lucide-react";
 import { PageHeader } from "@/components/layout/page-header";
+import { ActionMenu } from "@/components/ui/action-menu";
+import { Avatar } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
+import { CompanyMark } from "@/components/ui/company-mark";
 import { Dialog } from "@/components/ui/dialog";
 import { EmptyState } from "@/components/ui/empty-state";
 import { Notice, type NoticeState } from "@/components/ui/notice";
+import { cellClass, HEAD_ROW_CLASS, ROW_CLASS, TABLE_CLASS, TBODY_CLASS, TH_CLASS, THEAD_CLASS } from "@/components/ui/responsive-table";
 import { getMember, type MemberId } from "@/config/members";
-import { Avatar } from "@/components/ui/avatar";
 import { deleteConnectionRequest, updateConnectionRequest } from "@/lib/client/api";
+import { formatDisplayDate } from "@/lib/jobs/query";
 import { CONNECTION_STATUSES, type Connection, type ConnectionStatus } from "@/types/domain";
+import { ConnectionDetailsDialog } from "./connection-details-dialog";
 import { ConnectionForm } from "./connection-form";
-
-const STATUS_STYLE: Record<ConnectionStatus, string> = {
-  "Not Connected": "border-slate-500/40 bg-slate-500/15 text-slate-200",
-  Connected: "border-blue-500/40 bg-blue-500/15 text-blue-200",
-  Messaged: "border-amber-500/40 bg-amber-500/15 text-amber-300",
-  Reply: "border-emerald-500/40 bg-emerald-500/15 text-emerald-300",
-};
-
-/** Copies text to the clipboard; falls back to a hidden textarea where the async API is unavailable. */
-async function copyText(text: string): Promise<boolean> {
-  try {
-    await navigator.clipboard.writeText(text);
-    return true;
-  } catch {
-    try {
-      const ta = document.createElement("textarea");
-      ta.value = text;
-      ta.setAttribute("readonly", "");
-      ta.style.position = "fixed";
-      ta.style.opacity = "0";
-      document.body.appendChild(ta);
-      ta.select();
-      const done = document.execCommand("copy");
-      ta.remove();
-      return done;
-    } catch {
-      return false;
-    }
-  }
-}
-
-function hostOf(url: string): string {
-  try {
-    return new URL(url).hostname.replace(/^www\./, "");
-  } catch {
-    return url;
-  }
-}
-
-function ConnectionCard({ c, mine, timeZone, busy, onStatus, onEdit, onDelete, onCopied }: {
-  c: Connection;
-  mine: boolean;
-  timeZone: string;
-  busy: boolean;
-  onStatus: (s: ConnectionStatus) => void;
-  onEdit: () => void;
-  onDelete: () => void;
-  onCopied: (ok: boolean) => void;
-}) {
-  const [copied, setCopied] = useState(false);
-  const adder = getMember(c.memberId);
-  async function copy() {
-    const ok = await copyText(c.message ?? "");
-    onCopied(ok);
-    if (ok) {
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
-    }
-  }
-  return (
-    <li className="flex flex-col gap-3 rounded-xl border border-line bg-navy-900 p-4" data-testid="connection-card">
-      <div className="flex items-start justify-between gap-3">
-        <div className="min-w-0">
-          <h2 className="break-words text-lg font-semibold leading-snug">{c.name}</h2>
-          {(c.role || c.company) && (
-            <p className="mt-0.5 flex items-start gap-1.5 break-words text-sm text-muted">
-              <Building2 size={14} aria-hidden className="mt-0.5 shrink-0" />
-              <span>{[c.role, c.company].filter(Boolean).join(" · ")}</span>
-            </p>
-          )}
-        </div>
-        <span className={`shrink-0 whitespace-nowrap rounded-md border px-2.5 py-1 text-xs font-semibold ${STATUS_STYLE[c.status]}`}>{c.status}</span>
-      </div>
-
-      {adder && (
-        <p className="flex items-center gap-2 text-xs text-muted" data-testid="connection-added-by">
-          <Avatar member={adder} size={20} />
-          <span>
-            Added by <strong style={{ color: adder.accentText }}>{mine ? "you" : adder.name}</strong> on{" "}
-            <time dateTime={c.createdAt}>{new Intl.DateTimeFormat("en-GB", { timeZone, day: "numeric", month: "short", year: "numeric" }).format(new Date(c.createdAt))}</time>
-          </span>
-        </p>
-      )}
-
-      <label className="block text-xs font-medium text-muted">
-        Status
-        <select
-          value={c.status}
-          disabled={busy || !mine}
-          onChange={(e) => onStatus(e.target.value as ConnectionStatus)}
-          aria-label={`Status of ${c.name}`}
-          className="mt-1 h-10 w-full rounded-lg border border-line bg-navy-950/60 px-3 text-sm text-ink outline-none hover:border-electric-soft focus-visible:border-electric-soft disabled:opacity-60"
-        >
-          {CONNECTION_STATUSES.map((s) => (
-            <option key={s} value={s}>
-              {s}
-            </option>
-          ))}
-        </select>
-      </label>
-
-      <div className="rounded-lg border border-line bg-navy-950/60 p-3">
-        <div className="mb-1.5 flex items-center justify-between gap-2">
-          <h3 className="text-xs font-semibold uppercase tracking-wide text-muted">Message to send</h3>
-          {c.message && (
-            <button type="button" onClick={copy} className="inline-flex items-center gap-1.5 rounded-md border border-line px-2 py-1 text-xs font-medium text-ink hover:border-electric-soft">
-              {copied ? <Check size={14} aria-hidden className="text-emerald-300" /> : <Copy size={14} aria-hidden />}
-              {copied ? "Copied" : "Copy message"}
-            </button>
-          )}
-        </div>
-        {c.message ? (
-          <p className="whitespace-pre-wrap break-words text-sm leading-relaxed" data-testid="connection-message">
-            {c.message}
-          </p>
-        ) : (
-          <p className="text-sm text-muted">No message written yet. Use Edit to add one.</p>
-        )}
-      </div>
-
-      {(c.profileUrl || c.otherUrl) && (
-        <div className="flex flex-wrap gap-2">
-          {c.profileUrl && (
-            <a href={c.profileUrl} target="_blank" rel="noopener noreferrer" className="inline-flex max-w-full items-center gap-1.5 rounded-lg border border-line px-3 py-1.5 text-sm font-medium hover:border-electric-soft">
-              <ExternalLink size={14} aria-hidden className="shrink-0" />
-              <span className="truncate">Open profile ({hostOf(c.profileUrl)})</span>
-            </a>
-          )}
-          {c.otherUrl && (
-            <a href={c.otherUrl} target="_blank" rel="noopener noreferrer" className="inline-flex max-w-full items-center gap-1.5 rounded-lg border border-line px-3 py-1.5 text-sm font-medium hover:border-electric-soft">
-              <Link2 size={14} aria-hidden className="shrink-0" />
-              <span className="truncate">{hostOf(c.otherUrl)}</span>
-            </a>
-          )}
-        </div>
-      )}
-
-      {c.notes && <p className="whitespace-pre-wrap break-words text-sm text-muted">{c.notes}</p>}
-
-      {mine ? (
-      <div className="mt-auto flex justify-end gap-2 pt-1">
-        <Button onClick={onEdit} className="px-3 py-2" aria-label={`Edit ${c.name}`}>
-          <Pencil size={14} aria-hidden /> Edit
-        </Button>
-        <Button onClick={onDelete} variant="ghost" className="px-3 py-2 hover:text-red-300" aria-label={`Delete ${c.name}`}>
-          <Trash2 size={14} aria-hidden /> Delete
-        </Button>
-      </div>
-      ) : (
-        <p className="mt-auto pt-1 text-xs text-muted">Only {adder?.name ?? "the member who added it"} can edit or delete this entry.</p>
-      )}
-    </li>
-  );
-}
+import { ConnectionStatusControl } from "./connection-status";
 
 /** The SHARED people-to-connect-with list (everyone sees everything; only the adder edits). Tracking only: nothing is ever sent to LinkedIn or anyone else. */
 export function ConnectionsBrowser({ connections: initial, me, timeZone }: { connections: Connection[]; me: MemberId; timeZone: string }) {
@@ -175,6 +27,8 @@ export function ConnectionsBrowser({ connections: initial, me, timeZone }: { con
   const [status, setStatus] = useState<"" | ConnectionStatus>("");
   const [editing, setEditing] = useState<Connection | "new" | null>(null);
   const [deleting, setDeleting] = useState<Connection | null>(null);
+  // By id, so the open details always show the latest saved values (status changes, background refresh).
+  const [viewingId, setViewingId] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
   const [notice, setNotice] = useState<NoticeState | null>(null);
 
@@ -198,6 +52,10 @@ export function ConnectionsBrowser({ connections: initial, me, timeZone }: { con
       return [c.name, c.company, c.role, c.message, c.notes, c.profileUrl, getMember(c.memberId)?.name].some((v) => v?.toLowerCase().includes(q));
     });
   }, [items, query, status]);
+
+  const viewing = viewingId ? items.find((c) => c.connectionId === viewingId) ?? null : null;
+  const copiedNotice = (ok: boolean) =>
+    setNotice(ok ? { kind: "success", text: "Message copied to the clipboard." } : { kind: "error", text: "Could not copy automatically. Select the message and copy it manually." });
 
   async function changeStatus(c: Connection, next: ConnectionStatus) {
     if (next === c.status) return;
@@ -299,21 +157,109 @@ export function ConnectionsBrowser({ connections: initial, me, timeZone }: { con
           </Button>
         </EmptyState>
       ) : (
-        <ul className="grid gap-4 md:grid-cols-2 2xl:grid-cols-3">
-          {visible.map((c) => (
-            <ConnectionCard
-              key={c.connectionId}
-              c={c}
-              mine={c.memberId === me}
-              timeZone={timeZone}
-              busy={busyId === c.connectionId}
-              onStatus={(s) => changeStatus(c, s)}
-              onEdit={() => setEditing(c)}
-              onDelete={() => setDeleting(c)}
-              onCopied={(ok) => setNotice(ok ? { kind: "success", text: "Message copied to the clipboard." } : { kind: "error", text: "Could not copy automatically. Select the message and copy it manually." })}
-            />
-          ))}
-        </ul>
+        <div className="overflow-hidden rounded-xl border border-line bg-navy-900/70">
+          <div className="relative overflow-x-auto">
+            <table role="table" className={TABLE_CLASS} data-testid="connections-list">
+              <caption className="sr-only">Shared connections</caption>
+              <thead role="rowgroup" className={THEAD_CLASS}>
+                <tr role="row" className={HEAD_ROW_CLASS}>
+                  <th role="columnheader" scope="col" className={TH_CLASS}>#</th>
+                  <th role="columnheader" scope="col" className={TH_CLASS}>Name</th>
+                  <th role="columnheader" scope="col" className={TH_CLASS}>Company</th>
+                  <th role="columnheader" scope="col" className={TH_CLASS}>Role / Title</th>
+                  <th role="columnheader" scope="col" className={TH_CLASS}>Status</th>
+                  <th role="columnheader" scope="col" className={TH_CLASS}>Added by</th>
+                  <th role="columnheader" scope="col" className={TH_CLASS}>Added on</th>
+                  <th role="columnheader" scope="col" className={TH_CLASS}>Actions</th>
+                </tr>
+              </thead>
+              <tbody role="rowgroup" className={TBODY_CLASS}>
+                {visible.map((c, i) => {
+                  const mine = c.memberId === me;
+                  const adder = getMember(c.memberId);
+                  return (
+                    <tr role="row" key={c.connectionId} className={ROW_CLASS} data-testid="connection-row">
+                      <td role="cell" data-label="#" className={cellClass("text-muted", "index")}>{i + 1}</td>
+                      <td role="cell" data-label="Name" className={cellClass("font-medium", "title")}>
+                        <button type="button" onClick={() => setViewingId(c.connectionId)} className="break-words text-left hover:text-electric-soft hover:underline">
+                          {c.name}
+                        </button>
+                      </td>
+                      <td role="cell" data-label="Company" className={cellClass("")}>
+                        {c.company ? (
+                          <span className="flex min-w-0 items-center gap-2">
+                            <CompanyMark name={c.company} />
+                            <span className="min-w-0 break-words">{c.company}</span>
+                          </span>
+                        ) : (
+                          <span className="text-muted">—</span>
+                        )}
+                      </td>
+                      <td role="cell" data-label="Role / Title" className={cellClass("")}>
+                        {c.role ? <span className="min-w-0 break-words max-xl:text-right">{c.role}</span> : <span className="text-muted">—</span>}
+                      </td>
+                      <td role="cell" data-label="Status" className={cellClass("")}>
+                        <ConnectionStatusControl c={c} mine={mine} busy={busyId === c.connectionId} onStatus={(s) => changeStatus(c, s)} />
+                      </td>
+                      <td role="cell" data-label="Added by" className={cellClass("whitespace-nowrap")}>
+                        {adder ? (
+                          <span className="flex items-center gap-2" data-testid="connection-row-added-by">
+                            <Avatar member={adder} size={22} />
+                            <span style={{ color: adder.accentText }}>{mine ? "You" : adder.name}</span>
+                          </span>
+                        ) : (
+                          "—"
+                        )}
+                      </td>
+                      <td role="cell" data-label="Added on" className={cellClass("whitespace-nowrap")}>
+                        <time dateTime={c.createdAt}>{formatDisplayDate(c.createdAt, timeZone)}</time>
+                      </td>
+                      <td role="cell" data-label="Actions" className={cellClass("")}>
+                        <span className="flex items-center gap-2">
+                          <Button onClick={() => setViewingId(c.connectionId)} className="h-9 px-3 py-0" aria-label={`View ${c.name}`}>
+                            <Eye size={16} aria-hidden /> View
+                          </Button>
+                          {mine && (
+                            <ActionMenu
+                              label={`More actions: ${c.name}`}
+                              items={[
+                                { label: "Edit connection", onSelect: () => setEditing(c) },
+                                { label: "Delete connection", onSelect: () => setDeleting(c) },
+                              ]}
+                            />
+                          )}
+                        </span>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+          <p className="border-t border-line px-4 py-3 text-sm text-muted">
+            Showing {visible.length} of {items.length} connection{items.length === 1 ? "" : "s"}
+          </p>
+        </div>
+      )}
+
+      {viewing && (
+        <ConnectionDetailsDialog
+          c={viewing}
+          mine={viewing.memberId === me}
+          timeZone={timeZone}
+          busy={busyId === viewing.connectionId}
+          onStatus={(s) => changeStatus(viewing, s)}
+          onEdit={() => {
+            setViewingId(null);
+            setEditing(viewing);
+          }}
+          onDelete={() => {
+            setViewingId(null);
+            setDeleting(viewing);
+          }}
+          onCopied={copiedNotice}
+          onClose={() => setViewingId(null)}
+        />
       )}
 
       {editing && (
