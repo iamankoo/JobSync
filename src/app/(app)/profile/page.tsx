@@ -17,7 +17,7 @@ export default async function ProfilePage() {
   const member = getMember(memberId)!;
   if (!result.ok) {
     return (
-      <div className="max-w-2xl space-y-5">
+      <div className="mx-auto w-full max-w-2xl space-y-5">
         <PageHeader title="Profile" subtitle="Your details, visible only to you." />
         <ErrorState title={result.title} message={result.message} />
         <LogoutSection member={member} />

@@ -6,7 +6,10 @@ import { loadForMember } from "@/lib/pages/load";
 
 export const metadata = { title: "Gmail drafts · JobSync" };
 
-/** Each member connects THEIR OWN Gmail so Network Finder can save drafts there (drafts only, never sent). */
+/**
+ * Gmail Drafts: who has Gmail connected. Each member connects / disconnects THEIR OWN Gmail from Profile → Gmail
+ * (drafts only, never sent); Google returns them here after connecting.
+ */
 export default async function GmailPage({ searchParams }: { searchParams: Promise<{ connected?: string; error?: string }> }) {
   const { connected, error } = await searchParams;
   const { result } = await loadForMember((m) => gmailOverview(m, MEMBER_IDS));
@@ -18,5 +21,5 @@ export default async function GmailPage({ searchParams }: { searchParams: Promis
       </div>
     );
   }
-  return <GmailConnect overview={result.data} justConnected={connected === "1"} error={typeof error === "string" ? error : undefined} />;
+  return <GmailConnect members={result.data.members} justConnected={connected === "1"} error={typeof error === "string" ? error : undefined} />;
 }

@@ -65,7 +65,7 @@ export function ProfileGate({ member, hasPassword, isAdmin, timeZone }: { member
 
   if (data) {
     return (
-      <div className="max-w-2xl space-y-5">
+      <div className="mx-auto w-full max-w-2xl space-y-5" data-testid="profile-content">
         <ProfileForm member={member} profile={data.profile} resumes={data.resumes} gmail={data.gmail} isAdmin={isAdmin} onSelfReset={relock} timeZone={timeZone} />
         <LogoutSection member={member} />
       </div>
@@ -74,7 +74,9 @@ export function ProfileGate({ member, hasPassword, isAdmin, timeZone }: { member
 
   const title = screen === "set" ? "Set Profile Password" : screen === "recover" ? "Another way to unlock" : "Profile Password";
   return (
-    <div className="max-w-md space-y-5">
+    // Centred in the main content area (the header and page padding take about 9rem of the viewport height).
+    <div className="flex min-h-[calc(100dvh-9rem)] w-full items-center justify-center">
+    <div className="w-full max-w-md space-y-5" data-testid="profile-lock">
       <div className="flex items-center gap-4">
         <Avatar member={member} size={56} ring />
         <div>
@@ -133,6 +135,7 @@ export function ProfileGate({ member, hasPassword, isAdmin, timeZone }: { member
         </div>
       </form>
       <LogoutSection member={member} />
+    </div>
     </div>
   );
 }
