@@ -1,4 +1,5 @@
 import { classifyPersona } from "../contacts";
+import { composeFallback, type EmailPlan } from "../email-composer";
 import { selectCompanies } from "../qualify";
 import { matchRole } from "../roles";
 import { PERSONAS, type JobCandidate, type PersonCandidate, type QualifiedCompany } from "../types";
@@ -10,7 +11,8 @@ import { PERSONAS, type JobCandidate, type PersonCandidate, type QualifiedCompan
  * Guardrails every implementation must keep (and the Nemotron adapter enforces in code):
  *  - choices are restricted to the candidates passed in (no invented companies, people or jobs);
  *  - hard rules stay in code: size tiers, target countries, 70/30 split, de-duplication, quotas;
- *  - a failed decision falls back to the rule-based brain; a failed draft is retried later, never faked.
+ *  - a failed decision falls back to the rule-based brain; a failed or invalid AI draft falls back to the role
+ *    template filled with the member's VERIFIED facts only (email-composer.ts) — never invented content.
  */
 export interface DraftRequest {
   kind: "outreach" | "job_application";
@@ -19,6 +21,11 @@ export interface DraftRequest {
   company: { name: string; website?: string; description?: string };
   person?: { name: string; title: string };
   job?: { title: string; url: string; location?: string };
+  /**
+   * The structured email plan (template, verified member facts, matched skills, recipient, subject). When present,
+   * the writer returns only the body paragraphs within it; the caller adds greeting and signature and validates.
+   */
+  plan?: EmailPlan;
 }
 
 export interface DraftContent {
@@ -54,6 +61,8 @@ export const ruleBrain: Brain = {
     return { relevant: m.relevant, reason: m.reason };
   },
   async writeDraft(r) {
+    // Structured plan: the deterministic template fill (verified facts only).
+    if (r.plan) return { subject: r.plan.subject, body: composeFallback(r.plan).join("\n\n") };
     const greeting = r.person ? `Hi ${r.person.name.split(" ")[0]},` : "Hello,";
     const about = r.job ? `the ${r.job.title} role at ${r.company.name}` : `opportunities at ${r.company.name}`;
     return {

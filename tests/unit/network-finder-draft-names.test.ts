@@ -4,6 +4,7 @@
  */
 import { describe, expect, it, vi } from "vitest";
 import { MEMBERS, type MemberId } from "@/config/members";
+import { buildEmailPlan } from "@/lib/network-finder/email-composer";
 import { loadNetworkFinderConfig } from "@/lib/network-finder/config";
 import { distributeDrafts, type FanoutDeps } from "@/lib/network-finder/draft-fanout";
 import { draftForContact, type PipelineDeps } from "@/lib/network-finder/pipeline";
@@ -58,32 +59,51 @@ describe("member full names", () => {
 });
 
 describe("draft text and sign-off", () => {
-  it("the built-in writer introduces and signs off with the full name, then the member's own signature", async () => {
+  it("each draft greets the recipient, is signed ONCE with the full name + that member's links, then the optional extra signature", async () => {
     const { sent, deps } = mailboxes();
     await draftForContact(pipelineDeps(undefined, deps, { lukky: "Lakshya | linkedin.example/lakshya" }), target);
     for (const m of ["anni", "lukky", "rishii"] as const) {
       const body = sent.find((s) => s.memberId === m)!.body;
-      expect(body).toContain(`I'm ${FULL[m]}`);
-      expect(body).toMatch(new RegExp(`Best regards,\\n${FULL[m]}($|\\n\\n-- \\n)`));
+      const me = MEMBERS.find((x) => x.id === m)!;
+      expect(body.startsWith("Dear Priya,")).toBe(true);
+      expect(body).toContain(`Best regards,\n${FULL[m]}\nLinkedIn: ${me.linkedinUrl}\nGitHub: ${me.githubUrl}`);
+      expect(body.split("Best regards,").length - 1).toBe(1);
       expect(body).not.toMatch(/\b(Anni|Lukky|Rishii)\b/);
+      for (const other of MEMBERS.filter((x) => x.id !== m)) for (const v of [other.fullName, other.linkedinUrl, other.githubUrl]) expect(body).not.toContain(v);
     }
-    expect(sent.find((s) => s.memberId === "lukky")!.body.endsWith("Best regards,\nLakshya Singh\n\n-- \nLakshya | linkedin.example/lakshya")).toBe(true);
+    expect(sent.find((s) => s.memberId === "lukky")!.body.endsWith("GitHub: https://github.com/lukkydiwan\n\n-- \nLakshya | linkedin.example/lakshya")).toBe(true);
   });
 
-  it("adds the full-name sign-off when the writer leaves it out, and never duplicates one that is there", async () => {
-    const noSignOff: Brain = { id: "test", prioritizeCompanies: async (c) => [...c], choosePeople: async (_c, p) => [...p], isRelevantJob: async () => ({ relevant: true, reason: "" }), writeDraft: async (r) => ({ subject: "Hi", body: `Hi Priya,\n\nI'm ${r.member.name} and I admire Acme.` }) };
-    const a = mailboxes();
-    await draftForContact(pipelineDeps(noSignOff, a.deps), target);
-    for (const m of ["anni", "lukky", "rishii"] as const) expect(a.sent.find((s) => s.memberId === m)!.body.endsWith(`\n\nBest regards,\n${FULL[m]}`)).toBe(true);
-
-    const signs: Brain = { ...noSignOff, writeDraft: async (r) => ({ subject: "Hi", body: `Hi Priya,\n\nThanks!\n\nWarm regards,\n${r.member.name}` }) };
+  it("a writer's own sign-off is replaced (never duplicated), and an invalid AI draft falls back to the verified template", async () => {
+    const base: Brain = { id: "test", prioritizeCompanies: async (c) => [...c], choosePeople: async (_c, p) => [...p], isRelevantJob: async () => ({ relevant: true, reason: "" }), writeDraft: async () => ({ subject: "x", body: "" }) };
+    // Signs off by itself and is too short → validation fails → deterministic template fill, signed once.
+    const signs: Brain = { ...base, writeDraft: async (r) => ({ subject: "Hi", body: `Hi Priya,\n\nThanks!\n\nWarm regards,\n${r.member.name}` }) };
     const b = mailboxes();
     await draftForContact(pipelineDeps(signs, b.deps), target);
     for (const m of ["anni", "lukky", "rishii"] as const) {
       const body = b.sent.find((s) => s.memberId === m)!.body;
-      expect(body.endsWith(`Warm regards,\n${FULL[m]}`)).toBe(true);
+      expect(body).not.toContain("Warm regards");
       expect(body.split(FULL[m]).length - 1).toBe(1);
+      expect(body).toContain("I am writing to express my interest");
     }
+    // Invents a skill the member does not have → rejected → template fill without it.
+    const invents: Brain = { ...base, writeDraft: async () => ({ subject: "x", body: Array(6).fill("I have years of experience with Kubernetes, Golang and Rust in production systems at large companies across many teams.").join("\n\n") }) };
+    const c = mailboxes();
+    await draftForContact(pipelineDeps(invents, c.deps), target);
+    for (const d of c.sent) expect(d.body).not.toMatch(/Kubernetes|Golang|Rust/);
+  });
+
+  it("with a plan, Nemotron gets only verified facts (full name, education, skills, projects) — never the app id — and writes paragraphs only", async () => {
+    const fetchFn = vi.fn<FetchLike>(async () => Response.json({ choices: [{ message: { content: '{"paragraphs":["One.","Two.","Three.","Four."]}' } }] }));
+    const brain = createNemotronBrain({ apiKey: "nv-test", model: "m", baseUrl: "https://nim.example.test/v1", minIntervalMs: 0 } as Parameters<typeof createNemotronBrain>[0], fetchFn);
+    const plan = buildEmailPlan({ memberId: "anni", company: { name: "Acme" }, person: { name: "Priya Sharma" }, job: { title: "Backend Engineer" } });
+    const out = await brain.writeDraft({ kind: "job_application", member: { id: "anni", name: "Aniket Raj" }, company: { name: "Acme" }, person: { name: "Priya Sharma", title: "Engineering Manager" }, plan });
+    expect(out).toEqual({ subject: "Application for Backend Engineer — Acme", body: "One.\n\nTwo.\n\nThree.\n\nFour." });
+    const sentToModel = String(fetchFn.mock.calls[0][1]?.body);
+    expect(sentToModel).toContain("Aniket Raj");
+    expect(sentToModel).toContain("Node.js");
+    expect(sentToModel).not.toMatch(/\banni\b/i);
+    expect(sentToModel).toMatch(/claim NO skill/);
   });
 
   it("Nemotron receives only the full name (and profile), never the app id or nickname", async () => {

@@ -1,5 +1,6 @@
 import { ProviderError } from "../errors";
 import { classifyPersona } from "../contacts";
+import { MAX_WORDS, type EmailPlan } from "../email-composer";
 import { selectCompanies } from "../qualify";
 import { ruleVerdict } from "../roles";
 import { PERSONAS } from "../types";
@@ -164,6 +165,48 @@ export function createNemotronCompanyFactsExtractor(config: NemotronConfig, fetc
   };
 }
 
+/**
+ * Writes ONLY the body paragraphs of a planned email: the greeting, subject and signature come from the plan, and
+ * the caller validates the result (falling back to the deterministic template fill if anything is off).
+ */
+async function writePlannedDraft(ask: ReturnType<typeof makeAsk>, plan: EmailPlan): Promise<DraftContent> {
+  const facts = {
+    company: plan.company,
+    companyContext: plan.companyContext ?? null,
+    role: plan.jobTitle ?? `${plan.roleLabel} opportunities`,
+    internship: plan.internship,
+    jobDescriptionExcerpt: plan.jobDescriptionExcerpt ?? null,
+    recipientFirstName: plan.recipientFirstName,
+    member: { fullName: plan.member.fullName, education: plan.education || null, location: plan.mentionRemote ? plan.location : null },
+    roleAngle: plan.guidance,
+    areasToMention: plan.areas,
+    skillsToMention: plan.skills,
+    skillsAlsoInJobPosting: plan.skillsInJob,
+    projectsOrExperience: plan.highlights.map((h) => ({ title: h.title, whatTheMemberDid: h.didWhat })),
+    roleValueSentence: plan.valueProposition,
+    neutralCompanyReason: plan.motivation,
+    wouldContributeTo: plan.contributeTo,
+  };
+  const out = await ask(
+    [
+      `Write the BODY of a job application email from member.fullName (first person) for the role at the company in the DATA.`,
+      `Use 4 or 5 short paragraphs, ${plan.minWords}–${MAX_WORDS} words in total. Structure: (1) interest in the exact role at the company + member.education if given;`,
+      `(2) background using ONLY skillsToMention and projectsOrExperience (mention at most 8 skills, 1–2 projects, say what the member did);`,
+      `(3) why it fits the role (roleValueSentence if given; skillsAlsoInJobPosting if any); (4) why this company — use companyContext ONLY if given, otherwise neutralCompanyReason;`,
+      `(5) offer to share the resume and discuss, then thank them.`,
+      `STRICT RULES: claim NO skill, project, employer, metric or experience that is not in the DATA. Invent NOTHING about the company (no products, mission, funding, stack, achievements).`,
+      `Do not copy the job description. No greeting line, no sign-off, no name at the end (they are added separately). No placeholders. No ellipses.`,
+      `Avoid buzzwords and these phrases: perfect fit, ideal candidate, thrilled, exciting opportunity, innovative company, cutting-edge, leverage.`,
+      `Return {"paragraphs":["...","..."]}.`,
+    ].join(" "),
+    facts,
+    1100,
+  );
+  const paragraphs = Array.isArray(out.paragraphs) ? out.paragraphs.filter((x): x is string => typeof x === "string").map((x) => x.trim()).filter(Boolean) : [];
+  if (paragraphs.length < 3) throw new ProviderError("nemotron", "invalid_response", "draft missing paragraphs");
+  return { subject: plan.subject, body: paragraphs.join("\n\n") };
+}
+
 export function createNemotronBrain(config: NemotronConfig, fetchFn: FetchLike = fetch, warn: (msg: string) => void = (m) => console.warn(m)): Brain {
   const ask = makeAsk(config, fetchFn);
 
@@ -235,6 +278,7 @@ export function createNemotronBrain(config: NemotronConfig, fetchFn: FetchLike =
     },
 
     async writeDraft(request: DraftRequest): Promise<DraftContent> {
+      if (request.plan) return writePlannedDraft(ask, request.plan);
       const out = await ask(
         `Write a short, polite, personalised cold email (${request.kind === "job_application" ? "about the job below" : "asking about opportunities"}) from the member to the person, in the first person as the member, signed with exactly member.name (their full name). Facts about the member may come ONLY from member.profile (if absent, say nothing specific about their background). Under 150 words, no invented facts, no placeholders like [Name]. Return {"subject":"...","body":"..."}.`,
         // Only the member's full name and profile are shared (not the internal app id / nickname).
