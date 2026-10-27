@@ -32,6 +32,11 @@ import { FakeSheets } from "../helpers/fake-sheets";
 let sheets: FakeSheets;
 const MEMBERS = ["anni", "lukky", "rishii"] as const;
 const FULL: Record<MemberId, string> = { anni: "Aniket Raj", lukky: "Lakshya Singh", rishii: "Rishi Raj" };
+const LINKS: Record<MemberId, { linkedin: string; github: string }> = {
+  anni: { linkedin: "https://www.linkedin.com/in/raj-aniket/", github: "https://github.com/iamankoo" },
+  lukky: { linkedin: "https://www.linkedin.com/in/lakshya-singh-243510302/", github: "https://github.com/lukkydiwan" },
+  rishii: { linkedin: "https://www.linkedin.com/in/rishi-raj-8bb5a8366/", github: "https://github.com/Rishi-Ra-1j4" },
+};
 const as = (m: MemberId | null) => vi.mocked(getSession).mockResolvedValue(m ? { memberId: m, expiresAt: 9_999_999_999 } : null);
 const idToken = (email: string) => `h.${Buffer.from(JSON.stringify({ email, email_verified: true })).toString("base64url")}.s`;
 
@@ -135,7 +140,12 @@ describe("new manual connection → drafts in all three mailboxes (automatic)", 
       const { head, body } = decode(d.raw);
       expect(head).toContain("To: adam@evidence.example");
       expect(head).not.toMatch(/^From:/m); // each draft is in that member's own account; no impersonation
-      expect(body.endsWith(`Best regards,\n${FULL[m]}`)).toBe(true);
+      // No attachments exist in the drafting system, so no draft can ever carry another member's resume.
+      expect(head).toContain('Content-Type: text/plain; charset="UTF-8"');
+      expect(head).not.toMatch(/multipart|attachment/i);
+      expect(body).toContain(`Best regards,\n${FULL[m]}\nLinkedIn: `);
+      expect(body.endsWith(`GitHub: ${LINKS[m].github}`)).toBe(true);
+      expect(body).toContain(`LinkedIn: ${LINKS[m].linkedin}`);
       for (const other of Object.values(FULL).filter((n) => n !== FULL[m])) expect(body).not.toContain(other);
     }
     expect(recordsFor(c.connectionId)).toEqual([["anni", "created"], ["lukky", "created"], ["rishii", "created"]]);

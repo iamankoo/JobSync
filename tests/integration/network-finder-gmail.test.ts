@@ -112,11 +112,16 @@ describe("drafts land in each member's REAL Gmail module path (mock Google)", ()
     for (const d of google.drafts.slice(0, 3)) expect(decode(d.raw).head).toContain("To: riya.talent@mock1.example.test");
     // The founder's address is predicted from the published pattern (labelled in Connections Notes).
     for (const d of google.drafts.slice(3)) expect(decode(d.raw).head).toContain("To: sam.founder@mock1.example.test");
-    // The member's own profile and signature are used only in their own draft (rule brain: profile text verbatim).
-    expect(decode(google.drafts[1].raw).body).toContain("React Native expense app");
-    expect(decode(google.drafts[1].raw).body).toMatch(/-- \r?\nLukky K\. \| linkedin\.example\.test\/lukky$/);
-    expect(decode(google.drafts[0].raw).body).not.toContain("React Native");
-    expect(decode(google.drafts[0].raw).body).not.toContain("Lukky K.");
+    // Each draft carries ITS member's identity and links (and optional extra signature) — never another member's.
+    const lukkyBody = decode(google.drafts[1].raw).body;
+    expect(lukkyBody).toMatch(/Best regards,\r?\nLakshya Singh\r?\nLinkedIn: https:\/\/www\.linkedin\.com\/in\/lakshya-singh-243510302\/\r?\nGitHub: https:\/\/github\.com\/lukkydiwan/);
+    expect(lukkyBody).toMatch(/-- \r?\nLukky K\. \| linkedin\.example\.test\/lukky$/);
+    // The old free-text profile setting is not copied into emails (only verified structured facts are used).
+    expect(lukkyBody).not.toContain("React Native expense app");
+    const anniBody = decode(google.drafts[0].raw).body;
+    expect(anniBody).toContain("Aniket Raj");
+    expect(anniBody).not.toContain("Lukky K.");
+    expect(anniBody).not.toContain("lukkydiwan");
     // Ledger: one row per (contact, member), status created, with Gmail's draft + thread IDs (no tokens).
     const ledger = sheets.dataRows("NF_Drafts");
     const saved = (await existingConnections.list()).map((c) => c.connectionId);

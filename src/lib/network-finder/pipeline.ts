@@ -7,6 +7,7 @@ import { classifyPersona, rankPeople } from "./contacts";
 import { ConnectionIndex, JobIndex, normalizePersonName } from "./dedupe";
 import { countsByMember, nextAssignee, type Selection, type SelectionStore } from "./distribution";
 import { distributeDrafts, draftKey, type FanoutDeps, type MemberDraftOutcome } from "./draft-fanout";
+import { assembleEmail, buildEmailPlan, cleanParagraphs, composeFallback, jobForCompany, validateEmail, type EmailJob } from "./email-composer";
 import { inferPattern, predictEmail, type PatternEvidence } from "./email-pattern";
 import { ApolloPoolExhausted, ProviderError } from "./errors";
 import type { ConnectionsGateway, JobsGateway } from "./gateways";
@@ -387,11 +388,19 @@ export interface DraftTarget {
 }
 
 /**
- * One personalised draft per member in their OWN Gmail about one contact, written as that member (their profile)
- * and closed with their own signature. Never sends. Already-created drafts are skipped (ledger).
+ * One personalised draft per member in their OWN Gmail about one contact. Structured: the company's open job (Jobs) →
+ * role template → that member's verified skills/projects → recipient/company personalisation → Nemotron writes the
+ * body within it → validation (falls back to the deterministic template fill if anything is off) → the member's
+ * signature with their LinkedIn/GitHub. Never sends. Already-created/sent drafts are skipped (ledger).
  */
-export async function draftForContact(deps: Pick<PipelineDeps, "config" | "brain" | "drafts">, t: DraftTarget): Promise<MemberDraftOutcome[]> {
+export async function draftForContact(deps: Pick<PipelineDeps, "config" | "brain" | "drafts"> & Partial<Pick<PipelineDeps, "jobs">>, t: DraftTarget): Promise<MemberDraftOutcome[]> {
   const brain = brainOf(deps);
+  let job: EmailJob | undefined;
+  try {
+    job = deps.jobs ? jobForCompany(await deps.jobs.list(), t.company.name) : undefined;
+  } catch {
+    job = undefined; // no job context: the email speaks of the role family instead
+  }
   return distributeDrafts(
     { type: "contact", id: t.connectionId, ...(t.email ? { to: t.email } : {}) },
     {
@@ -400,19 +409,30 @@ export async function draftForContact(deps: Pick<PipelineDeps, "config" | "brain
       isConnected: deps.drafts!.isConnected,
       ledger: deps.drafts!.ledger,
       compose: async (memberId, memberName) => {
-        const d = await brain.writeDraft({
-          kind: "outreach",
-          member: { id: memberId, name: memberName, ...(deps.config.profiles[memberId] ? { profile: deps.config.profiles[memberId] } : {}) },
-          company: { name: t.company.name, ...(t.company.website ? { website: t.company.website } : {}), ...(t.company.description ? { description: t.company.description.slice(0, 400) } : {}) },
+        const plan = buildEmailPlan({
+          memberId,
+          company: { name: t.company.name, ...(t.company.website ? { website: t.company.website } : {}), ...(t.company.description ? { description: t.company.description } : {}) },
           person: { name: t.name, title: t.title },
+          ...(t.email ? { recipientEmail: t.email } : {}),
+          ...(job ? { job } : {}),
         });
-        // Always signed with the member's full name, even if the writer left the sign-off out.
-        const body = d.body.trimEnd();
-        const lastLine = body.split("\n").filter((l) => l.trim()).pop() ?? "";
-        const signedOff = lastLine.trim().replace(/[.!]+$/, "").endsWith(memberName);
-        const signed = signedOff ? body : `${body}\n\nBest regards,\n${memberName}`;
+        let body: string | null = null;
+        try {
+          const d = await brain.writeDraft({
+            kind: job ? "job_application" : "outreach",
+            member: { id: memberId, name: memberName, ...(deps.config.profiles[memberId] ? { profile: deps.config.profiles[memberId] } : {}) },
+            company: { name: t.company.name, ...(t.company.website ? { website: t.company.website } : {}), ...(t.company.description ? { description: t.company.description.slice(0, 400) } : {}) },
+            person: { name: t.name, title: t.title },
+            plan,
+          });
+          body = assembleEmail(plan, cleanParagraphs(d.body.split(/\n\s*\n/), plan.member.fullName));
+          if (validateEmail(body, plan).length) body = null;
+        } catch {
+          body = null; // writer unavailable or invalid → the deterministic template fill below
+        }
+        body ??= assembleEmail(plan, composeFallback(plan));
         const signature = deps.config.signatures?.[memberId];
-        return { ...d, body: signature ? `${signed}\n\n-- \n${signature}` : signed };
+        return { subject: plan.subject, body: signature ? `${body}\n\n-- \n${signature}` : body };
       },
     },
   );

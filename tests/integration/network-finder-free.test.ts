@@ -346,8 +346,9 @@ describe("rate limits and failures", () => {
     const out = await processCompany(deps, q(mockCompany(1)));
     expect(out.contactsSaved).toEqual(["Riya Talent", "Alex Manager", "Sam Founder"]);
     expect(warnings.some((w) => /people choice failed \(rate_limited\); using rules/.test(w))).toBe(true);
-    // Draft writing is never faked: with Nemotron down, drafts are recorded as failed and retried later.
-    expect(out.drafts?.every((d) => d.result === "failed")).toBe(true);
+    // With Nemotron down, each draft is written from the role template using only the member's verified facts
+    // (never invented, never truncated) instead of failing.
+    expect(out.drafts?.every((d) => d.result === "created")).toBe(true);
     expect(JSON.stringify(warnings)).not.toContain("test-nvidia-key");
   });
 
