@@ -388,6 +388,103 @@ describe("one summary notification per batch of 10", () => {
   });
 });
 
+describe("scheduling inside the run budget: queued companies before more discovery", () => {
+  /** Production shape: one company per call, a 50 s run budget, and a discovery pass that is slow. */
+  function scheduled(companies: CompanyCandidate[]) {
+    const s = setup({ companies, config: { maxCompaniesPerTick: 1 } });
+    const events: string[] = [];
+    const inner = s.source;
+    // Discovery that eats the run's time: afterwards only `leaveMs` remain (like HN + remoteintech + enrichment).
+    let leaveMs: number | null = null;
+    s.deps.sources = [{ id: inner.id, discover: async (query) => {
+      events.push(`discover (connections so far: ${conns().length})`);
+      if (leaveMs !== null) s.deps.runState!.deadline = Date.now() + leaveMs;
+      return inner.discover(query);
+    } }];
+    const call = async (budgetMs: number, slowDiscoveryLeavesMs: number | null = null) => {
+      leaveMs = slowDiscoveryLeavesMs;
+      s.deps.runState = { deadline: Date.now() + budgetMs };
+      return runBatchTick(s.deps);
+    };
+    const queue = s.deps.queue as InMemoryQueue<CompanyTask>;
+    return { ...s, events, call, pending: async () => (await queue.state(clock)).pending };
+  }
+  const five = () => Array.from({ length: 5 }, (_, i) => mockCompany(i + 1));
+  const twelve = () => Array.from({ length: 12 }, (_, i) => mockCompany(i + 1));
+
+  it("REGRESSION (28 Oct): a slow discovery fills the queue; the NEXT call processes a queued company instead of rediscovering", async () => {
+    const t = scheduled(five());
+    // Call 1: nothing queued → discovery first; it uses the budget (5 s left) → the companies stay queued.
+    const first = await t.call(45_000, 5_000);
+    expect(first.ran && first.processed).toEqual([]);
+    expect(await t.pending()).toBe(5);
+    // Call 2 (old code: discovered again, ran out of time, processed nothing): queued work is processed first,
+    // and with too little time left for a discovery pass it is not started at all.
+    const second = await t.call(35_000, 5_000);
+    expect(second.ran && second.processed.map((o) => o.companyKey)).toEqual(["domain:mock1.example.test"]);
+    expect(second.ran && second.discovery).toBeUndefined();
+    expect(t.events).toEqual(["discover (connections so far: 0)"]);
+    expect(conns().length).toBe(3);
+    expect(await t.deps.ledger.get("2026-10-27#2")).toBe(1);
+  });
+
+  it("with plenty of time, the queued company is processed BEFORE discovery tops the queue up", async () => {
+    const t = scheduled(twelve());
+    await t.call(45_000, 5_000); // queue 10
+    await t.deps.queue.complete((await t.deps.queue.claim(clock))!.id); // pretend one finished elsewhere so the queue is short
+    t.events.length = 0;
+    const tick = await t.call(Number.MAX_SAFE_INTEGER);
+    expect(tick.ran && tick.processed).toHaveLength(1);
+    // Discovery ran only after the company was saved (3 contacts already in Connections).
+    expect(t.events).toEqual(["discover (connections so far: 3)"]);
+  });
+
+  it("a slow discovery can never take the time of queued work, even when the queue is short", async () => {
+    const t = scheduled(five());
+    await t.call(45_000, 5_000); // 5 queued (fewer than the 10 the window needs)
+    // Every later call: the discovery pass would leave only 5 s — but it is never started before the queued company.
+    const tick = await t.call(45_000, 5_000);
+    expect(tick.ran && tick.processed).toHaveLength(1);
+  });
+
+  it("queued companies carry over between 5-minute calls: one per call, each exactly once, no duplicates", async () => {
+    const t = scheduled(five());
+    await t.call(45_000, 5_000);
+    const done: string[] = [];
+    for (let i = 0; i < 5; i++) {
+      clock += 5 * 60_000;
+      const tick = await t.call(35_000);
+      if (tick.ran) done.push(...tick.processed.map((o) => o.companyKey));
+    }
+    expect(done).toEqual([1, 2, 3, 4, 5].map((n) => `domain:mock${n}.example.test`));
+    expect(await t.pending()).toBe(0);
+    expect(await t.deps.ledger.get("2026-10-27#2")).toBe(5);
+    expect(await t.deps.ledger.get("2026-10-27#enqueued")).toBe(5);
+    expect(t.events).toHaveLength(1); // no rediscovery while work was queued
+    expect(new Set(conns().map((r) => `${r[3]}|${r[2]}`)).size).toBe(conns().length); // no duplicate contacts
+    expect(conns()).toHaveLength(15);
+    // Queue empty again → the next call discovers first (the sources here have nothing new).
+    clock += 5 * 60_000;
+    const next = await t.call(45_000);
+    expect(next.ran && next.discovery).toBeDefined();
+  });
+
+  it("the window still stops at 10 companies, each processed once", async () => {
+    const t = scheduled(twelve());
+    const done: string[] = [];
+    for (let i = 0; i < 15; i++) {
+      clock += 5 * 60_000;
+      const tick = await t.call(45_000);
+      if (tick.ran) done.push(...tick.processed.map((o) => o.companyKey));
+    }
+    expect(done).toHaveLength(10);
+    expect(new Set(done).size).toBe(10);
+    expect(await t.deps.ledger.get("2026-10-27#2")).toBe(10);
+    expect(await t.deps.ledger.get("2026-10-27#enqueued")).toBe(10);
+    expect(await t.call(45_000)).toEqual({ ran: false, reason: "batch_complete" });
+  });
+});
+
 describe("1,000-contact limit", () => {
   it("at the limit: no new contacts, all three told once a day, nothing exported or deleted, job search still works", async () => {
     const { deps, notifier, jobSource } = setup({ config: { contactLimit: 3 } });
