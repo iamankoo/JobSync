@@ -90,6 +90,7 @@ export interface CycleResult {
   reason?: "disabled" | "busy";
   sentTracking?: SentTrackingResult;
   batch?: TickResult;
+  manualDrafts?: { checked: number; created: number; remaining: number };
   pendingDrafts?: { checked: number; created: number; remaining: number };
   dailyJobs?: { internships: string[]; fullTime: string[]; warnings: string[] };
   recheck?: { checked: number; jobsSaved: string[]; warnings: string[] };
@@ -114,6 +115,8 @@ export async function runScheduledCycle(deps: PipelineDeps & { stores: ReturnTyp
   const hasTime = (ms: number) => deps.runState!.deadline! - Date.now() > ms;
   try {
     result.sentTracking = await step("sent-tracking", () => runSentTracking(existingSentTrackerDeps(), 30));
+    // Manually added connections first (one per call), so they are drafted within ~10 minutes even during a batch.
+    result.manualDrafts = await step("manual-drafts", () => runPendingDrafts(deps, { limit: 1, manualOnly: true }));
     result.batch = await step("batch", () => runBatchTick(deps));
     result.pendingDrafts = await step("pending-drafts", () => runPendingDrafts(deps, { limit: 6 }));
     if (hasTime(15_000)) result.dailyJobs = await step("daily-jobs", () => runDailyJobSearch(deps));
@@ -152,6 +155,7 @@ export function summarizeCycle(r: CycleResult) {
             warnings: [...new Set(b.processed.flatMap((o) => o.warnings))],
             notified: Boolean(b.notified),
           },
+    manualDrafts: r.manualDrafts ?? null,
     pendingDrafts: r.pendingDrafts ?? null,
     dailyJobs: r.dailyJobs ? { internships: r.dailyJobs.internships.length, fullTime: r.dailyJobs.fullTime.length, warnings: r.dailyJobs.warnings } : null,
     recheck: r.recheck ? { checked: r.recheck.checked, jobsSaved: r.recheck.jobsSaved.length } : null,

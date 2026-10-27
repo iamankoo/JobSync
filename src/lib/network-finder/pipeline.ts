@@ -602,35 +602,56 @@ export async function runBatchTick(deps: PipelineDeps): Promise<TickResult> {
   return result;
 }
 
+/** Manually added connections (not Network Finder) are drafted if added within this many days and they have an email. */
+export const MANUAL_DRAFT_DAYS = 30;
+
 /**
- * Completes the drafts that earlier runs could not create or had no time for: every Network Finder contact of the
- * last `days` days that is still "Not Connected" gets a draft in each CONNECTED member's mailbox (a member who
- * connects Gmail later therefore receives the recent drafts too). Today's selections go first, then the oldest.
- * Members without Gmail are not touched (no ledger writes every run); failures are retried on later runs.
+ * The automatic drafting worker (runs on every scheduled call). Every "Not Connected" connection that should be
+ * drafted — Network Finder contacts of the last `days` days, and MANUALLY added connections with an email of the last
+ * `manualDays` days — gets one draft in EACH member's own mailbox (one ledger record per connection + mailbox):
+ *  - created or sent = done (a sent draft is never written again);
+ *  - a member without Gmail gets a "skipped" record once and is retried automatically after reconnecting;
+ *  - a failure stays retryable on later runs.
+ * Manual connections go first (so they are drafted within one or two runs), then today's selections, then the oldest.
  */
-export async function runPendingDrafts(deps: PipelineDeps, options: { days?: number; limit?: number } = {}): Promise<{ checked: number; created: number; remaining: number }> {
+export async function runPendingDrafts(deps: PipelineDeps, options: { days?: number; manualDays?: number; limit?: number; manualOnly?: boolean } = {}): Promise<{ checked: number; created: number; remaining: number }> {
   const none = { checked: 0, created: 0, remaining: 0 };
   if (!deps.drafts) return none;
-  const all = deps.drafts.members ?? MEMBER_IDS;
-  const members: MemberId[] = [];
-  for (const m of all) if (await deps.drafts.isConnected(m)) members.push(m);
-  if (members.length === 0) return none;
+  const members = deps.drafts.members ?? MEMBER_IDS;
+  const connected = new Set<MemberId>();
+  for (const m of members) if (await deps.drafts.isConnected(m)) connected.add(m);
 
-  const cutoff = new Date(now(deps).getTime() - (options.days ?? 3) * 86_400_000).toISOString();
+  const at = now(deps).getTime();
+  const cutoff = new Date(at - (options.days ?? 3) * 86_400_000).toISOString();
+  const manualCutoff = new Date(at - (options.manualDays ?? MANUAL_DRAFT_DAYS) * 86_400_000).toISOString();
   const snapshot = deps.drafts.snapshot ? new Map(await deps.drafts.snapshot()) : null;
-  const done = async (connectionId: string, m: MemberId) => {
+  const statusOf = async (connectionId: string, m: MemberId) => {
     const key = draftKey({ type: "contact", id: connectionId }, m);
-    return (snapshot ? snapshot.get(key) : await deps.drafts!.ledger.get(key))?.status === "created";
+    return (snapshot ? snapshot.get(key) : await deps.drafts!.ledger.get(key))?.status;
+  };
+  /** This mailbox needs nothing more for now. */
+  const settled = async (connectionId: string, m: MemberId) => {
+    const s = await statusOf(connectionId, m);
+    if (s === "created" || s === "sent") return true;
+    return !connected.has(m) && s !== undefined; // not connected: settled once it has a record (skipped)
   };
   const selections = deps.selections ? await deps.selections.all() : [];
   const selectedIds = new Map(selections.map((s) => [s.connectionId, s]));
+  const wanted = (c: Connection) =>
+    c.status === "Not Connected" &&
+    (isNetworkFinderEntry(c) ? !options.manualOnly && c.createdAt >= cutoff : Boolean(c.email?.trim()) && c.createdAt >= manualCutoff);
   const contacts = (await deps.connections.list())
-    .filter((c) => isNetworkFinderEntry(c) && c.status === "Not Connected" && c.createdAt >= cutoff)
-    .sort((a, b) => Number(selectedIds.has(b.connectionId)) - Number(selectedIds.has(a.connectionId)) || a.createdAt.localeCompare(b.createdAt));
+    .filter(wanted)
+    .sort(
+      (a, b) =>
+        Number(isNetworkFinderEntry(a)) - Number(isNetworkFinderEntry(b)) ||
+        Number(selectedIds.has(b.connectionId)) - Number(selectedIds.has(a.connectionId)) ||
+        a.createdAt.localeCompare(b.createdAt),
+    );
   const pending: Connection[] = [];
   for (const c of contacts) {
     for (const m of members) {
-      if (!(await done(c.connectionId, m))) {
+      if (!(await settled(c.connectionId, m))) {
         pending.push(c);
         break;
       }
@@ -641,14 +662,15 @@ export async function runPendingDrafts(deps: PipelineDeps, options: { days?: num
   const companyOf = (c: Connection) => {
     const s = selectedIds.get(c.connectionId);
     const rec = (s && registry.find((r) => r.key === s.companyKey)) || registry.find((r) => r.name.trim().toLowerCase() === (c.company ?? "").trim().toLowerCase());
-    return { name: rec?.name ?? c.company ?? "", ...(rec?.website ? { website: rec.website } : {}) };
+    return { name: rec?.name || c.company?.trim() || "your team", ...(rec?.website ? { website: rec.website } : {}) };
   };
-  // Drafting only for connected members; the snapshot keeps the ledger reads to one per run.
+  // Every member's mailbox (the fan-out skips members without Gmail); the snapshot keeps ledger reads to one per run.
   const runDeps: PipelineDeps = {
     ...deps,
     drafts: {
       ...deps.drafts,
       members,
+      isConnected: async (m) => connected.has(m),
       ledger: {
         get: async (key) => (snapshot ? snapshot.get(key) : deps.drafts!.ledger.get(key)),
         record: async (e) => {

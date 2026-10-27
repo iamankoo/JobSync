@@ -66,7 +66,7 @@ export function ProfileGate({ member, hasPassword, isAdmin, timeZone }: { member
   if (data) {
     return (
       <div className="mx-auto w-full max-w-2xl space-y-5" data-testid="profile-content">
-        <ProfileForm member={member} profile={data.profile} resumes={data.resumes} gmail={data.gmail} isAdmin={isAdmin} onSelfReset={relock} timeZone={timeZone} />
+        <ProfileForm member={member} profile={data.profile} resumes={data.resumes} photos={data.photos} gmail={data.gmail} isAdmin={isAdmin} onSelfReset={relock} timeZone={timeZone} />
         <LogoutSection member={member} />
       </div>
     );

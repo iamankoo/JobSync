@@ -45,12 +45,15 @@ export async function distributeDrafts(item: FanoutItem, deps: FanoutDeps): Prom
   for (const memberId of deps.members ?? MEMBER_IDS) {
     const key = draftKey(item, memberId);
     try {
-      if ((await deps.ledger.get(key))?.status === "created") {
+      const previous = (await deps.ledger.get(key))?.status;
+      // A draft that exists, or was already SENT, is never written again.
+      if (previous === "created" || previous === "sent") {
         outcomes.push({ memberId, result: "already_drafted" });
         continue;
       }
       if (!(await deps.isConnected(memberId))) {
-        await deps.ledger.record({ draftKey: key, memberId, itemType: item.type, itemId: item.id, gmailDraftId: "", status: "skipped_unauthorized", detail: "Gmail not connected" });
+        // Recorded once; retried automatically once the member connects Gmail.
+        if (previous !== "skipped_unauthorized") await deps.ledger.record({ draftKey: key, memberId, itemType: item.type, itemId: item.id, gmailDraftId: "", status: "skipped_unauthorized", detail: "Gmail not connected" });
         outcomes.push({ memberId, result: "not_authorized" });
         continue;
       }
