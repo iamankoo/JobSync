@@ -236,8 +236,9 @@ export function createNemotronBrain(config: NemotronConfig, fetchFn: FetchLike =
 
     async writeDraft(request: DraftRequest): Promise<DraftContent> {
       const out = await ask(
-        `Write a short, polite, personalised cold email (${request.kind === "job_application" ? "about the job below" : "asking about opportunities"}) from the member to the person, in the first person as the member, signed with the member's name. Facts about the member may come ONLY from member.profile (if absent, say nothing specific about their background). Under 150 words, no invented facts, no placeholders like [Name]. Return {"subject":"...","body":"..."}.`,
-        request,
+        `Write a short, polite, personalised cold email (${request.kind === "job_application" ? "about the job below" : "asking about opportunities"}) from the member to the person, in the first person as the member, signed with exactly member.name (their full name). Facts about the member may come ONLY from member.profile (if absent, say nothing specific about their background). Under 150 words, no invented facts, no placeholders like [Name]. Return {"subject":"...","body":"..."}.`,
+        // Only the member's full name and profile are shared (not the internal app id / nickname).
+        { ...request, member: { name: request.member.name, ...(request.member.profile ? { profile: request.member.profile } : {}) } },
         700,
       );
       const subject = typeof out.subject === "string" ? out.subject.replace(/[\r\n]+/g, " ").trim().slice(0, 200) : "";

@@ -124,8 +124,10 @@ describe("free pipeline: public pages → Connections → selection → three Gm
       expect(mail.of(m).map((d) => d.to)).toEqual(["riya.talent@mock1.example.test", "alex.manager@mock1.example.test", "sam.founder@mock1.example.test"]);
       for (const d of mail.of(m)) expect(d.body).not.toMatch(/\[[A-Z][a-z]+\]/);
     }
-    expect(mail.of("lukky").every((d) => d.body.includes("Lukky"))).toBe(true);
-    expect(mail.of("rishii").every((d) => d.body.includes("Rishii"))).toBe(true);
+    // Signed with each mailbox owner's full name.
+    expect(mail.of("anni").every((d) => d.body.includes("Aniket Raj"))).toBe(true);
+    expect(mail.of("lukky").every((d) => d.body.includes("Lakshya Singh"))).toBe(true);
+    expect(mail.of("rishii").every((d) => d.body.includes("Rishi Raj"))).toBe(true);
     expect(row("Sam Founder")[8]).toContain("Drafts: one in each member's Gmail");
   });
 
