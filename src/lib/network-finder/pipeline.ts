@@ -88,6 +88,8 @@ const COMPANY_TIME_MS = 30_000;
 const DRAFT_TIME_MS = 12_000;
 /** Time one enrichment needs (pages + Nemotron). */
 const ENRICH_TIME_MS = 8_000;
+/** Time a discovery pass may take (public sources at 1 request/second + enrichment): it only runs after queued work with this much left. */
+const DISCOVERY_TIME_MS = 40_000;
 
 export interface CompanyTask {
   company: QualifiedCompany;
@@ -564,7 +566,8 @@ export async function runBatchTick(deps: PipelineDeps): Promise<TickResult> {
   if (remaining <= 0) return { ran: false, reason: "batch_complete" };
 
   const result: Extract<TickResult, { ran: true }> = { ran: true, window, processed: [], remaining, failed: [] };
-  if (state.pending < remaining) result.discovery = await discoverCompanies(deps, remaining - state.pending);
+  // Queued companies go first: discovery can take most of a run, so it runs first only when nothing is queued.
+  if (state.pending === 0) result.discovery = await discoverCompanies(deps, remaining);
 
   for (let i = 0; i < deps.config.maxCompaniesPerTick && remaining > 0; i++) {
     // Not enough time left in this run for a whole company: it stays queued for the next run.
@@ -605,6 +608,12 @@ export async function runBatchTick(deps: PipelineDeps): Promise<TickResult> {
     }
   }
   result.remaining = remaining;
+
+  // Top up the queue for the next calls only with time to spare (never at the expense of queued work).
+  if (!result.discovery && remaining > 0 && timeLeft(deps) > DISCOVERY_TIME_MS) {
+    const pending = (await deps.queue.state(now(deps).getTime())).pending;
+    if (pending < remaining) result.discovery = await discoverCompanies(deps, remaining - pending);
+  }
 
   // One summary per batch window: when its 10 are done, or when nothing more can be found for it.
   const doneCount = await deps.ledger.get(window.key);
