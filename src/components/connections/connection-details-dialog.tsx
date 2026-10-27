@@ -9,6 +9,7 @@ import { getMember } from "@/config/members";
 import { formatDisplayDate } from "@/lib/jobs/query";
 import type { Connection, ConnectionStatus } from "@/types/domain";
 import { ConnectionStatusControl } from "./connection-status";
+import { GmailDraftAction } from "./gmail-draft-action";
 
 /** Copies text to the clipboard; falls back to a hidden textarea where the async API is unavailable. */
 async function copyText(text: string): Promise<boolean> {
@@ -129,6 +130,8 @@ export function ConnectionDetailsDialog({ c, mine, timeZone, busy, onStatus, onE
             <p className="text-sm text-muted">No message written yet.{mine ? " Use Edit to add one." : ""}</p>
           )}
         </div>
+
+        {mine && c.email && <GmailDraftAction connectionId={c.connectionId} name={c.name} />}
 
         <div className="mt-5">
           <h3 className="text-xs font-semibold uppercase tracking-wide text-muted">Profile &amp; links</h3>

@@ -113,7 +113,7 @@ export interface CompanyOutcome {
 }
 
 const now = (d: PipelineDeps) => (d.now ? d.now() : new Date());
-const brainOf = (d: PipelineDeps) => d.brain ?? ruleBrain;
+const brainOf = (d: Pick<PipelineDeps, "brain">) => d.brain ?? ruleBrain;
 const taskId = (key: string) => `company:${key}`;
 /** How many people to look at per company before enriching (enrichment costs credits; search is broader). */
 const SEARCH_LIMIT = 10;
@@ -390,7 +390,7 @@ export interface DraftTarget {
  * One personalised draft per member in their OWN Gmail about one contact, written as that member (their profile)
  * and closed with their own signature. Never sends. Already-created drafts are skipped (ledger).
  */
-export async function draftForContact(deps: PipelineDeps, t: DraftTarget): Promise<MemberDraftOutcome[]> {
+export async function draftForContact(deps: Pick<PipelineDeps, "config" | "brain" | "drafts">, t: DraftTarget): Promise<MemberDraftOutcome[]> {
   const brain = brainOf(deps);
   return distributeDrafts(
     { type: "contact", id: t.connectionId, ...(t.email ? { to: t.email } : {}) },
