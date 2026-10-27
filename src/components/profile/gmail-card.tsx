@@ -36,7 +36,15 @@ export function GmailCard({ gmail }: { gmail: UnlockedProfile["gmail"] }) {
           <p className="break-all text-sm text-muted" data-testid="profile-gmail-status">{connected ? `Connected: ${gmail.email ?? ""}` : "Not connected"}</p>
         </div>
       </div>
-      {confirming ? (
+      <p className="text-sm text-muted">
+        Network Finder saves a personalised <strong className="text-ink">draft</strong> for each new contact in your own Gmail. JobSync can only create
+        drafts: it cannot read your mail and never sends anything.
+      </p>
+      {!gmail.configured ? (
+        <p className="text-sm text-amber-300">The server&apos;s Gmail settings are not configured yet.</p>
+      ) : !gmail.setUp ? (
+        <p className="text-sm text-amber-300">The Network Finder tabs are not in the spreadsheet yet.</p>
+      ) : confirming ? (
         <div role="group" aria-label="Confirm disconnect" className="flex flex-wrap items-center gap-3">
           <span className="text-sm">Disconnect your Gmail? Other members stay connected.</span>
           <Button variant="danger" onClick={disconnect} disabled={busy}>{busy ? "Disconnecting…" : "Yes, disconnect my Gmail"}</Button>
@@ -44,8 +52,10 @@ export function GmailCard({ gmail }: { gmail: UnlockedProfile["gmail"] }) {
         </div>
       ) : (
         <div className="flex flex-wrap gap-3">
+          {/* A real navigation: the server redirects to Google's consent screen, then back to the Gmail Drafts page. */}
+          <a href="/api/gmail/connect" className={buttonClass(connected ? "secondary" : "primary")}>{connected ? "Reconnect Gmail" : "Connect Gmail"}</a>
           {connected && <Button onClick={() => setConfirming(true)}>Disconnect Gmail</Button>}
-          <Link href="/gmail" className={buttonClass(connected ? "ghost" : "secondary")}>{connected ? "Gmail Drafts page" : "Connect on the Gmail Drafts page"}</Link>
+          <Link href="/gmail" className={buttonClass("ghost")}>Gmail Drafts page</Link>
         </div>
       )}
       <Notice notice={notice} onDismiss={() => setNotice(null)} />

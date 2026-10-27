@@ -1,13 +1,9 @@
 "use client";
 
 import { useState } from "react";
-import { useRouter } from "next/navigation";
-import { Mail } from "lucide-react";
 import { Avatar } from "@/components/ui/avatar";
-import { Button, buttonClass } from "@/components/ui/button";
 import { Notice, type NoticeState } from "@/components/ui/notice";
 import { getMember } from "@/config/members";
-import { apiRequest } from "@/lib/client/api";
 import type { GmailOverview } from "@/lib/gmail/overview";
 
 const ERRORS: Record<string, string> = {
@@ -23,106 +19,44 @@ const ERRORS: Record<string, string> = {
   unavailable: "Google or the spreadsheet could not be reached. Please try again.",
 };
 
-/** Team connection status as small photos: connected in full, not connected dimmed. Never shows anyone else's address. */
+/** Photos of the members whose Gmail is connected right now (from the server; never anyone's address). */
 function ConnectedMembers({ members }: { members: GmailOverview["members"] }) {
+  const connected = members.filter((m) => m.connected).map((m) => getMember(m.id)).filter((m) => m !== undefined);
   return (
-    <div className="flex items-center gap-2.5" data-testid="gmail-connected-members">
+    <div className="flex min-w-0 flex-wrap items-center gap-2.5" data-testid="gmail-connected-members">
       <span className="text-sm font-medium text-muted">Connected:</span>
-      <ul className="flex items-center -space-x-1.5">
-        {members.map((m) => {
-          const member = getMember(m.id);
-          if (!member) return null;
-          const label = `${member.name}: ${m.connected ? "Gmail connected" : "Gmail not connected"}`;
-          return (
-            <li key={m.id} title={label} data-connected={m.connected} className={`rounded-full border-2 border-navy-950 ${m.connected ? "" : "opacity-35 grayscale"}`}>
-              <span role="img" aria-label={label} className="block">
-                <Avatar member={member} size={30} />
+      {connected.length === 0 ? (
+        <span className="text-sm text-muted">No one yet</span>
+      ) : (
+        <ul className="flex items-center -space-x-1.5" aria-label="Members with Gmail connected">
+          {connected.map((member) => (
+            <li key={member.id} title={member.name} className="rounded-full border-2 border-navy-950">
+              <span role="img" aria-label={`${member.name}: Gmail connected`} className="block">
+                <Avatar member={member} size={32} />
               </span>
             </li>
-          );
-        })}
-      </ul>
+          ))}
+        </ul>
+      )}
     </div>
   );
 }
 
-/** Connect / disconnect THIS member's Gmail. Other members appear only as connected or not. */
-export function GmailConnect({ overview, justConnected, error }: { overview: GmailOverview; justConnected: boolean; error?: string }) {
-  const router = useRouter();
-  const [busy, setBusy] = useState(false);
-  const [confirming, setConfirming] = useState(false);
+/**
+ * Gmail Drafts page: the title and who is connected. Each member connects, reconnects or disconnects their own
+ * Gmail from Profile → Gmail; Google sends them back here, so the outcome of a connect is shown as a notice.
+ */
+export function GmailConnect({ members, justConnected, error }: { members: GmailOverview["members"]; justConnected: boolean; error?: string }) {
   const [notice, setNotice] = useState<NoticeState | null>(
     justConnected ? { kind: "success", text: "Gmail connected. Network Finder can now save drafts in your Gmail (it never sends)." } : error ? { kind: "error", text: ERRORS[error] ?? "Gmail could not be connected." } : null,
   );
-  const { me } = overview;
-  const connected = me.status === "connected";
-  const needsReconnect = me.status === "reauth_required";
-
-  async function disconnect() {
-    setBusy(true);
-    // The server disconnects the SESSION member only; the request cannot name anyone else.
-    const res = await apiRequest("/api/gmail/disconnect", { method: "POST" });
-    setBusy(false);
-    setConfirming(false);
-    if (res.ok) {
-      setNotice({ kind: "success", text: "Your Gmail was disconnected and JobSync's access revoked." });
-      router.refresh();
-    } else setNotice({ kind: "error", text: res.message });
-  }
-
   return (
-    <div className="max-w-2xl space-y-4">
-      <div className="flex flex-wrap items-center justify-between gap-3">
+    <div className="space-y-4">
+      <div className="flex flex-wrap items-center justify-between gap-x-6 gap-y-3">
         <h1 className="text-xl font-semibold">Gmail drafts</h1>
-        <ConnectedMembers members={overview.members} />
+        <ConnectedMembers members={members} />
       </div>
       <Notice notice={notice} onDismiss={() => setNotice(null)} />
-      <section className="space-y-3 rounded-xl border border-line bg-navy-900/70 p-5">
-        <div className="flex items-center gap-3">
-          <Mail size={22} aria-hidden className="text-electric-soft" />
-          <div className="min-w-0">
-            <p className="font-semibold">Your Gmail</p>
-            <p className="break-all text-sm text-muted" data-testid="gmail-my-status">
-              {connected ? `Connected: ${me.email}` : needsReconnect ? `Needs reconnecting (${me.email})` : "Not connected"}
-            </p>
-          </div>
-        </div>
-        <p className="text-sm text-muted">
-          Network Finder writes a personalised email for each new contact and saves it as a <strong className="text-ink">draft</strong> in your own Gmail.
-          JobSync can only create drafts: it cannot read your mail and never sends anything. You review and send each one yourself.
-        </p>
-        {!overview.configured ? (
-          <p className="text-sm text-amber-300">The server&apos;s Gmail settings are not configured yet.</p>
-        ) : !overview.setUp ? (
-          <p className="text-sm text-amber-300">The Network Finder tabs are not in the spreadsheet yet.</p>
-        ) : confirming ? (
-          <div role="group" aria-label="Confirm disconnect" className="space-y-3 rounded-lg border border-red-500/40 bg-red-500/10 p-3">
-            <p className="text-sm">
-              Disconnect <strong className="break-all">{me.email || "your Gmail"}</strong>? Network Finder will stop saving drafts in your Gmail. Other members stay connected.
-            </p>
-            <div className="flex flex-wrap gap-3">
-              <Button variant="danger" onClick={disconnect} disabled={busy}>
-                {busy ? "Disconnecting…" : "Yes, disconnect my Gmail"}
-              </Button>
-              <Button onClick={() => setConfirming(false)} disabled={busy}>
-                Cancel
-              </Button>
-            </div>
-          </div>
-        ) : (
-          <div className="flex flex-wrap gap-3">
-            {/* A real navigation: the server redirects to Google's consent screen. */}
-            <a href="/api/gmail/connect" className={buttonClass(connected ? "secondary" : "primary")}>
-              {connected || needsReconnect ? "Reconnect Gmail" : "Connect Gmail"}
-            </a>
-            {(connected || needsReconnect) && (
-              <Button onClick={() => setConfirming(true)}>
-                Disconnect Gmail
-              </Button>
-            )}
-          </div>
-        )}
-      </section>
     </div>
   );
 }

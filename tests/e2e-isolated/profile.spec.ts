@@ -1,6 +1,6 @@
 ﻿import { expect, test, type Page } from "@playwright/test";
 import { E2E_RECOVERY_ANSWER } from "../../playwright.isolated.config";
-import { appendRows, dataRows, horizontalOverflow, resetStore, signIn, updateRows } from "./helpers";
+import { appendRows, dataRows, elementsOutsideViewport, horizontalOverflow, resetStore, signIn, updateRows } from "./helpers";
 
 /**
  * Profile page (header profile button, details, resumes, professional photo, logout), the redesigned Gmail Drafts
@@ -190,7 +190,7 @@ test("Log out from the bottom of the Profile page", async ({ page }) => {
   await expect(page).toHaveURL(/\/login/);
 });
 
-test("Gmail Drafts: all three connected in the header; Disconnect only affects me, after confirming", async ({ page, request }) => {
+test("Gmail Drafts: clean page with only the connected members; Disconnect lives in Profile and affects only me", async ({ page, request }) => {
   const at = new Date().toISOString();
   await appendRows(request, "NF_GmailAccounts", ["anni", "lukky", "rishii"].map((m) => [m, `${m}.e2e@gmail.example`, "not-a-real-token", "openid email https://www.googleapis.com/auth/gmail.compose", "connected", at, at, ""]));
   await signIn(page, "Anni", "0001");
@@ -199,26 +199,97 @@ test("Gmail Drafts: all three connected in the header; Disconnect only affects m
   const team = page.getByTestId("gmail-connected-members");
   await expect(team).toContainText("Connected:");
   for (const name of ["Anni", "Lukky", "Rishii"]) await expect(team.getByRole("img", { name: `${name}: Gmail connected` })).toBeVisible();
-  await expect(page.getByText("Team", { exact: true })).toHaveCount(0);
-  await expect(page.getByTestId("gmail-my-status")).toHaveText("Connected: anni.e2e@gmail.example");
-  await expect(page.getByText("lukky.e2e@gmail.example")).toHaveCount(0);
-  await expect(page.getByText(/never sends anything/)).toBeVisible();
-  await expect(page.getByRole("link", { name: "Reconnect Gmail" })).toBeVisible();
+  // The old information card, its buttons and every address are gone from this page.
+  await expect(page.getByText("Your Gmail", { exact: true })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Disconnect Gmail" })).toHaveCount(0);
+  await expect(page.getByRole("link", { name: /Connect Gmail/ })).toHaveCount(0);
+  expect(await page.content()).not.toContain("gmail.example");
+  expect(await horizontalOverflow(page)).toBeLessThanOrEqual(0);
 
-  await page.getByRole("button", { name: "Disconnect Gmail" }).click();
-  await page.getByRole("group", { name: "Confirm disconnect" }).getByRole("button", { name: "Cancel" }).click();
+  // Profile → Gmail: Reconnect + Disconnect (own account only, after confirming).
+  await openProfile(page);
+  const card = page.getByRole("region", { name: "Gmail" });
+  await expect(card.getByTestId("profile-gmail-status")).toHaveText("Connected: anni.e2e@gmail.example");
+  await expect(card.getByText(/never sends anything/)).toBeVisible();
+  await expect(card.getByRole("link", { name: "Reconnect Gmail" })).toHaveAttribute("href", "/api/gmail/connect");
+  await card.getByRole("button", { name: "Disconnect Gmail" }).click();
+  await card.getByRole("group", { name: "Confirm disconnect" }).getByRole("button", { name: "Cancel" }).click();
   expect((await dataRows(request, "NF_GmailAccounts")).every((r) => r[4] === "connected")).toBe(true);
-
-  await page.getByRole("button", { name: "Disconnect Gmail" }).click();
-  await page.getByRole("button", { name: "Yes, disconnect my Gmail" }).click();
-  await expect(page.getByTestId("gmail-my-status")).toHaveText("Not connected");
-  await expect(team.getByRole("img", { name: "Anni: Gmail not connected" })).toBeVisible();
+  await card.getByRole("button", { name: "Disconnect Gmail" }).click();
+  await card.getByRole("button", { name: "Yes, disconnect my Gmail" }).click();
+  await expect(card.getByTestId("profile-gmail-status")).toHaveText("Not connected");
+  await expect(card.getByRole("link", { name: "Connect Gmail" })).toBeVisible();
   const rows = await dataRows(request, "NF_GmailAccounts");
   expect(rows.find((r) => r[0] === "anni")![4]).toBe("disconnected");
   expect(rows.filter((r) => r[0] !== "anni").every((r) => r[4] === "connected")).toBe(true);
-  expect(await horizontalOverflow(page)).toBeLessThanOrEqual(0);
+
+  // Back on Gmail Drafts, the avatars follow the real state: Anni is no longer shown.
+  await page.goto("/gmail");
+  await expect(team.getByRole("img", { name: "Anni: Gmail connected" })).toHaveCount(0);
+  for (const name of ["Lukky", "Rishii"]) await expect(team.getByRole("img", { name: `${name}: Gmail connected` })).toBeVisible();
 });
 
+test("Gmail Drafts shows a connect result notice after returning from Google", async ({ page }) => {
+  await signIn(page, "Lukky", "0002");
+  await page.goto("/gmail?connected=1");
+  await expect(page.getByRole("status").filter({ hasText: "Gmail connected." })).toBeVisible();
+  await page.goto("/gmail?error=denied");
+  await expect(page.locator("main").getByRole("alert")).toContainText("Google access was not granted.");
+  await expect(page.getByTestId("gmail-connected-members")).toContainText("No one yet");
+});
+
+/** Layout at the widths the product must support: centred, no sideways scrolling, nothing sticking out. */
+for (const width of [1440, 1280, 1024, 768, 600, 390, 375]) {
+  test(`responsive ${width}px: Profile lock and Profile centred; Gmail Drafts avatars right-aligned and inside the page`, async ({ page, request }, testInfo) => {
+    test.skip(testInfo.project.name !== "workflow-desktop", "viewport sweep runs once, on the desktop project");
+    const at = new Date().toISOString();
+    await appendRows(request, "NF_GmailAccounts", ["anni", "lukky", "rishii"].map((m) => [m, `${m}.e2e@gmail.example`, "not-a-real-token", "openid email https://www.googleapis.com/auth/gmail.compose", "connected", at, at, ""]));
+    await page.setViewportSize({ width, height: 900 });
+    await signIn(page, "Anni", "0001");
+    const main = page.locator("main");
+    const centred = async (testId: string) => {
+      const m = (await main.boundingBox())!;
+      const pad = await main.evaluate((el) => parseFloat(getComputedStyle(el).paddingLeft));
+      const b = (await page.getByTestId(testId).boundingBox())!;
+      const left = b.x - (m.x + pad);
+      const right = m.x + m.width - pad - (b.x + b.width);
+      expect(Math.abs(left - right), `${testId} centred at ${width}px (left ${left}, right ${right})`).toBeLessThanOrEqual(2);
+      expect(b.x).toBeGreaterThanOrEqual(0);
+      expect(b.x + b.width).toBeLessThanOrEqual(width);
+    };
+
+    await page.goto("/profile");
+    await expect(page.getByTestId("profile-lock")).toBeVisible();
+    await centred("profile-lock");
+    if (width >= 1024) {
+      // Vertically balanced too: the card's centre sits near the middle of the visible main area.
+      const b = (await page.getByTestId("profile-lock").boundingBox())!;
+      const top = (await main.boundingBox())!.y;
+      expect(Math.abs(b.y + b.height / 2 - (top + (900 - top) / 2))).toBeLessThan(120);
+    }
+    expect(await horizontalOverflow(page)).toBeLessThanOrEqual(0);
+
+    await unlockProfile(page);
+    await centred("profile-content");
+    expect((await page.getByTestId("profile-content").boundingBox())!.width).toBeLessThanOrEqual(672 + 1); // max-w-2xl
+    expect(await horizontalOverflow(page)).toBeLessThanOrEqual(0);
+    expect(await elementsOutsideViewport(page)).toEqual([]);
+
+    await page.goto("/gmail");
+    const group = page.getByTestId("gmail-connected-members");
+    await expect(group.getByRole("img")).toHaveCount(3);
+    const g = (await group.boundingBox())!;
+    const m = (await main.boundingBox())!;
+    const pad = await main.evaluate((el) => parseFloat(getComputedStyle(el).paddingLeft));
+    expect(g.x + g.width).toBeLessThanOrEqual(width);
+    if (width >= 600) expect(Math.abs(m.x + m.width - pad - (g.x + g.width)), "avatars flush right").toBeLessThanOrEqual(2);
+    // Avatars do not overlap more than the intended small stack overlap.
+    const boxes = await group.getByRole("img").evaluateAll((els) => els.map((e) => e.getBoundingClientRect()).map((r) => ({ x: r.x, w: r.width })));
+    for (let i = 1; i < boxes.length; i++) expect(boxes[i].x - boxes[i - 1].x).toBeGreaterThan(boxes[i - 1].w * 0.6);
+    expect(await horizontalOverflow(page)).toBeLessThanOrEqual(0);
+    expect(await elementsOutsideViewport(page)).toEqual([]);
+  });
+}
 test("Dashboard Connections card opens the Connections page", async ({ page, request }) => {
   const at = new Date().toISOString();
   await appendRows(request, "Connections", [["conn_e2e1", "anni", "Priya", "Acme", "", "", "", "", "", "Messaged", at, at, ""]]);

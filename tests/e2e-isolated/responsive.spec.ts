@@ -17,6 +17,7 @@ const PAGES = [
   { label: "Analytics", path: "/analytics", h1: "Analytics" },
   { label: "Connections", path: "/connections", h1: "Connections" },
   { label: "Group Chat", path: "/group-chat", h1: "Group Chat" },
+  { label: "Gmail Drafts", path: "/gmail", h1: "Gmail drafts" },
 ] as const;
 
 async function press(locator: Locator, touch: boolean) {

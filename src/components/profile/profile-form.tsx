@@ -85,7 +85,7 @@ export function ProfileForm({ member, profile, resumes = null, gmail, isAdmin = 
   }
 
   return (
-    <div className="max-w-2xl space-y-5">
+    <div className="w-full space-y-5">
       <div className="flex items-center gap-4">
         <Avatar member={member} size={64} ring />
         <div>
