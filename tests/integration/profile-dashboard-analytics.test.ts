@@ -1,5 +1,5 @@
 ﻿/**
- * Profile page API (own profile only, Members columns Eâ€“J), the Gmail page overview with all three members
+ * Profile page API (own profile only, Members columns E–J), the Gmail page overview with all three members
  * connected, member-scoped disconnect, the Dashboard Connections counts and the Analytics "Emails Sent" metric.
  * In-memory sheet only.
  */
@@ -61,7 +61,7 @@ describe("Profile API", () => {
     expect((await (await get()).json()).data).toMatchObject(full);
   });
 
-  it("writes ONLY columns Eâ€“J of the member's own row (MemberID, Name, Photo, Active and other rows untouched)", async () => {
+  it("writes ONLY columns E–J of the member's own row (MemberID, Name, Photo, Active and other rows untouched)", async () => {
     const before = sheets.dataRows("Members").map((r) => [...r]);
     as("lukky");
     await put({ ...full, name: "Lukky L", email: "lukky@example.com" });
@@ -170,7 +170,7 @@ describe("Dashboard Connections card data", () => {
 describe("Analytics Emails Sent metric", () => {
   const draft = (key: string, member: string, status: string) => [key, member, "contact", key, `d-${key}`, status, "2026-10-27T10:00:00.000Z", "", `t-${key}`, ""];
 
-  it("counts only drafts Gmail shows as SENT â€” never created, deleted, skipped or failed", async () => {
+  it("counts only drafts Gmail shows as SENT — never created, deleted, skipped or failed", async () => {
     sheets.rows("NF_Drafts").push(
       draft("k1", "anni", "sent"), draft("k2", "anni", "sent"), draft("k3", "anni", "created"),
       draft("k4", "lukky", "sent"), draft("k5", "lukky", "deleted"), draft("k6", "rishii", "skipped_unauthorized"), draft("k7", "rishii", "failed"),
