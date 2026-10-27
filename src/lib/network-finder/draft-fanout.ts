@@ -30,7 +30,7 @@ export interface FanoutDeps {
   /** The member's own Gmail only (see lib/gmail/drafts.ts). */
   createDraft(memberId: MemberId, msg: { to?: string; subject: string; body: string }): Promise<{ status: "created"; draftId: string; threadId?: string } | { status: "not_authorized" } | { status: "reauth_required" } | { status: "failed"; reason: string }>;
   isConnected(memberId: MemberId): Promise<boolean>;
-  /** Draft text for this member (Nemotron, written as that member). */
+  /** Draft text for this member (Nemotron, written as that member). `memberName` is their full name (config/members.ts). */
   compose(memberId: MemberId, memberName: string): Promise<DraftContent>;
   ledger: {
     get(key: string): Promise<{ status: string } | undefined>;
@@ -54,7 +54,8 @@ export async function distributeDrafts(item: FanoutItem, deps: FanoutDeps): Prom
         outcomes.push({ memberId, result: "not_authorized" });
         continue;
       }
-      const content = await deps.compose(memberId, getMember(memberId)?.name ?? memberId);
+      // Written and signed with the member's full name; the draft is still created in THEIR OWN Gmail only.
+      const content = await deps.compose(memberId, getMember(memberId)?.fullName ?? memberId);
       const res = await deps.createDraft(memberId, { ...(item.to ? { to: item.to } : {}), subject: content.subject, body: content.body });
       if (res.status === "created") {
         await deps.ledger.record({ draftKey: key, memberId, itemType: item.type, itemId: item.id, gmailDraftId: res.draftId, ...(res.threadId ? { threadId: res.threadId } : {}), status: "created", detail: "" });

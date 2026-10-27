@@ -414,3 +414,36 @@ test("Locked Profile: the page and the profile APIs contain no profile, resume o
   await expect(page.getByTestId("profile-gmail-status")).toHaveText("Connected: rishii.hidden@gmail.example");
   await expect(page.getByRole("list", { name: "Your resumes" }).getByText("rishii-hidden-cv.pdf")).toBeVisible();
 });
+
+test("Gmail Drafts: empty state with 0/0, then my real drafts with Drafted/Sent, counts follow the ledger", async ({ page, request }) => {
+  const at = new Date().toISOString();
+  await appendRows(request, "NF_GmailAccounts", ["anni", "lukky", "rishii"].map((m) => [m, `${m}.e2e@gmail.example`, "not-a-real-token", "openid email https://www.googleapis.com/auth/gmail.compose", "connected", at, at, ""]));
+  await signIn(page, "Anni", "0001");
+  await page.goto("/gmail");
+  await expect(page.getByRole("heading", { name: "Drafts are coming soon" })).toBeVisible();
+  await expect(page.getByText("Your personalized Network Finder emails will appear here once drafts are created.")).toBeVisible();
+  await expect(page.getByTestId("gmail-count-draft")).toContainText("0");
+  await expect(page.getByTestId("gmail-count-sent")).toContainText("0");
+  for (const name of ["Anni", "Lukky", "Rishii"]) await expect(page.getByTestId("gmail-connected-members").getByRole("img", { name: `${name}: Gmail connected` })).toBeVisible();
+
+  // Real rows, as Network Finder writes them: Connections + NF_Drafts (Lukky's draft must not appear for Anni).
+  const conn = (id: string, name: string, company: string, role: string, email: string) => [id, "anni", name, company, role, "", "", "", "Source: Network Finder (HN)", "Not Connected", at, at, email];
+  await appendRows(request, "Connections", [conn("conn_e2ea", "John Smith", "Acme Technologies", "Head of Engineering", "john@acme.example"), conn("conn_e2eb", "Priya Sharma", "Globex", "Technical Recruiter", "priya@globex.example"), conn("conn_e2ec", "Sam Lee", "Initech", "Founder", "")]);
+  const d = (c: string, m: string) => [`contact:${c}:${m}`, m, "contact", c, `gd-${c}-${m}`, "created", at, "", `t-${c}`, ""];
+  await appendRows(request, "NF_Drafts", [d("conn_e2ea", "anni"), d("conn_e2eb", "anni"), d("conn_e2ec", "anni"), d("conn_e2ea", "lukky")]);
+  await reload(page);
+  await expect(page.getByRole("heading", { name: "Drafts are coming soon" })).toHaveCount(0);
+  await expect(page.getByTestId("gmail-draft-row")).toHaveCount(3);
+  const john = page.getByTestId("gmail-draft-row").filter({ hasText: "John Smith" });
+  for (const text of ["Acme Technologies", "Head of Engineering", "john@acme.example", "Drafted"]) await expect(john).toContainText(text);
+  await expect(page.getByTestId("gmail-count-draft")).toContainText("3");
+  await expect(page.getByTestId("gmail-count-sent")).toContainText("0");
+
+  // The sent-draft tracker marks John's draft sent → Sent, counts 2 / 1.
+  await updateRows(request, "NF_Drafts", { DraftKey: "contact:conn_e2ea:anni" }, { Status: "sent" });
+  await reload(page);
+  await expect(john).toContainText("Sent");
+  await expect(page.getByTestId("gmail-count-draft")).toContainText("2");
+  await expect(page.getByTestId("gmail-count-sent")).toContainText("1");
+  expect(await horizontalOverflow(page)).toBeLessThanOrEqual(0);
+});

@@ -182,7 +182,10 @@ describe("drafts in each member's own Gmail", () => {
       expect(mailbox(m)).toHaveLength(1);
       expect(Buffer.from(mailbox(m)[0].raw, "base64url").toString("utf8")).toContain("To: priya@acme.example");
     }
-    expect(Buffer.from(mailbox("lukky")[0].raw, "base64url").toString("utf8")).toContain("Subject: Hello from Lukky");
+    // Each draft is written with ITS mailbox owner's full name.
+    for (const [m, full] of [["anni", "Aniket Raj"], ["lukky", "Lakshya Singh"], ["rishii", "Rishi Raj"]]) {
+      expect(Buffer.from(mailbox(m)[0].raw, "base64url").toString("utf8")).toContain(`Subject: Hello from ${full}`);
+    }
     // Only the drafts endpoint was used: nothing can send.
     expect(google.calls.some((u) => /messages\/send|drafts\/send/.test(u))).toBe(false);
   });

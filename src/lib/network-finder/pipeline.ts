@@ -406,8 +406,13 @@ export async function draftForContact(deps: PipelineDeps, t: DraftTarget): Promi
           company: { name: t.company.name, ...(t.company.website ? { website: t.company.website } : {}), ...(t.company.description ? { description: t.company.description.slice(0, 400) } : {}) },
           person: { name: t.name, title: t.title },
         });
+        // Always signed with the member's full name, even if the writer left the sign-off out.
+        const body = d.body.trimEnd();
+        const lastLine = body.split("\n").filter((l) => l.trim()).pop() ?? "";
+        const signedOff = lastLine.trim().replace(/[.!]+$/, "").endsWith(memberName);
+        const signed = signedOff ? body : `${body}\n\nBest regards,\n${memberName}`;
         const signature = deps.config.signatures?.[memberId];
-        return signature ? { ...d, body: `${d.body.trimEnd()}\n\n-- \n${signature}` } : d;
+        return { ...d, body: signature ? `${signed}\n\n-- \n${signature}` : signed };
       },
     },
   );
