@@ -6,7 +6,7 @@ const MEMBERS = [
   { id: "lukky", name: "Lukky", code: "0002", accent: "rgb(245, 197, 24)" },
   { id: "rishii", name: "Rishii", code: "0003", accent: "rgb(255, 77, 94)" },
 ];
-const ROUTES = ["/dashboard", "/all-jobs", "/add-job", "/my-applications", "/analytics", "/connections", "/group-chat"];
+const ROUTES = ["/dashboard", "/all-jobs", "/add-job", "/my-applications", "/analytics", "/connections", "/group-chat", "/gmail"];
 
 async function signIn(page: Page, name: string, code: string) {
   await page.goto("/login");
@@ -14,6 +14,14 @@ async function signIn(page: Page, name: string, code: string) {
   await page.getByLabel(`Access code for ${name}`).fill(code);
   await page.getByRole("button", { name: "Open Dashboard" }).click();
   await page.waitForURL("**/dashboard");
+}
+
+/** Log out lives at the bottom of the Profile page, opened from the top-right profile button. */
+async function logOutViaProfile(page: Page, name: string) {
+  await expect(page.locator("header").first().getByRole("button", { name: /Log out/ })).toHaveCount(0);
+  await page.getByRole("link", { name: `Your profile (${name})` }).click();
+  await page.waitForURL("**/profile");
+  await page.getByRole("button", { name: "Log out" }).click();
 }
 
 test("login shows three profiles; selecting reveals the code panel; Back returns", async ({ page }) => {
@@ -57,7 +65,7 @@ for (const m of MEMBERS) {
     const session = cookies.find((c) => c.name === "jobsync_session");
     expect(session?.httpOnly).toBe(true);
 
-    await page.getByRole("button", { name: "Log out" }).click();
+    await logOutViaProfile(page, m.name);
     await page.waitForURL("**/login");
     await page.goto("/dashboard");
     await expect(page).toHaveURL(/\/login/);
@@ -74,16 +82,18 @@ test("a forged identity cookie is rejected", async ({ page, context }) => {
 });
 
 test("unauthenticated users are redirected from every protected route", async ({ page }) => {
-  for (const r of ROUTES) {
+  for (const r of [...ROUTES, "/profile"]) {
     await page.goto(r);
     await expect(page).toHaveURL(/\/login/);
   }
 });
 
-test("navigation has the seven working items", async ({ page, isMobile }) => {
+test("navigation has the eight working items", async ({ page, isMobile }) => {
   await signIn(page, "Anni", "0001");
-  const expected = ["Dashboard", "All Jobs", "Add Job", "My Applications", "Analytics", "Connections", "Group Chat"];
+  const expected = ["Dashboard", "All Jobs", "Add Job", "My Applications", "Analytics", "Connections", "Group Chat", "Gmail Drafts"];
   for (let i = 0; i < expected.length; i++) {
+    // On phones the Group Chat is full screen (no app header / menu button), so leave it before opening the menu.
+    if (isMobile && page.url().endsWith("/group-chat")) await page.goto("/dashboard");
     if (isMobile) await page.getByRole("button", { name: "Open menu" }).click();
     const nav = page.getByRole("navigation", { name: "Main" });
     await expect(nav.getByRole("link")).toHaveText(expected);
@@ -192,7 +202,7 @@ test("login persists across refresh and a simulated browser restart until logout
   await page2.goto("/login");
   await expect(page2).not.toHaveURL(/\/login$/);
 
-  await page2.getByRole("button", { name: "Log out" }).click();
+  await logOutViaProfile(page2, "Lukky");
   await page2.waitForURL("**/login");
   await page2.goto("/dashboard");
   await expect(page2).toHaveURL(/\/login/);

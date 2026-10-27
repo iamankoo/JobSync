@@ -7,7 +7,7 @@ import {
   readNotificationLogLocated, readPushSubscriptionsLocated,
 } from "./repositories";
 import { isOptionalTab, TABS, TAB_KEYS, type TabKey } from "./schema";
-import { checkTabHeader } from "./table";
+import { checkTabHeader, readTable } from "./table";
 
 export interface TabStatus {
   tab: string;
@@ -32,6 +32,15 @@ const READERS: Record<TabKey, () => Promise<{ items: unknown[]; issues: unknown[
   chatFiles: async () => ({ items: [], issues: [] }),
   chatReads: readChatReadsLocated,
   callSignals: readCallSignalsLocated,
+  // Profile upload metadata: counted only.
+  memberFiles: async () => ({ items: await readTable("memberFiles"), issues: [] }),
+  // Network Finder state: counted only (token cells are never returned).
+  nfGmailAccounts: async () => ({ items: await readTable("nfGmailAccounts"), issues: [] }),
+  nfDrafts: async () => ({ items: await readTable("nfDrafts"), issues: [] }),
+  nfCompanies: async () => ({ items: await readTable("nfCompanies"), issues: [] }),
+  nfQueue: async () => ({ items: await readTable("nfQueue"), issues: [] }),
+  nfState: async () => ({ items: await readTable("nfState"), issues: [] }),
+  nfSelections: async () => ({ items: await readTable("nfSelections"), issues: [] }),
 };
 
 /**

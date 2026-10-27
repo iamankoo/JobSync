@@ -9,7 +9,8 @@ export interface Session {
   expiresAt: number; // epoch seconds
 }
 
-function secretKey(): Uint8Array {
+/** The session signing key (also signs the short-lived Profile unlock token). */
+export function secretKey(): Uint8Array {
   const secret = process.env.SESSION_SECRET;
   if (secret && secret.length >= 32) return new TextEncoder().encode(secret);
   if (process.env.NODE_ENV === "production") {

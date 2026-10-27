@@ -1,4 +1,5 @@
 import { defineConfig, devices } from "@playwright/test";
+import { randomBytes, scryptSync } from "node:crypto";
 import { generateVAPIDKeys } from "web-push";
 
 /**
@@ -13,6 +14,10 @@ const PORT = 3102;
 // Throwaway VAPID keys for this run only (never real ones).
 const VAPID = generateVAPIDKeys();
 export const SEED_KEY = "e2e-isolated-seed-key";
+/** Test-only recovery answer for Anni's "Another way to unlock" (the real one is never in the repository). */
+export const E2E_RECOVERY_ANSWER = "Test Favourite Game";
+const recoverySalt = randomBytes(16);
+const E2E_RECOVERY_HASH = `scrypt1$${recoverySalt.toString("base64")}$${scryptSync(E2E_RECOVERY_ANSWER.toLowerCase(), recoverySalt, 32, { N: 16384, r: 8, p: 1 }).toString("base64")}`;
 
 /** The six viewport sizes the product must support. */
 export const VIEWPORTS = [
@@ -50,11 +55,18 @@ export default defineConfig({
       NEXT_PUBLIC_AUTO_REFRESH_MS: "2500",
       NEXT_DIST_DIR: ".next-e2e-isolated",
       APP_TIMEZONE: "Asia/Kolkata",
+      // Dummy Gmail OAuth settings so the Gmail page shows its connect/disconnect controls. Nothing here can reach
+      // Google: the suite never follows the consent redirect and seeded tokens are not decryptable.
+      GOOGLE_OAUTH_CLIENT_ID: "e2e-client.apps.googleusercontent.com",
+      GOOGLE_OAUTH_CLIENT_SECRET: "e2e-client-secret",
+      GOOGLE_OAUTH_REDIRECT_URI: `http://localhost:${PORT}/api/gmail/callback`,
+      GMAIL_TOKEN_ENCRYPTION_KEY: randomBytes(32).toString("base64"),
+      PROFILE_RECOVERY_ANSWER_HASH: E2E_RECOVERY_HASH,
     },
   },
   projects: [
-    { name: "workflow-desktop", testMatch: /(workflow|notifications|connections)\.spec\.ts/, use: { ...devices["Desktop Chrome"], viewport: { width: 1366, height: 768 } } },
-    { name: "workflow-mobile", testMatch: /(workflow|notifications|connections)\.spec\.ts/, use: { ...devices["Pixel 7"] } },
+    { name: "workflow-desktop", testMatch: /(workflow|notifications|connections|profile)\.spec\.ts/, use: { ...devices["Desktop Chrome"], viewport: { width: 1366, height: 768 } } },
+    { name: "workflow-mobile", testMatch: /(workflow|notifications|connections|profile)\.spec\.ts/, use: { ...devices["Pixel 7"] } },
     // Group chat: several browser contexts (one per member), real WebRTC between them using Chromium's fake camera/microphone.
     {
       name: "chat-desktop",

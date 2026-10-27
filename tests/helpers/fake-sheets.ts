@@ -92,13 +92,15 @@ export class FakeSheets implements SheetsClient {
   async updateValues(range: string, rows: string[][]): Promise<void> {
     await this.gate("update", range);
     const t = this.tabOf(range);
-    const m = /![A-Z]+(\d+):[A-Z]+\d+$/.exec(range);
+    const m = /!([A-Z]+)(\d+):[A-Z]+\d+$/.exec(range);
     if (!m) throw new Error(`bad update range ${range}`);
-    const start = Number(m[1]);
+    const col = [...m[1]].reduce((n, ch) => n * 26 + ch.charCodeAt(0) - 64, 0) - 1;
+    const start = Number(m[2]);
     rows.forEach((r, i) => {
-      // Like Sheets: only the provided cells change; later cells in the row keep their values.
+      // Like Sheets: only the provided cells change; cells before and after keep their values.
       const existing = t[start - 1 + i] ?? [];
-      t[start - 1 + i] = [...r, ...existing.slice(r.length)];
+      const before = Array.from({ length: col }, (_, c) => existing[c] ?? "");
+      t[start - 1 + i] = [...before, ...r, ...existing.slice(col + r.length)];
     });
   }
 }

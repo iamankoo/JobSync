@@ -1,7 +1,9 @@
 import Link from "next/link";
 import { cellClass, HEAD_ROW_CLASS, ROW_CLASS, TABLE_CLASS, TBODY_CLASS, THEAD_CLASS, TH_CLASS } from "@/components/ui/responsive-table";
 
-import { ArrowRight, Briefcase, CalendarDays, Clock, FileText, List, Plus, Send, Star, Target, Trophy, Users, Zap } from "lucide-react";
+import { ArrowRight, Briefcase, CalendarDays, Clock, FileText, Handshake, List, Plus, Send, Star, Target, Trophy, Users, Zap } from "lucide-react";
+import type { ConnectionStats } from "@/lib/google-sheets/connections-service";
+import { CONNECTION_STATUSES } from "@/types/domain";
 import { Avatar } from "@/components/ui/avatar";
 import { buttonClass } from "@/components/ui/button";
 import { CompanyMark } from "@/components/ui/company-mark";
@@ -15,7 +17,40 @@ import { TeamContribution } from "./team-contribution";
 interface Props {
   member: Member;
   data: DashboardData;
+  /** Shared Connections counts; null while the Connections tab is not set up. */
+  connections?: ConnectionStats | null;
   timeZone: string;
+}
+
+/** Entry point to the existing Connections page, with the shared list's counts. */
+function ConnectionsCard({ stats }: { stats: ConnectionStats | null }) {
+  return (
+    <Link
+      href="/connections"
+      aria-label={stats ? `Connections: ${stats.total} people. Open Connections` : "Open Connections"}
+      className="group block rounded-xl border border-teal-500/40 bg-gradient-to-br from-teal-600/25 to-navy-900 p-5 transition hover:border-teal-400 hover:brightness-110"
+    >
+      <div className="flex items-center gap-4">
+        <span className="grid h-12 w-12 shrink-0 place-items-center rounded-xl bg-teal-600 text-white">
+          <Handshake size={24} aria-hidden />
+        </span>
+        <div className="min-w-0 flex-1">
+          <h2 className="text-lg font-semibold">Connections</h2>
+          <p className="text-sm text-muted">{stats ? `${stats.total} ${stats.total === 1 ? "person" : "people"} in the team's list` : "People to reach out to, and what to send them"}</p>
+        </div>
+        <ArrowRight size={20} aria-hidden className="shrink-0 text-muted transition group-hover:translate-x-0.5 group-hover:text-ink" />
+      </div>
+      {stats && stats.total > 0 && (
+        <ul className="mt-4 flex flex-wrap gap-2 text-xs">
+          {CONNECTION_STATUSES.map((s) => (
+            <li key={s} className="rounded-md bg-navy-950/50 px-2.5 py-1">
+              <span className="font-semibold text-ink">{stats.byStatus[s]}</span> <span className="text-muted">{s}</span>
+            </li>
+          ))}
+        </ul>
+      )}
+    </Link>
+  );
 }
 
 function dayLabel(days: number): { text: string; cls: string; dot: string } {
@@ -41,7 +76,7 @@ function MiniStat({ icon: Icon, value, label, tone }: { icon: typeof Send; value
  * Personalised dashboard. Personal numbers are the signed-in member's own; the team contribution
  * chart is the shared summary. Everything shown is derived from real Google Sheets records.
  */
-export function DashboardView({ member, data, timeZone }: Props) {
+export function DashboardView({ member, data, connections = null, timeZone }: Props) {
   const todayLabel = new Intl.DateTimeFormat("en-GB", { weekday: "long", day: "numeric", month: "short", year: "numeric", timeZone }).format(
     new Date(`${data.today}T12:00:00Z`),
   );
@@ -195,6 +230,7 @@ export function DashboardView({ member, data, timeZone }: Props) {
         </section>
 
         <div className="space-y-5">
+          <ConnectionsCard stats={connections} />
           <section aria-labelledby="quick-actions" className="rounded-xl border border-line bg-navy-900/70 p-5">
             <h2 id="quick-actions" className="mb-3 flex items-center gap-2 text-lg font-semibold">
               <Zap size={20} className="text-blue-400" aria-hidden /> Quick Actions

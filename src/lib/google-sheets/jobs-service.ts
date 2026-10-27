@@ -27,7 +27,7 @@ export async function listJobsForMember(memberId: MemberId): Promise<{ jobs: Job
  * Duplicate check and append run under the write lock so concurrent requests on this
  * instance cannot both succeed for the same URL.
  */
-export async function createJob(memberId: MemberId, input: CreateJobInput, now: Date = new Date()): Promise<Job> {
+export async function createJob(memberId: MemberId, input: CreateJobInput, now: Date = new Date(), options: { notify?: boolean } = {}): Promise<Job> {
   const normalized = normalizeJobUrl(input.jobUrl);
   if (!normalized) throw new DomainError("validation_failed", "Invalid job URL.");
 
@@ -61,7 +61,8 @@ export async function createJob(memberId: MemberId, input: CreateJobInput, now: 
   });
 
   // The row is persisted: tell the other members. Never throws, so a push problem cannot fail the save.
-  await notifyJobAdded(memberId, job);
+  // (`notify: false` only for automated bulk adds, which send one batch summary instead.)
+  if (options.notify !== false) await notifyJobAdded(memberId, job);
   await recordActivity(memberId, "job_added", job.jobId, now);
   return job;
 }
