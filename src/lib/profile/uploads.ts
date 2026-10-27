@@ -7,6 +7,8 @@ import { MAX_FILE_BYTES, validateUpload } from "@/lib/chat/files";
 export const PROFILE_MAX_BYTES = MAX_FILE_BYTES;
 /** Resumes kept per member (enforced on the server; the UI mirrors it). */
 export const MAX_RESUMES = 10;
+/** Photos in each member's private Photos library (separate from the professional photo / avatar). Same cap as resumes. */
+export const MAX_LIBRARY_PHOTOS = 10;
 
 export const RESUME_TYPES: Record<string, string> = {
   "application/pdf": "PDF",

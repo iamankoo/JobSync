@@ -181,6 +181,73 @@ test("professional photo: upload, replace, shown in the header avatar after relo
   expect((await page.request.get(src!)).headers()["content-type"]).toBe("image/png");
 });
 
+test("Photos library: add, view, download, delete — separate from the profile photo (avatar)", async ({ page, request }) => {
+  await signIn(page, "Rishii", "0003");
+  await openProfile(page);
+  const card = page.getByRole("region", { name: "Photos" });
+  const headerImg = page.getByRole("link", { name: "Your profile (Rishii)" }).locator("img");
+  const avatarBefore = await headerImg.getAttribute("src");
+  await expect(card.getByTestId("photo-count")).toHaveText("0 / 10 photos");
+  await expect(card.getByText(/never changes your avatar/)).toBeVisible();
+
+  await page.locator("#library-photo-input").setInputFiles({ name: "holiday.png", mimeType: "image/png", buffer: PNG });
+  await expect(card.getByRole("status")).toContainText("Your profile photo is unchanged.");
+  await expect(card.getByTestId("library-photo")).toHaveCount(1);
+  await expect(card.getByTestId("photo-count")).toHaveText("1 / 10 photos");
+  // The thumbnail really loads (served only to the unlocked owner).
+  await expect.poll(async () => card.getByRole("img", { name: "holiday.png" }).evaluate((img: HTMLImageElement) => img.complete && img.naturalWidth > 0)).toBe(true);
+  // The avatar did not change, and no professional-photo record was created.
+  await expect(headerImg).toHaveAttribute("src", avatarBefore!);
+  expect((await dataRows(request, "MemberFiles")).map((r) => r[2])).toEqual(["library_photo"]);
+
+  const href = await card.getByRole("link", { name: "Download holiday.png" }).getAttribute("href");
+  const dl = await page.request.get(href!);
+  expect(dl.status()).toBe(200);
+  expect(dl.headers()["content-disposition"]).toMatch(/^attachment;/);
+  expect((await dl.body()).equals(PNG)).toBe(true);
+  const view = await page.request.get(await card.getByRole("link", { name: "View holiday.png" }).getAttribute("href") as string);
+  expect(view.headers()["content-disposition"]).toMatch(/^inline;/);
+
+  // Changing the profile photo does not change Photos.
+  await page.locator("#profile-photo-input").setInputFiles({ name: "me.png", mimeType: "image/png", buffer: PNG });
+  await expect(page.getByRole("status").filter({ hasText: "Photo uploaded." })).toBeVisible();
+  await expect(card.getByTestId("library-photo")).toHaveCount(1);
+  expect((await dataRows(request, "MemberFiles")).map((r) => r[2]).sort()).toEqual(["library_photo", "photo"]);
+
+  await card.getByRole("button", { name: "Delete holiday.png" }).click();
+  await card.getByRole("group", { name: "Confirm deleting holiday.png" }).getByRole("button", { name: "Delete" }).click();
+  await expect(card.getByTestId("library-photo")).toHaveCount(0);
+  await expect(card.getByTestId("photo-count")).toHaveText("0 / 10 photos");
+  expect((await dataRows(request, "MemberFiles")).map((r) => r[2])).toEqual(["photo"]); // avatar kept
+  expect(await horizontalOverflow(page)).toBeLessThanOrEqual(0);
+
+  // A session that has not unlocked the Profile (e.g. another browser) is refused.
+  await page.locator("#library-photo-input").setInputFiles({ name: "second.png", mimeType: "image/png", buffer: PNG });
+  await expect(card.getByTestId("library-photo")).toHaveCount(1);
+  const secondHref = await card.getByRole("link", { name: "Download second.png" }).getAttribute("href");
+  const other = await page.context().browser()!.newContext({ baseURL: "http://localhost:3102", extraHTTPHeaders: { "x-test-key": "e2e-isolated-seed-key" } });
+  const rishiiElsewhere = await other.newPage();
+  await signIn(rishiiElsewhere, "Rishii", "0003");
+  const refused = await rishiiElsewhere.request.get(secondHref!);
+  expect(refused.status()).toBe(403);
+  expect(await refused.text()).not.toContain("second.png");
+  await other.close();
+});
+
+for (const width of [1024, 768, 390]) {
+  test(`Photos card layout ${width}px: grid fits, nothing sticks out`, async ({ page, request }, testInfo) => {
+    test.skip(testInfo.project.name !== "workflow-desktop", "viewport sweep runs once, on the desktop project");
+    const at = new Date().toISOString();
+    await appendRows(request, "MemberFiles", Array.from({ length: 4 }, (_, i) => [`lph_e2e${i}`, "anni", "library_photo", `file_e2e${i}`, `a-rather-long-photo-file-name-number-${i}.png`, "image/png", "100", at]));
+    await page.setViewportSize({ width, height: 900 });
+    await signIn(page, "Anni", "0001");
+    await openProfile(page);
+    await expect(page.getByRole("region", { name: "Photos" }).getByTestId("library-photo")).toHaveCount(4);
+    expect(await horizontalOverflow(page)).toBeLessThanOrEqual(0);
+    expect(await elementsOutsideViewport(page)).toEqual([]);
+  });
+}
+
 test("Log out from the bottom of the Profile page", async ({ page }) => {
   await signIn(page, "Lukky", "0002");
   await openProfile(page);

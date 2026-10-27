@@ -1,7 +1,7 @@
 ﻿/**
- * Manually added connections → a personalised Gmail draft in the adding member's own Gmail, through the SAME
- * draft step as Network Finder (NF_Drafts ledger, full names, never sent). Google is a MOCK fetch; the session is
- * mocked; the spreadsheet is in memory. Nothing real is contacted.
+ * Automatic drafting of EVERY new connection (manual or Network Finder) into all three members' own Gmail by the
+ * scheduled worker — one ledger record per connection + mailbox, never sent. Google is a MOCK fetch; the session
+ * is mocked; the spreadsheet is in memory. Nothing real is contacted.
  */
 import { randomBytes } from "node:crypto";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -12,20 +12,26 @@ vi.mock("@/lib/auth/session", async (orig) => ({ ...(await orig<typeof import("@
 import { getSession } from "@/lib/auth/session";
 import { POST as addConnection } from "@/app/api/connections/route";
 import { PUT as editConnection } from "@/app/api/connections/[connectionId]/route";
-import { GET as draftStatus, POST as createDraft } from "@/app/api/connections/[connectionId]/draft/route";
+import { GET as draftStatus } from "@/app/api/connections/[connectionId]/draft/route";
 import { GET as connect } from "@/app/api/gmail/connect/route";
 import { GET as callback } from "@/app/api/gmail/callback/route";
 import type { MemberId } from "@/config/members";
-import { draftForManualConnection } from "@/lib/gmail/connection-draft";
 import { draftListFor } from "@/lib/gmail/draft-list";
 import { GMAIL_COMPOSE_SCOPE } from "@/lib/gmail/config";
 import { setSheetsClientForTesting } from "@/lib/google-sheets/client";
 import { resetMembersCache } from "@/lib/google-sheets/members-service";
 import { invalidateTableCache } from "@/lib/google-sheets/table";
+import { loadNetworkFinderConfig } from "@/lib/network-finder/config";
+import { existingConnections, existingDraftDeps, existingJobs } from "@/lib/network-finder/gateways";
+import { runPendingDrafts, type PipelineDeps } from "@/lib/network-finder/pipeline";
+import { runScheduledCycle } from "@/lib/network-finder/run";
+import { createSheetsStores } from "@/lib/network-finder/sheets-stores";
 import type { Connection } from "@/types/domain";
 import { FakeSheets } from "../helpers/fake-sheets";
 
 let sheets: FakeSheets;
+const MEMBERS = ["anni", "lukky", "rishii"] as const;
+const FULL: Record<MemberId, string> = { anni: "Aniket Raj", lukky: "Lakshya Singh", rishii: "Rishi Raj" };
 const as = (m: MemberId | null) => vi.mocked(getSession).mockResolvedValue(m ? { memberId: m, expiresAt: 9_999_999_999 } : null);
 const idToken = (email: string) => `h.${Buffer.from(JSON.stringify({ email, email_verified: true })).toString("base64url")}.s`;
 
@@ -68,11 +74,31 @@ async function connectGmail(m: MemberId) {
   const state = new URL(start.headers.get("location")!).searchParams.get("state")!;
   await callback(new NextRequest(`http://localhost:3000/api/gmail/callback?code=code-for-${m}&state=${encodeURIComponent(state)}`, { headers: { cookie: `jobsync_gmail_oauth=${nonce}` } }));
 }
-const post = (m: MemberId, body: Record<string, unknown>) => {
+const post = async (m: MemberId, body: Record<string, unknown>) => {
   as(m);
-  return addConnection(new Request("http://localhost/api/connections", { method: "POST", headers: { host: "localhost", origin: "http://localhost", "content-type": "application/json" }, body: JSON.stringify(body) }));
+  const res = await addConnection(new Request("http://localhost/api/connections", { method: "POST", headers: { host: "localhost", origin: "http://localhost", "content-type": "application/json" }, body: JSON.stringify(body) }));
+  expect(res.status).toBe(201);
+  return (await res.json()).data as Connection;
 };
 const ledger = () => sheets.dataRows("NF_Drafts");
+const recordsFor = (id: string) => ledger().filter((r) => r[3] === id).map((r) => [r[1], r[5]]).sort();
+const mailboxes = () => google.drafts.map((d) => d.mailbox).sort();
+const status = async (id: string) => {
+  as("rishii"); // any signed-in member may see a connection's drafting state
+  return (await (await draftStatus(new Request(`http://localhost/api/connections/${id}/draft`), { params: Promise.resolve({ connectionId: id }) })).json()).data;
+};
+
+/** The worker's dependencies, exactly as production wires the draft step (real gateways, ledger and stores). */
+function workerDeps(): PipelineDeps {
+  const stores = createSheetsStores();
+  return {
+    config: loadNetworkFinderConfig({ NETWORK_FINDER_ENABLED: "true", APP_TIMEZONE: "Asia/Kolkata" } as unknown as NodeJS.ProcessEnv),
+    sources: [], jobSources: [],
+    queue: stores.queue, registry: stores.registry, ledger: stores.ledger, selections: stores.selections,
+    drafts: existingDraftDeps(), connections: existingConnections, jobs: existingJobs, runState: {},
+  };
+}
+const work = (options: Parameters<typeof runPendingDrafts>[1] = {}) => runPendingDrafts(workerDeps(), options);
 
 beforeEach(async () => {
   sheets = new FakeSheets().seedMembers();
@@ -83,10 +109,10 @@ beforeEach(async () => {
   vi.stubEnv("GOOGLE_OAUTH_CLIENT_SECRET", "test-client-secret");
   vi.stubEnv("GOOGLE_OAUTH_REDIRECT_URI", "http://localhost:3000/api/gmail/callback");
   vi.stubEnv("GMAIL_TOKEN_ENCRYPTION_KEY", randomBytes(32).toString("base64"));
-  vi.stubEnv("NEMOTRON_API_KEY", ""); // the built-in writer (Nemotron is covered by its own tests)
+  vi.stubEnv("NEMOTRON_API_KEY", ""); // built-in writer (Nemotron is covered by its own tests)
   google = mockGoogle();
   vi.stubGlobal("fetch", google.fn);
-  for (const m of ["anni", "lukky", "rishii"] as const) await connectGmail(m);
+  for (const m of MEMBERS) await connectGmail(m);
   google.drafts.length = 0;
 });
 afterEach(() => {
@@ -96,202 +122,137 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-describe("manual connection → Gmail draft", () => {
-  it("a connection with an email gets ONE draft in the adder's own Gmail, signed with their full name, recorded in NF_Drafts", async () => {
-    const res = await post("lukky", { name: "Adam Test", company: "Evidence", role: "CEO", email: "adam@evidence.example" });
-    expect(res.status).toBe(201);
-    const created = (await res.json()).data as Connection;
+describe("new manual connection → drafts in all three mailboxes (automatic)", () => {
+  it("saving does not draft; the worker then drafts it into Anni's, Lukky's and Rishii's OWN Gmail, each signed with their full name", async () => {
+    const c = await post("lukky", { name: "Adam Test", company: "Evidence", role: "CEO", email: "adam@evidence.example" });
+    expect(google.drafts).toHaveLength(0); // the save never waits for Gmail/Nemotron
+    expect((await status(c.connectionId)).state).toBe("waiting");
 
-    expect(google.drafts.map((d) => d.mailbox)).toEqual(["lukky"]); // only Lukky's mailbox
-    const { head, body } = decode(google.drafts[0].raw);
-    expect(head).toContain("To: adam@evidence.example");
-    expect(head).not.toMatch(/^From:/m); // Gmail uses Lukky's own account; no impersonation
-    expect(body).toContain("Lakshya Singh");
-    expect(body.endsWith("Best regards,\nLakshya Singh")).toBe(true);
-    expect(body).not.toMatch(/\b(Lukky|Aniket Raj|Rishi Raj)\b/);
-    expect(body).toContain("Evidence");
-
-    expect(ledger()).toHaveLength(1);
-    expect(ledger()[0].slice(0, 6)).toEqual([`contact:${created.connectionId}:lukky`, "lukky", "contact", created.connectionId, "draft-1", "created"]);
-    // Only the drafts endpoint: nothing can send.
-    expect(google.calls.some((u) => /send/.test(u))).toBe(false);
-
-    // The Gmail Drafts page data picks it up for Lukky (and not for anyone else).
-    const list = await draftListFor("lukky");
-    expect(list).toMatchObject({ drafted: 1, sent: 0 });
-    expect(list.items[0]).toMatchObject({ company: "Evidence", person: "Adam Test", designation: "CEO", email: "adam@evidence.example", status: "Drafted" });
-    expect((await draftListFor("anni")).items).toHaveLength(0);
-  });
-
-  it("each member's manual connection goes to THEIR mailbox with THEIR full name", async () => {
-    for (const [m, full] of [["anni", "Aniket Raj"], ["lukky", "Lakshya Singh"], ["rishii", "Rishi Raj"]] as const) {
-      google.drafts.length = 0;
-      await post(m, { name: `Person ${m}`, company: "Acme", role: "Recruiter", email: `p.${m}@acme.example` });
-      expect(google.drafts.map((d) => d.mailbox)).toEqual([m]);
-      expect(decode(google.drafts[0].raw).body).toContain(full);
+    expect(await work()).toMatchObject({ checked: 1, created: 3, remaining: 0 });
+    expect(mailboxes()).toEqual(["anni", "lukky", "rishii"]);
+    for (const d of google.drafts) {
+      const m = d.mailbox as MemberId;
+      const { head, body } = decode(d.raw);
+      expect(head).toContain("To: adam@evidence.example");
+      expect(head).not.toMatch(/^From:/m); // each draft is in that member's own account; no impersonation
+      expect(body.endsWith(`Best regards,\n${FULL[m]}`)).toBe(true);
+      for (const other of Object.values(FULL).filter((n) => n !== FULL[m])) expect(body).not.toContain(other);
     }
+    expect(recordsFor(c.connectionId)).toEqual([["anni", "created"], ["lukky", "created"], ["rishii", "created"]]);
+    expect(google.calls.some((u) => /send/.test(u))).toBe(false); // never sent
+
+    expect(await status(c.connectionId)).toMatchObject({ state: "drafted", drafted: 3, sent: 0, skipped: 0, total: 3 });
+    for (const m of MEMBERS) expect(await draftListFor(m)).toMatchObject({ drafted: 1, sent: 0, items: [expect.objectContaining({ person: "Adam Test", company: "Evidence", designation: "CEO", status: "Drafted" })] });
   });
 
-  it("no email → no draft attempt, no ledger row; the connection is saved normally", async () => {
-    const res = await post("anni", { name: "No Email Person", company: "Acme" });
-    expect(res.status).toBe(201);
+  it("no email → never drafted, no records, state 'no_email'", async () => {
+    const c = await post("anni", { name: "No Email", company: "Acme" });
+    expect(await work()).toEqual({ checked: 0, created: 0, remaining: 0 });
     expect(google.drafts).toHaveLength(0);
     expect(ledger()).toHaveLength(0);
-    expect(sheets.dataRows("Connections").some((r) => r[2] === "No Email Person")).toBe(true);
+    expect((await status(c.connectionId)).state).toBe("no_email");
   });
 
-  it("never a duplicate: retries, re-runs and edits do not create a second draft", async () => {
-    const created = (await (await post("rishii", { name: "Dup Check", company: "Acme", role: "CTO", email: "dup@acme.example" })).json()).data as Connection;
-    expect(google.drafts).toHaveLength(1);
-    // A retry / second run of the draft step for the same connection.
-    const again = await draftForManualConnection(created);
-    expect(again).toEqual({ outcomes: [{ memberId: "rishii", result: "already_drafted" }] });
-    await draftForManualConnection(created);
-    // Editing the connection does not draft again.
+  it("no duplicates: repeated runs, refreshes and edits never create a second draft", async () => {
+    const c = await post("rishii", { name: "Dup Check", company: "Acme", role: "CTO", email: "dup@acme.example" });
+    await work();
+    await work();
+    await work();
     as("rishii");
-    const edit = await editConnection(new Request(`http://localhost/api/connections/${created.connectionId}`, { method: "PUT", headers: { host: "localhost", origin: "http://localhost", "content-type": "application/json" }, body: JSON.stringify({ role: "CEO" }) }), { params: Promise.resolve({ connectionId: created.connectionId }) });
-    expect(edit.status).toBe(200);
-    expect(google.drafts).toHaveLength(1);
-    expect(ledger()).toHaveLength(1);
+    await editConnection(new Request(`http://localhost/api/connections/${c.connectionId}`, { method: "PUT", headers: { host: "localhost", origin: "http://localhost", "content-type": "application/json" }, body: JSON.stringify({ role: "CEO" }) }), { params: Promise.resolve({ connectionId: c.connectionId }) });
+    await work();
+    expect(google.drafts).toHaveLength(3);
+    expect(ledger()).toHaveLength(3);
   });
 
-  it("a member without Gmail connected: the connection is saved; the draft is recorded as skipped (not created, nothing broken)", async () => {
-    sheets.rows("NF_GmailAccounts").forEach((r, i) => i > 0 && r[0] === "anni" && (r[4] = "disconnected"));
+  it("a SENT draft is never written again, and the Sent counter follows the tracked state", async () => {
+    const c = await post("anni", { name: "Sent One", company: "Acme", email: "sent@acme.example" });
+    await work();
+    const row = sheets.rows("NF_Drafts").find((r) => r[0] === `contact:${c.connectionId}:anni`)!;
+    row[5] = "sent"; // what the sent-draft tracker writes when Gmail shows the message sent
     invalidateTableCache();
-    const res = await post("anni", { name: "Later Person", company: "Acme", email: "later@acme.example" });
-    expect(res.status).toBe(201);
-    expect(google.drafts).toHaveLength(0);
-    expect(ledger().map((r) => r[5])).toEqual(["skipped_unauthorized"]);
-    expect((await draftListFor("anni")).items).toHaveLength(0);
-  });
-
-  it("Network Finder contacts are left to Network Finder (no extra draft from this path)", async () => {
-    const nf: Connection = { connectionId: "conn_nf1", memberId: "anni", name: "NF Person", company: "Acme", email: "nf@acme.example", notes: "Source: Network Finder (HN)", status: "Not Connected", createdAt: "2026-10-27T10:00:00.000Z", updatedAt: "2026-10-27T10:00:00.000Z" };
-    expect(await draftForManualConnection(nf)).toEqual({ skipped: "network_finder" });
-    expect(google.drafts).toHaveLength(0);
-  });
-
-  it("the saved connection is returned even if drafting fails (Gmail down): the save never depends on Gmail", async () => {
-    google.fn.mockImplementation(async (input: string | URL | Request) => {
-      if (String(input).includes("gmail.googleapis.com")) return new Response("down", { status: 503 });
-      return Response.json({ access_token: "access-anni" });
-    });
-    const res = await post("anni", { name: "Resilient", company: "Acme", email: "r@acme.example" });
-    expect(res.status).toBe(201);
-    expect(sheets.dataRows("Connections").some((r) => r[2] === "Resilient")).toBe(true);
-    expect(ledger().map((r) => r[5])).toEqual(["failed"]);
+    expect(await draftListFor("anni")).toMatchObject({ drafted: 0, sent: 1 });
+    expect(await status(c.connectionId)).toMatchObject({ state: "drafted", drafted: 3, sent: 1 });
+    await work();
+    expect(google.drafts).toHaveLength(3);
   });
 });
 
-describe("Create Gmail Draft action (catch-up / retry)", () => {
-  // A copy of the real Adam record's shape: added by Lukky before automatic drafting existed, so no draft yet.
+describe("partial availability and retries", () => {
+  it("one member's Gmail disconnected: the others get their drafts; the missing one is 'skipped' and drafted after reconnecting", async () => {
+    sheets.rows("NF_GmailAccounts").forEach((r, i) => i > 0 && r[0] === "rishii" && (r[4] = "disconnected"));
+    invalidateTableCache();
+    const c = await post("lukky", { name: "Partial", company: "Acme", email: "p@acme.example" });
+    await work();
+    expect(mailboxes()).toEqual(["anni", "lukky"]);
+    expect(recordsFor(c.connectionId)).toEqual([["anni", "created"], ["lukky", "created"], ["rishii", "skipped_unauthorized"]]);
+    expect(await status(c.connectionId)).toMatchObject({ state: "drafted", drafted: 2, skipped: 1 }); // all mailboxes processed
+    // Further runs while still disconnected: nothing new, no repeated writes.
+    const writes = sheets.calls.filter((x) => x.op !== "get").length;
+    expect(await work()).toEqual({ checked: 0, created: 0, remaining: 0 });
+    expect(sheets.calls.filter((x) => x.op !== "get").length).toBe(writes);
+    // Rishii connects → his draft is created automatically, still one record.
+    await connectGmail("rishii");
+    expect(await work()).toMatchObject({ checked: 1, created: 1 });
+    expect(mailboxes()).toEqual(["anni", "lukky", "rishii"]);
+    expect(recordsFor(c.connectionId)).toEqual([["anni", "created"], ["lukky", "created"], ["rishii", "created"]]);
+  });
+
+  it("a temporary Gmail failure is recorded and retried by the next run (one record per mailbox)", async () => {
+    const c = await post("anni", { name: "Retry", company: "Acme", email: "r@acme.example" });
+    const real = google.fn.getMockImplementation()!;
+    google.fn.mockImplementation(async (input, init) => (String(input).includes("gmail.googleapis.com") ? new Response("down", { status: 503 }) : real(input, init)));
+    await work();
+    expect(recordsFor(c.connectionId).map((r) => r[1])).toEqual(["failed", "failed", "failed"]);
+    expect((await status(c.connectionId)).state).toBe("drafting");
+    google.fn.mockImplementation(real);
+    expect(await work()).toMatchObject({ checked: 1, created: 3 });
+    expect(recordsFor(c.connectionId).map((r) => r[1])).toEqual(["created", "created", "created"]);
+    expect(ledger()).toHaveLength(3);
+  });
+
+  it("the Draft counter rises as drafts are created (derived from the records, not incremented)", async () => {
+    expect(await draftListFor("lukky")).toMatchObject({ drafted: 0 });
+    await post("anni", { name: "One", company: "A", email: "one@a.example" });
+    await work();
+    expect(await draftListFor("lukky")).toMatchObject({ drafted: 1 });
+    await post("rishii", { name: "Two", company: "B", email: "two@b.example" });
+    await work();
+    expect(await draftListFor("lukky")).toMatchObject({ drafted: 2, sent: 0 });
+  });
+});
+
+describe("Network Finder contacts and the scheduled cycle", () => {
+  it("a Network Finder contact is drafted into all three mailboxes by the same worker", async () => {
+    const at = new Date().toISOString();
+    sheets.rows("Connections").push(["conn_nf1", "anni", "NF Person", "Acme", "Recruiter", "", "", "", "Source: Network Finder (HN)", "Not Connected", at, at, "nf@acme.example"]);
+    invalidateTableCache();
+    expect(await work()).toMatchObject({ checked: 1, created: 3 });
+    expect(mailboxes()).toEqual(["anni", "lukky", "rishii"]);
+  });
+
+  it("manual connections are processed first in every scheduled run (within ~10 minutes), without a second cron job", async () => {
+    const c = await post("lukky", { name: "Cycle Person", company: "Acme", email: "cycle@acme.example" });
+    const run = await runScheduledCycle({ ...workerDeps(), stores: createSheetsStores() } as Parameters<typeof runScheduledCycle>[0]);
+    expect(run.ran).toBe(true);
+    expect(run.manualDrafts).toMatchObject({ checked: 1, created: 3 });
+    expect(recordsFor(c.connectionId).map((r) => r[1])).toEqual(["created", "created", "created"]);
+  });
+});
+
+describe("Adam (existing manual connection with no drafts)", () => {
+  // A copy of the real record's shape: added by Lukky yesterday, before automatic drafting, no drafts yet.
   const ADAM = "conn_1966746f-6fcc-48cd-b994-eea64c31401d";
-  const seedAdam = (email = "adam@evidence.example") => {
-    sheets.rows("Connections").push([ADAM, "lukky", "Adam", "Evidence", "Ceo", "", "", "Hi Adam", "", "Not Connected", "2026-10-26T17:42:24.438Z", "2026-10-26T17:42:24.438Z", email]);
+  it("is picked up automatically and drafted into all three mailboxes — without creating another Adam or any duplicate", async () => {
+    const yesterday = new Date(Date.now() - 86_400_000).toISOString();
+    sheets.rows("Connections").push([ADAM, "lukky", "Adam", "Evidence", "Ceo", "", "", "Hi Adam", "", "Not Connected", yesterday, yesterday, "adam@evidence.example"]);
     invalidateTableCache();
-  };
-  const call = (m: MemberId, method: "GET" | "POST", id = ADAM) => {
-    as(m);
-    const req = new Request(`http://localhost/api/connections/${id}/draft`, { method, headers: { host: "localhost", origin: "http://localhost" } });
-    return (method === "GET" ? draftStatus : createDraft)(req, { params: Promise.resolve({ connectionId: id }) });
-  };
-
-  it("Adam: Lukky (the owner) creates exactly ONE draft in Lukky's Gmail, signed Lakshya Singh, recorded in NF_Drafts", async () => {
-    seedAdam();
-    expect((await (await call("lukky", "GET")).json()).data).toEqual({ status: "none", hasEmail: true });
-    const res = await call("lukky", "POST");
-    expect(res.status).toBe(201);
-    expect((await res.json()).data.result).toBe("created");
-    expect(google.drafts.map((d) => d.mailbox)).toEqual(["lukky"]);
-    const { head, body } = decode(google.drafts[0].raw);
-    expect(head).toContain("To: adam@evidence.example");
-    expect(body.endsWith("Best regards,\nLakshya Singh")).toBe(true);
-    expect(body).toContain("Evidence");
-    expect(ledger().map((r) => r.slice(0, 6))).toEqual([[`contact:${ADAM}:lukky`, "lukky", "contact", ADAM, "draft-1", "created"]]);
-    expect((await (await call("lukky", "GET")).json()).data.status).toBe("created");
-    // Gmail Drafts page data for Lukky.
-    expect((await draftListFor("lukky")).items).toEqual([expect.objectContaining({ company: "Evidence", person: "Adam", designation: "Ceo", email: "adam@evidence.example", status: "Drafted" })]);
-    expect(google.calls.some((u) => /send/.test(u))).toBe(false);
-  });
-
-  it("a second click (or retry) says 'Draft already exists.' and creates nothing", async () => {
-    seedAdam();
-    await call("lukky", "POST");
-    const again = await call("lukky", "POST");
-    expect(again.status).toBe(200);
-    expect((await again.json()).data).toEqual({ result: "already_drafted", message: "Draft already exists." });
-    expect(google.drafts).toHaveLength(1);
-    expect(ledger()).toHaveLength(1);
-  });
-
-  it("a SENT draft is never written again", async () => {
-    seedAdam();
-    sheets.rows("NF_Drafts").push([`contact:${ADAM}:lukky`, "lukky", "contact", ADAM, "gd-old", "sent", "2026-10-27T10:00:00.000Z", "", "t-old", "2026-10-27T11:00:00.000Z"]);
-    invalidateTableCache();
-    expect((await (await call("lukky", "POST")).json()).data.result).toBe("already_drafted");
-    expect(google.drafts).toHaveLength(0);
-  });
-
-  it("a FAILED draft is retried under the same record (no second row)", async () => {
-    seedAdam();
-    sheets.rows("NF_Drafts").push([`contact:${ADAM}:lukky`, "lukky", "contact", ADAM, "", "failed", "2026-10-27T10:00:00.000Z", "Error", "", ""]);
-    invalidateTableCache();
-    expect((await (await call("lukky", "GET")).json()).data.status).toBe("failed");
-    const res = await call("lukky", "POST");
-    expect(res.status).toBe(201);
-    expect(google.drafts.map((d) => d.mailbox)).toEqual(["lukky"]);
-    expect(ledger()).toHaveLength(1);
-    expect(ledger()[0][5]).toBe("created");
-  });
-
-  it("non-owners can neither see the state nor draft — and nothing reaches any mailbox", async () => {
-    seedAdam();
-    for (const m of ["anni", "rishii"] as const) {
-      const post = await call(m, "POST");
-      expect(post.status).toBe(403);
-      expect((await post.json()).error.code).toBe("not_connection_owner");
-      expect((await call(m, "GET")).status).toBe(403);
-    }
-    expect(google.drafts).toHaveLength(0);
-    expect(ledger()).toHaveLength(0);
-    as(null);
-    expect((await createDraft(new Request(`http://localhost/api/connections/${ADAM}/draft`, { method: "POST", headers: { host: "localhost", origin: "http://localhost" } }), { params: Promise.resolve({ connectionId: ADAM }) })).status).toBe(401);
-  });
-
-  it("no email → 400, no draft, no record", async () => {
-    seedAdam("");
-    const res = await call("lukky", "POST");
-    expect(res.status).toBe(400);
-    expect((await res.json()).error.code).toBe("no_email");
-    expect(google.drafts).toHaveLength(0);
-    expect(ledger()).toHaveLength(0);
-  });
-
-  it("owner without Gmail connected → 409 'connect your Gmail', recorded as skipped, retryable later", async () => {
-    seedAdam();
-    sheets.rows("NF_GmailAccounts").forEach((r, i) => i > 0 && r[0] === "lukky" && (r[4] = "disconnected"));
-    invalidateTableCache();
-    const res = await call("lukky", "POST");
-    expect(res.status).toBe(409);
-    expect((await res.json()).error.code).toBe("gmail_not_connected");
-    expect(ledger().map((r) => r[5])).toEqual(["skipped_unauthorized"]);
-    // Reconnect → the button works and still leaves ONE record.
-    await connectGmail("lukky");
-    expect((await call("lukky", "POST")).status).toBe(201);
-    expect(ledger()).toHaveLength(1);
-    expect(ledger()[0][5]).toBe("created");
-  });
-
-  it("Gmail failure → 502 'could not be created', recorded failed (the button then offers Retry)", async () => {
-    seedAdam();
-    google.fn.mockImplementation(async (input: string | URL | Request) => (String(input).includes("gmail.googleapis.com") ? new Response("down", { status: 503 }) : Response.json({ access_token: "access-lukky" })));
-    const res = await call("lukky", "POST");
-    expect(res.status).toBe(502);
-    expect((await res.json()).error.code).toBe("draft_failed");
-    expect(ledger()[0][5]).toBe("failed");
-  });
-
-  it("unknown connection → 404", async () => {
-    expect((await call("lukky", "POST", "conn_does-not-exist")).status).toBe(404);
+    expect(await work()).toMatchObject({ checked: 1, created: 3, remaining: 0 });
+    expect(mailboxes()).toEqual(["anni", "lukky", "rishii"]);
+    expect(recordsFor(ADAM)).toEqual([["anni", "created"], ["lukky", "created"], ["rishii", "created"]]);
+    expect(sheets.dataRows("Connections").filter((r) => r[2] === "Adam")).toHaveLength(1);
+    await work();
+    expect(google.drafts).toHaveLength(3);
+    expect((await draftListFor("lukky")).items).toEqual([expect.objectContaining({ company: "Evidence", person: "Adam", designation: "Ceo", status: "Drafted" })]);
   });
 });

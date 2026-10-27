@@ -2,7 +2,7 @@ import "server-only";
 import { NextResponse } from "next/server";
 import { MEMBER_IDS, type MemberId } from "@/config/members";
 import { gmailOverview } from "@/lib/gmail/overview";
-import { listResumes, type ResumeInfo } from "@/lib/google-sheets/member-files-service";
+import { listLibraryPhotos, listResumes, type LibraryPhotoInfo, type ResumeInfo } from "@/lib/google-sheets/member-files-service";
 import { readProfile, type Profile } from "@/lib/google-sheets/profile-service";
 import { unlockCookie } from "./lock-service";
 
@@ -11,12 +11,14 @@ export interface UnlockedProfile {
   profile: Profile;
   /** null while the MemberFiles tab does not exist. */
   resumes: ResumeInfo[] | null;
+  /** The private Photos library (not the avatar); null while the MemberFiles tab does not exist. */
+  photos: LibraryPhotoInfo[] | null;
   gmail: { configured: boolean; setUp: boolean; status: string; email?: string };
 }
 
 export async function unlockedProfile(memberId: MemberId): Promise<UnlockedProfile> {
-  const [profile, resumes, gmail] = await Promise.all([readProfile(memberId), listResumes(memberId), gmailOverview(memberId, MEMBER_IDS)]);
-  return { profile, resumes, gmail: { configured: gmail.configured, setUp: gmail.setUp, status: gmail.me.status, ...(gmail.me.email ? { email: gmail.me.email } : {}) } };
+  const [profile, resumes, photos, gmail] = await Promise.all([readProfile(memberId), listResumes(memberId), listLibraryPhotos(memberId), gmailOverview(memberId, MEMBER_IDS)]);
+  return { profile, resumes, photos, gmail: { configured: gmail.configured, setUp: gmail.setUp, status: gmail.me.status, ...(gmail.me.email ? { email: gmail.me.email } : {}) } };
 }
 
 /** 200 with the Profile data and the unlock cookie. */

@@ -43,7 +43,7 @@ export function PhotoCard({ member, enabled }: { member: Member; enabled: boolea
         </div>
         <div className="min-w-0 flex-1 space-y-2">
           <p className="text-sm text-muted">
-            {uploaded ? "Your uploaded photo is shown to the team." : "You are using the default JobSync photo."} JPEG, PNG or WebP, up to {formatBytes(PROFILE_MAX_BYTES)}.
+            Your avatar everywhere in JobSync. {uploaded ? "Your uploaded photo is shown to the team." : "You are using the default JobSync photo."} JPEG, PNG or WebP, up to {formatBytes(PROFILE_MAX_BYTES)}.
           </p>
           {enabled ? (
             <>

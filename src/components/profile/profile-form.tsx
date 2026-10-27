@@ -7,12 +7,13 @@ import { Avatar } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
 import { Notice, type NoticeState } from "@/components/ui/notice";
 import { apiRequest } from "@/lib/client/api";
-import type { ResumeInfo } from "@/lib/google-sheets/member-files-service";
+import type { LibraryPhotoInfo, ResumeInfo } from "@/lib/google-sheets/member-files-service";
 import type { Profile } from "@/lib/google-sheets/profile-service";
 import type { UnlockedProfile } from "@/lib/profile/unlocked";
 import { AdminReset } from "./admin-reset";
 import { GmailCard } from "./gmail-card";
 import { PhotoCard } from "./photo-card";
+import { PhotosCard } from "./photos-card";
 import { ResumesCard } from "./resumes-card";
 import { EMAIL_MAX } from "@/lib/validation/connections";
 import { PROFILE_HANDLE_MAX, profileSchema } from "@/lib/validation/profile";
@@ -36,6 +37,8 @@ interface Props {
   member: Member;
   profile: Profile;
   resumes?: ResumeInfo[] | null;
+  /** The private Photos library (separate from the professional photo). */
+  photos?: LibraryPhotoInfo[] | null;
   gmail?: UnlockedProfile["gmail"];
   /** Anni (administrator): shows Reset Passwords. */
   isAdmin?: boolean;
@@ -44,7 +47,7 @@ interface Props {
 }
 
 /** The unlocked Profile: the member edits their own details (validated with the SAME schema the server enforces). */
-export function ProfileForm({ member, profile, resumes = null, gmail, isAdmin = false, onSelfReset = () => undefined, timeZone = "UTC" }: Props) {
+export function ProfileForm({ member, profile, resumes = null, photos = null, gmail, isAdmin = false, onSelfReset = () => undefined, timeZone = "UTC" }: Props) {
   const uid = useId();
   const [values, setValues] = useState<Values>(pick(profile));
   const [saved, setSaved] = useState<Values>(pick(profile));
@@ -136,6 +139,7 @@ export function ProfileForm({ member, profile, resumes = null, gmail, isAdmin = 
       </form>
 
       <PhotoCard member={member} enabled={resumes !== null} />
+      <PhotosCard initial={photos} timeZone={timeZone} />
       <ResumesCard initial={resumes} timeZone={timeZone} />
       {gmail && <GmailCard gmail={gmail} />}
       {isAdmin && <AdminReset me={member.id} onSelfReset={onSelfReset} />}

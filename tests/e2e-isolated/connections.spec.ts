@@ -213,47 +213,47 @@ test("connections are SHARED: every member sees every entry; only the adder can 
   await other.close();
 });
 
-test("Create Gmail Draft: owner-only button with clear states; non-owners never see it", async ({ page, browser, request }, info) => {
+test("Gmail drafts are automatic: details show the drafting state (no button); everyone sees the same state", async ({ page, browser, request }, info) => {
   const at = new Date().toISOString();
-  // Lukky's older connection with an email and no draft (like Adam), plus one that already has a draft.
   await appendRows(request, "Connections", [
     ["conn_e2eadam", "lukky", "Adam", "Evidence", "Ceo", "", "", "Hi Adam", "", "Not Connected", at, at, "adam@evidence.example"],
     ["conn_e2edone", "lukky", "Bea Done", "Globex", "CTO", "", "", "", "", "Not Connected", at, at, "bea@globex.example"],
     ["conn_e2enomail", "lukky", "No Mail", "Initech", "Founder", "", "", "", "", "Not Connected", at, at, ""],
   ]);
-  // Lukky "connected", with a token this test environment cannot use: the action stops before any network call.
-  await appendRows(request, "NF_GmailAccounts", [["lukky", "lukky.e2e@gmail.example", "not-a-real-token", "openid email https://www.googleapis.com/auth/gmail.compose", "connected", at, at, ""]]);
-  await appendRows(request, "NF_Drafts", [["contact:conn_e2edone:lukky", "lukky", "contact", "conn_e2edone", "gd-1", "created", at, "", "t-1", ""]]);
+  // Bea: drafted in Anni's and Lukky's Gmail (Anni's already sent), Rishii's skipped (Gmail not connected).
+  const d = (m: string, s: string) => [`contact:conn_e2edone:${m}`, m, "contact", "conn_e2edone", s === "skipped_unauthorized" ? "" : `gd-${m}`, s, at, "", "", ""];
+  await appendRows(request, "NF_Drafts", [d("anni", "sent"), d("lukky", "created"), d("rishii", "skipped_unauthorized")]);
 
   await signIn(page, "Lukky", "0002");
   await goViaNav(page, "Connections", "/connections");
   const details = page.getByRole("dialog", { name: "Connection details" });
 
   await page.getByRole("button", { name: "View Adam" }).click();
-  const action = details.getByTestId("gmail-draft-action");
-  await expect(action.getByTestId("gmail-draft-state")).toHaveText("No draft in your Gmail yet.");
-  await action.getByRole("button", { name: "Create Gmail draft for Adam" }).click();
-  await expect(action.getByRole("alert")).toContainText("Gmail needs reconnecting");
-  expect((await dataRows(request, "Connections")).filter((r) => r[2] === "Adam")).toHaveLength(1); // no new Adam
+  await expect(details.getByTestId("gmail-draft-headline")).toHaveText("Drafts will be created automatically within about 10 minutes.");
+  for (const m of ["anni", "lukky", "rishii"]) await expect(details.getByTestId(`gmail-draft-${m}`)).toContainText("waiting");
+  await expect(details.getByRole("button", { name: /Gmail draft/i })).toHaveCount(0); // no manual step
   await details.getByRole("button", { name: /Close/ }).first().click();
 
   await page.getByRole("button", { name: "View Bea Done" }).click();
-  await expect(details.getByTestId("gmail-draft-state")).toHaveText("Draft already exists in your Gmail.");
-  await expect(details.getByRole("button", { name: /Gmail draft/ })).toHaveCount(0);
+  await expect(details.getByTestId("gmail-draft-headline")).toHaveText("Drafted · 2 of 3 mailboxes · 1 sent · 1 skipped");
+  await expect(details.getByTestId("gmail-draft-anni")).toContainText("sent");
+  await expect(details.getByTestId("gmail-draft-lukky")).toContainText("drafted");
+  await expect(details.getByTestId("gmail-draft-rishii")).toContainText("Gmail not connected");
   await details.getByRole("button", { name: /Close/ }).first().click();
 
   await page.getByRole("button", { name: "View No Mail" }).click();
-  await expect(details.getByTestId("gmail-draft-action")).toHaveCount(0); // no email → no action
+  await expect(details.getByTestId("gmail-draft-headline")).toHaveText("No email address, so no Gmail drafts.");
   await details.getByRole("button", { name: /Close/ }).first().click();
+  expect((await dataRows(request, "Connections")).filter((r) => r[2] === "Adam")).toHaveLength(1);
 
-  // Anni sees Lukky's Adam but no draft action (and the server would refuse anyway).
+  // Anni (not the adder) sees the same shared state; there is no endpoint to create drafts by hand.
   const other = await browser.newContext({ baseURL: info.project.use.baseURL, viewport: info.project.use.viewport ?? undefined, extraHTTPHeaders: info.project.use.extraHTTPHeaders });
   const anni = await other.newPage();
   await signIn(anni, "Anni", "0001");
   await goViaNav(anni, "Connections", "/connections");
-  await anni.getByRole("button", { name: "View Adam" }).click();
-  await expect(anni.getByRole("dialog", { name: "Connection details" }).getByTestId("gmail-draft-action")).toHaveCount(0);
-  const refused = await anni.evaluate(async () => (await fetch("/api/connections/conn_e2eadam/draft", { method: "POST" })).status);
-  expect(refused).toBe(403);
+  await anni.getByRole("button", { name: "View Bea Done" }).click();
+  await expect(anni.getByRole("dialog", { name: "Connection details" }).getByTestId("gmail-draft-headline")).toHaveText("Drafted · 2 of 3 mailboxes · 1 sent · 1 skipped");
+  const post = await anni.evaluate(async () => (await fetch("/api/connections/conn_e2eadam/draft", { method: "POST" })).status);
+  expect(post).toBe(405);
   await other.close();
 });

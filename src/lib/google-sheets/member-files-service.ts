@@ -1,6 +1,6 @@
 import "server-only";
 import { MEMBER_IDS, type MemberId } from "@/config/members";
-import { MAX_RESUMES } from "@/lib/profile/uploads";
+import { MAX_LIBRARY_PHOTOS, MAX_RESUMES } from "@/lib/profile/uploads";
 import { getSheetsClient } from "./client";
 import { deleteStoredFile, loadChatFile, storeChatFile } from "./chat-files-service";
 import { DomainError, SheetsError } from "./errors";
@@ -14,8 +14,13 @@ import { checkTabHeader, invalidateTableCache, readTable } from "./table";
  * the bytes live in the existing file store (ChatFiles chunks). Every function takes the SESSION member — a
  * record of another member is treated exactly like a missing one.
  */
-export { MAX_RESUMES };
-export type MemberFileKind = "resume" | "photo";
+export { MAX_RESUMES, MAX_LIBRARY_PHOTOS };
+/**
+ * "resume" = resumes; "photo" = the ONE professional photo used as the member's avatar; "library_photo" = the
+ * member's private Photos library (never used as the avatar).
+ */
+export type MemberFileKind = "resume" | "photo" | "library_photo";
+const KINDS: readonly MemberFileKind[] = ["resume", "photo", "library_photo"];
 
 export interface MemberFile {
   recordId: string;
@@ -37,8 +42,8 @@ async function readAll(fresh = false): Promise<(MemberFile & { row: number })[]>
   for (const { row, cells } of await readTable("memberFiles", { fresh })) {
     const [recordId, memberId, kind, fileId, fileName, mimeType, sizeBytes, uploadedAt] = cells.map((c) => c.trim());
     const size = Number(sizeBytes);
-    if (!recordId || !fileId || !(MEMBER_IDS as readonly string[]).includes(memberId) || (kind !== "resume" && kind !== "photo") || !Number.isInteger(size) || size <= 0) continue;
-    out.push({ row, recordId, memberId: memberId as MemberId, kind, fileId, fileName, mimeType, sizeBytes: size, uploadedAt });
+    if (!recordId || !fileId || !(MEMBER_IDS as readonly string[]).includes(memberId) || !(KINDS as readonly string[]).includes(kind) || !Number.isInteger(size) || size <= 0) continue;
+    out.push({ row, recordId, memberId: memberId as MemberId, kind: kind as MemberFileKind, fileId, fileName, mimeType, sizeBytes: size, uploadedAt });
   }
   return out;
 }
@@ -59,23 +64,31 @@ async function requireTabs() {
   }
 }
 
-/** The member's resumes, newest first; null while the MemberFiles tab does not exist. */
-export async function listResumes(memberId: MemberId): Promise<ResumeInfo[] | null> {
+// ---- listed files (resumes, Photos library): same rules, separate kinds ---------------------------------------
+
+type ListedKind = "resume" | "library_photo";
+const LISTED: Record<ListedKind, { max: number; prefix: "res" | "lph"; limitMessage: string }> = {
+  resume: { max: MAX_RESUMES, prefix: "res", limitMessage: `You can keep at most ${MAX_RESUMES} resumes. Delete one to upload another.` },
+  library_photo: { max: MAX_LIBRARY_PHOTOS, prefix: "lph", limitMessage: `You can keep at most ${MAX_LIBRARY_PHOTOS} photos. Delete one to upload another.` },
+};
+
+async function listOwn(memberId: MemberId, kind: ListedKind): Promise<ResumeInfo[] | null> {
   try {
-    return (await readAll()).filter((f) => f.memberId === memberId && f.kind === "resume").sort((a, b) => b.uploadedAt.localeCompare(a.uploadedAt)).map(toResumeInfo);
+    return (await readAll()).filter((f) => f.memberId === memberId && f.kind === kind).sort((a, b) => b.uploadedAt.localeCompare(a.uploadedAt)).map(toResumeInfo);
   } catch (err) {
     if (err instanceof SheetsError && err.code === "schema_invalid") return null;
     throw err;
   }
 }
 
-export async function addResume(memberId: MemberId, file: { bytes: Uint8Array; fileName: string; mimeType: string }, now: Date = new Date()): Promise<ResumeInfo> {
+async function addOwn(memberId: MemberId, kind: ListedKind, file: { bytes: Uint8Array; fileName: string; mimeType: string }, now: Date): Promise<ResumeInfo> {
   await requireTabs();
+  const rules = LISTED[kind];
   return withWriteLock(async () => {
-    const mine = (await readAll(true)).filter((f) => f.memberId === memberId && f.kind === "resume");
-    if (mine.length >= MAX_RESUMES) throw new DomainError("resume_limit", `You can keep at most ${MAX_RESUMES} resumes. Delete one to upload another.`);
+    const mine = (await readAll(true)).filter((f) => f.memberId === memberId && f.kind === kind);
+    if (mine.length >= rules.max) throw new DomainError("resume_limit", rules.limitMessage);
     const fileId = await storeChatFile(file.bytes);
-    const rec: MemberFile = { recordId: newId("res"), memberId, kind: "resume", fileId, fileName: file.fileName, mimeType: file.mimeType, sizeBytes: file.bytes.length, uploadedAt: now.toISOString() };
+    const rec: MemberFile = { recordId: newId(rules.prefix), memberId, kind, fileId, fileName: file.fileName, mimeType: file.mimeType, sizeBytes: file.bytes.length, uploadedAt: now.toISOString() };
     try {
       await getSheetsClient().appendValues(tableRange("memberFiles"), [serialize(rec)]);
     } finally {
@@ -92,14 +105,9 @@ async function findOwn(memberId: MemberId, recordId: string, kind: MemberFileKin
   return hit;
 }
 
-export async function loadResume(memberId: MemberId, recordId: string): Promise<{ info: ResumeInfo; bytes: Buffer }> {
-  const rec = await findOwn(memberId, recordId, "resume");
-  return { info: toResumeInfo(rec), bytes: await loadStored(rec) };
-}
-
-export async function deleteResume(memberId: MemberId, recordId: string): Promise<{ recordId: string }> {
+async function deleteOwn(memberId: MemberId, recordId: string, kind: ListedKind): Promise<{ recordId: string }> {
   return withWriteLock(async () => {
-    const rec = await findOwn(memberId, recordId, "resume", true);
+    const rec = await findOwn(memberId, recordId, kind, true);
     try {
       await getSheetsClient().deleteRows(TABS.memberFiles.name, [rec.row]);
     } finally {
@@ -109,6 +117,28 @@ export async function deleteResume(memberId: MemberId, recordId: string): Promis
     return { recordId };
   });
 }
+
+/** The member's resumes, newest first; null while the MemberFiles tab does not exist. */
+export const listResumes = (memberId: MemberId) => listOwn(memberId, "resume");
+export const addResume = (memberId: MemberId, file: { bytes: Uint8Array; fileName: string; mimeType: string }, now: Date = new Date()) => addOwn(memberId, "resume", file, now);
+export async function loadResume(memberId: MemberId, recordId: string): Promise<{ info: ResumeInfo; bytes: Buffer }> {
+  const rec = await findOwn(memberId, recordId, "resume");
+  return { info: toResumeInfo(rec), bytes: await loadStored(rec) };
+}
+export const deleteResume = (memberId: MemberId, recordId: string) => deleteOwn(memberId, recordId, "resume");
+
+// ---- Photos library (private; NEVER the avatar) --------------------------------------------------------------
+
+/** Same public shape as a resume entry (no internal FileID). */
+export type LibraryPhotoInfo = ResumeInfo;
+/** The member's Photos library, newest first; null while the MemberFiles tab does not exist. */
+export const listLibraryPhotos = (memberId: MemberId) => listOwn(memberId, "library_photo");
+export const addLibraryPhoto = (memberId: MemberId, file: { bytes: Uint8Array; fileName: string; mimeType: string }, now: Date = new Date()) => addOwn(memberId, "library_photo", file, now);
+export async function loadLibraryPhoto(memberId: MemberId, recordId: string): Promise<{ info: LibraryPhotoInfo; bytes: Buffer }> {
+  const rec = await findOwn(memberId, recordId, "library_photo");
+  return { info: toResumeInfo(rec), bytes: await loadStored(rec) };
+}
+export const deleteLibraryPhoto = (memberId: MemberId, recordId: string) => deleteOwn(memberId, recordId, "library_photo");
 
 // ---- professional photo ------------------------------------------------------------------------------------
 
