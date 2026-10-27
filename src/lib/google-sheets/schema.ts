@@ -18,6 +18,11 @@ export const TABS = {
   members: {
     name: "Members",
     headers: ["MemberID", "Name", "Photo", "Active"],
+    // Optional trailing columns (E–J): each member's own Profile page details. Entered by the member only;
+    // a sheet without these headers keeps working and the values are still stored there. "Name" (B) stays
+    // the app's identity mirror, so the member's own name is kept separately in ProfileName.
+    // K: the Profile Lock password as a salted scrypt hash (never plaintext). L: failed recovery attempts ("count|since").
+    optionalHeaders: ["ProfileName", "LinkedIn", "GitHub", "Email", "Mobile", "ProfileUpdatedAt", "ProfilePasswordHash", "ProfileRecoveryAttempts"],
   },
   activity: {
     name: "Activity",
@@ -67,6 +72,52 @@ export const TABS = {
   callSignals: {
     name: "CallSignals",
     headers: ["SignalID", "CallID", "FromMemberID", "ToMemberID", "Type", "Payload", "CreatedAt"],
+    optional: true,
+  },
+  // Profile uploads: each member's resumes (up to 10) and professional photo (one). Metadata only; the bytes are
+  // base64 chunks in ChatFiles under FileID (the app's one file store). Optional: without it uploads are off.
+  memberFiles: {
+    name: "MemberFiles",
+    headers: ["RecordID", "MemberID", "Kind", "FileID", "FileName", "MimeType", "SizeBytes", "UploadedAt"],
+    optional: true,
+  },
+  // ---- Network Finder (Phase 2). Optional: until these tabs exist the feature is simply off. ----
+  // One row per member who connected Gmail for drafts. The refresh token is AES-256-GCM encrypted (bound to the
+  // member) with GMAIL_TOKEN_ENCRYPTION_KEY, so the sheet alone cannot be used to reach anyone's mailbox.
+  nfGmailAccounts: {
+    name: "NF_GmailAccounts",
+    headers: ["MemberID", "GmailAddress", "RefreshTokenEnc", "Scope", "Status", "ConnectedAt", "UpdatedAt", "LastError"],
+    optional: true,
+  },
+  // One row per (item, member) draft, so retries never create a second draft in the same mailbox.
+  // Status: created → sent | deleted (checked on later runs), or skipped_unauthorized / failed.
+  nfDrafts: {
+    name: "NF_Drafts",
+    headers: ["DraftKey", "MemberID", "ItemType", "ItemID", "GmailDraftID", "Status", "CreatedAt", "Detail", "ThreadID", "CheckedAt"],
+    optional: true,
+  },
+  // Every company the Network Finder picked (never processed as "new" twice; re-checked later for openings).
+  nfCompanies: {
+    name: "NF_Companies",
+    headers: ["CompanyKey", "Name", "Domain", "Website", "Source", "SourceID", "SourceURL", "Country", "SizeTier", "EmployeeCount", "Remote", "Reasons", "Status", "FirstSeenAt", "LastProcessedAt", "LastJobCheckAt", "ContactsSaved", "JobsSaved", "CareersURL"],
+    optional: true,
+  },
+  // Durable work queue (one row per company task), so a crashed or timed-out run resumes where it stopped.
+  nfQueue: {
+    name: "NF_Queue",
+    headers: ["ItemID", "Status", "Attempts", "NotBefore", "LastError", "Payload", "UpdatedAt"],
+    optional: true,
+  },
+  // Counters, paging cursors, pause state and Apollo usage (key → value). Never holds credentials.
+  nfState: {
+    name: "NF_State",
+    headers: ["Key", "Value", "UpdatedAt"],
+    optional: true,
+  },
+  // The day's selected contact per company and who it is assigned to (17/17/16), plus which mailboxes have its draft.
+  nfSelections: {
+    name: "NF_Selections",
+    headers: ["CompanyKey", "Date", "ConnectionID", "AssignedTo", "ContactName", "Email", "EmailStatus", "CreatedAt", "DraftedFor"],
     optional: true,
   },
 } as const;

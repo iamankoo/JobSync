@@ -37,6 +37,22 @@ export async function storeChatFile(bytes: Uint8Array): Promise<string> {
   return fileId;
 }
 
+/** Removes every chunk row of a stored file (used when a member deletes or replaces a profile upload). */
+export async function deleteStoredFile(fileId: string): Promise<void> {
+  const client = getSheetsClient();
+  const ids = await client.getValues(`${TABS.chatFiles.name}!A:A`);
+  const rows: number[] = [];
+  ids.forEach((r, i) => {
+    if (i > 0 && r[0] === fileId) rows.push(i + 1);
+  });
+  if (!rows.length) return;
+  try {
+    await client.deleteRows(TABS.chatFiles.name, rows);
+  } finally {
+    invalidateTableCache();
+  }
+}
+
 /** Reads a stored file back, or throws `chat_file_not_found` if any chunk is missing. */
 export async function loadChatFile(fileId: string, expectedBytes: number): Promise<Buffer> {
   const client = getSheetsClient();

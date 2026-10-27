@@ -32,7 +32,7 @@ test("create, view message, change status, copy, open profile, edit, search/filt
   // Navigation order: Connections sits right below Analytics, Group Chat below it.
   const menu = page.getByRole("button", { name: "Open menu" });
   if (await menu.isVisible()) await menu.click();
-  await expect(page.getByRole("navigation", { name: "Main" }).getByRole("link")).toHaveText(["Dashboard", "All Jobs", "Add Job", "My Applications", "Analytics", "Connections", "Group Chat"]);
+  await expect(page.getByRole("navigation", { name: "Main" }).getByRole("link")).toHaveText(["Dashboard", "All Jobs", "Add Job", "My Applications", "Analytics", "Connections", "Group Chat", "Gmail Drafts"]);
   if (await menu.isVisible()) await page.getByRole("button", { name: "Close menu" }).last().click();
 
   await expect(page.getByText("No connections yet")).toBeVisible();

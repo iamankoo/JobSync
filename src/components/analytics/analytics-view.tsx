@@ -2,7 +2,10 @@
 
 import Link from "next/link";
 import { useMemo, useState } from "react";
-import { ArrowDown, ArrowUp, CalendarDays, CheckCircle2, Clock, FileText, Send, Star, Trophy, Users, XCircle, type LucideIcon } from "lucide-react";
+import { ArrowDown, ArrowUp, CalendarDays, CheckCircle2, Clock, FileText, MailCheck, Send, Star, Trophy, Users, XCircle, type LucideIcon } from "lucide-react";
+import { Avatar } from "@/components/ui/avatar";
+import { MEMBERS, type MemberId } from "@/config/members";
+import type { EmailsSentStats } from "@/lib/gmail/sent-stats";
 import { BarChart } from "@/components/charts/bar-chart";
 import { DonutChart } from "@/components/charts/donut-chart";
 import { HBarList } from "@/components/charts/hbar-list";
@@ -64,7 +67,46 @@ function Panel({ title, note, children, className = "" }: { title: string; note?
  * Personal analytics. `source` holds ONLY the signed-in member's own applications and activity
  * (plus open deadlines of shared jobs); every number is computed from it by `computeAnalytics`.
  */
-export function AnalyticsView({ source, timeZone = "UTC" }: { source: AnalyticsSource; timeZone?: string }) {
+/**
+ * Emails actually sent from Gmail (JobSync drafts the member reviewed and sent themselves). Counted from the
+ * sent-draft tracker's ledger, so drafts and generated emails never count. All time, independent of the range.
+ */
+function EmailsSentCard({ stats, me }: { stats: EmailsSentStats | null; me?: MemberId }) {
+  const mine = stats && me ? stats.byMember[me] : null;
+  return (
+    <section aria-labelledby="emails-sent" className="rounded-xl border border-sky-500/40 bg-gradient-to-br from-sky-600/25 to-navy-900 p-4" data-testid="emails-sent-card">
+      <div className="flex flex-wrap items-center gap-x-6 gap-y-3">
+        <div className="flex items-center gap-3">
+          <span className="grid h-11 w-11 shrink-0 place-items-center rounded-xl bg-sky-600 text-white">
+            <MailCheck size={22} aria-hidden />
+          </span>
+          <div>
+            <p className="text-2xl font-bold leading-none" data-testid="emails-sent-total">{stats ? stats.total : "–"}</p>
+            <h2 id="emails-sent" className="mt-1 text-xs text-ink/90">Emails Sent</h2>
+          </div>
+        </div>
+        {stats ? (
+          <ul aria-label="Emails sent per member" className="flex flex-wrap items-center gap-3">
+            {MEMBERS.map((m) => (
+              <li key={m.id} className="flex items-center gap-2 rounded-lg bg-navy-950/50 px-2.5 py-1.5 text-sm">
+                <Avatar member={m} size={22} ring={m.id === me} />
+                <span>{m.id === me ? "You" : m.name}</span>
+                <span className="font-semibold tabular-nums" data-testid={`emails-sent-${m.id}`}>{stats.byMember[m.id]}</span>
+              </li>
+            ))}
+          </ul>
+        ) : (
+          <p className="text-sm text-muted">Sent-email tracking is not set up yet.</p>
+        )}
+      </div>
+      <p className="mt-3 text-xs text-muted">
+        {mine !== null ? `You have sent ${mine}. ` : ""}Counts emails you sent from Gmail drafts JobSync created, once Gmail shows them as sent. Unsent or deleted drafts are not counted. All time.
+      </p>
+    </section>
+  );
+}
+
+export function AnalyticsView({ source, emailsSent = null, me, timeZone = "UTC" }: { source: AnalyticsSource; emailsSent?: EmailsSentStats | null; me?: MemberId; timeZone?: string }) {
   const [rangeKey, setRangeKey] = useState("30");
   const meta = RANGES.find((r) => r.value === rangeKey)!;
   const result = useMemo(() => computeAnalytics(source, meta.range), [source, meta.range]);
@@ -111,6 +153,8 @@ export function AnalyticsView({ source, timeZone = "UTC" }: { source: AnalyticsS
           );
         })}
       </section>
+
+      <EmailsSentCard stats={emailsSent} me={me} />
 
       {!result.hasApplications ? (
         <EmptyState

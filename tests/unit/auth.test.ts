@@ -97,7 +97,7 @@ describe("validation and config", () => {
   });
 
   it("has the five original navigation items followed by Connections and Group Chat", () => {
-    expect(NAV_ITEMS.map((n) => n.label)).toEqual(["Dashboard", "All Jobs", "Add Job", "My Applications", "Analytics", "Connections", "Group Chat"]);
+    expect(NAV_ITEMS.map((n) => n.label)).toEqual(["Dashboard", "All Jobs", "Add Job", "My Applications", "Analytics", "Connections", "Group Chat", "Gmail Drafts"]);
   });
 
   it("defines the three members with distinct accents", () => {

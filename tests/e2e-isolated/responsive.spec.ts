@@ -51,7 +51,7 @@ test("login page fits the viewport and works", async ({ page }, info) => {
   await shot(page, info.project.name, "login");
 });
 
-test("every page: no overflow, readable layout, accessible, account pinned top-right, seven nav items", async ({ page }, info) => {
+test("every page: no overflow, readable layout, accessible, account pinned top-right, eight nav items", async ({ page }, info) => {
   const vp = page.viewportSize()!;
   await signIn(page, "Anni", "0001");
   for (const p of PAGES) {
@@ -64,15 +64,14 @@ test("every page: no overflow, readable layout, accessible, account pinned top-r
 
     // (On phones and tablets the Group Chat is full screen and hides the app header; every other page keeps it.)
     if (!(p.label === "Group Chat" && vp.width < 1024)) {
-    // header: search usable; Log out sits just left of the account, which is the right-most item
+    // header: search usable; the account (profile button) is the right-most item; Log out lives on the Profile page
     const header = page.locator("header");
     const search = header.getByRole("searchbox");
     await expect(search).toBeVisible();
-    const logout = await header.getByRole("button", { name: "Log out" }).boundingBox();
+    await expect(header.getByRole("button", { name: "Log out" })).toHaveCount(0);
+    await expect(header.getByRole("link", { name: /^Your profile/ })).toBeVisible();
     const avatar = await header.locator("img").last().boundingBox();
-    expect(logout, "log out visible").not.toBeNull();
     expect(avatar, "account photo visible").not.toBeNull();
-    expect(logout!.x + logout!.width).toBeLessThanOrEqual(avatar!.x + 1);
     expect(avatar!.x + avatar!.width).toBeLessThanOrEqual(vp.width);
     // on wide screens the member name sits to the right of the photo
     expect(vp.width - (avatar!.x + avatar!.width), "account stays at the far right").toBeLessThan(vp.width < 700 ? 40 : 120);
@@ -81,11 +80,11 @@ test("every page: no overflow, readable layout, accessible, account pinned top-r
     expect(searchBox.x).toBeGreaterThanOrEqual(0);
     expect(searchBox.x + searchBox.width).toBeLessThanOrEqual(vp.width);
 
-    // navigation: the five original items plus Connections and Group Chat (drawer or sidebar)
+    // navigation: the five original items plus Connections, Group Chat and Gmail Drafts (drawer or sidebar)
     const menu = page.getByRole("button", { name: "Open menu" });
     if (await menu.isVisible()) await menu.click();
     const nav = page.getByRole("navigation", { name: "Main" });
-    await expect(nav.getByRole("link")).toHaveText(["Dashboard", "All Jobs", "Add Job", "My Applications", "Analytics", "Connections", "Group Chat"]);
+    await expect(nav.getByRole("link")).toHaveText(["Dashboard", "All Jobs", "Add Job", "My Applications", "Analytics", "Connections", "Group Chat", "Gmail Drafts"]);
     if (await menu.isVisible()) await page.getByRole("button", { name: "Close menu" }).last().click();
     }
 

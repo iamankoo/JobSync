@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { BarChart3, Briefcase, Handshake, Home, MessagesSquare, PlusCircle, Send, type LucideIcon } from "lucide-react";
+import { BarChart3, Briefcase, Handshake, Home, Mail, MessagesSquare, PlusCircle, Send, type LucideIcon } from "lucide-react";
 import { NAV_ITEMS } from "@/config/nav";
 import { MEMBERS, type Member } from "@/config/members";
 import { Avatar } from "@/components/ui/avatar";
@@ -17,6 +17,7 @@ const ICONS: Record<string, LucideIcon> = {
   "/analytics": BarChart3,
   "/connections": Handshake,
   "/group-chat": MessagesSquare,
+  "/gmail": Mail,
 };
 
 export function Sidebar({ current, onNavigate }: { current: Member; onNavigate?: () => void }) {

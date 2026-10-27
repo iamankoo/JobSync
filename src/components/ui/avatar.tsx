@@ -1,9 +1,24 @@
+"use client";
+
 import Image from "next/image";
 import type { Member } from "@/config/members";
+import { useUploadedPhoto } from "./member-photos";
 
-/** Round profile photo framed by the member's configured crop (see `photoCrop` in config/members.ts). */
+/**
+ * Round profile photo: the member's uploaded professional photo when they have one (centre-cropped), otherwise the
+ * built-in photo framed by its configured crop (see `photoCrop` in config/members.ts).
+ */
 export function Avatar({ member, size, ring = false }: { member: Member; size: number; ring?: boolean }) {
+  const uploaded = useUploadedPhoto(member.id);
   const { photoSize, photoCrop } = member;
+  if (uploaded) {
+    return (
+      <span className="relative block shrink-0 overflow-hidden rounded-full bg-navy-800" style={{ width: size, height: size, boxShadow: ring ? `0 0 0 2px ${member.accent}` : undefined }}>
+        {/* Served by an authenticated route, so it bypasses the image optimiser (which would fetch without the session). */}
+        <Image src={uploaded} alt="" width={size} height={size} unoptimized className="h-full w-full object-cover" />
+      </span>
+    );
+  }
   const scale = size / photoCrop.size;
   const outside =
     photoCrop.x < 0 ||

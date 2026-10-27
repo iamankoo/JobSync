@@ -1,15 +1,16 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import Link from "next/link";
 import { useRouter, usePathname } from "next/navigation";
-import { LogOut, Menu, Search, X } from "lucide-react";
+import { Menu, Search, X } from "lucide-react";
 import type { Member } from "@/config/members";
 import { Avatar } from "@/components/ui/avatar";
 import { Logo } from "@/components/ui/logo";
 import { FollowUpGate, type DueFollowUpItem } from "@/components/follow-up/follow-up-gate";
 import { NotificationGate } from "@/components/notifications/notification-gate";
 import { useChatUnread } from "@/lib/chat/use-unread";
-import { removeThisDevice } from "@/lib/push/browser";
+import { useLogout } from "@/lib/client/use-logout";
 import { AutoRefresh } from "./auto-refresh";
 import { Sidebar } from "./sidebar";
 
@@ -28,7 +29,7 @@ export function AppShell({
   const router = useRouter();
   const pathname = usePathname();
   const [open, setOpen] = useState(false);
-  const [busy, setBusy] = useState(false);
+  const { logout, busy } = useLogout();
   const [query, setQuery] = useState("");
   const unread = useChatUnread();
   const searchRef = useRef<HTMLInputElement>(null);
@@ -58,18 +59,6 @@ export function AppShell({
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [open]);
-
-  async function logout() {
-    setBusy(true);
-    try {
-      // Detach this browser from the member before the session ends (other devices keep their notifications).
-      await removeThisDevice();
-      await fetch("/api/auth/logout", { method: "POST" });
-    } finally {
-      router.replace("/login");
-      router.refresh();
-    }
-  }
 
   return (
     <div data-member={member.id} className="min-h-screen bg-navy-950">
@@ -121,23 +110,18 @@ export function AppShell({
               Ctrl + K
             </kbd>
           </form>
-          {/* Pinned to the top-right: Log out sits just left of the account, which is the far-right item. */}
-          <div className="ml-auto flex shrink-0 items-center gap-3">
-            <button
-              onClick={logout}
-              disabled={busy}
-              className="flex items-center gap-2 whitespace-nowrap rounded-lg border border-line px-3 py-2 text-sm font-medium text-muted transition-colors hover:border-accent hover:text-ink disabled:opacity-60"
-            >
-              <LogOut size={16} aria-hidden />
-              Log out
-            </button>
-            <div className="flex items-center gap-2">
-              <Avatar member={member} size={36} ring />
-              <span className="hidden text-sm font-semibold sm:block" style={{ color: member.accentText }}>
-                {member.name}
-              </span>
-            </div>
-          </div>
+          {/* Pinned to the top-right: the account opens the Profile page (Log out lives there). */}
+          <Link
+            href="/profile"
+            aria-label={`Your profile (${member.name})`}
+            aria-current={pathname === "/profile" ? "page" : undefined}
+            className="ml-auto flex shrink-0 items-center gap-2 rounded-full py-1 pl-1 pr-1 transition-colors hover:bg-navy-800 sm:pr-3"
+          >
+            <Avatar member={member} size={36} ring />
+            <span className="hidden text-sm font-semibold sm:block" style={{ color: member.accentText }}>
+              {member.name}
+            </span>
+          </Link>
         </header>
         <main id="main" key={pathname} className={pathname === "/group-chat" ? "p-0 lg:p-6" : "p-4 sm:p-6"}>
           {children}

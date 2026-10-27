@@ -47,7 +47,10 @@ export type DomainErrorCode =
   | "chat_file_not_found"
   | "call_in_progress"
   | "call_not_active"
-  | "not_call_starter";
+  | "not_call_starter"
+  | "member_file_not_found"
+  | "resume_limit"
+  | "member_files_unavailable";
 
 export class DomainError extends Error {
   constructor(

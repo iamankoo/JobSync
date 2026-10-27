@@ -143,6 +143,9 @@ test("unauthenticated calls are refused; logout ends the session", async ({ brow
     expect((await api(page, method, path, method === "GET" ? undefined : {})).status, `${method} ${path}`).toBe(401);
   }
   await signIn(page, "Anni", "0001");
+  // Log out lives at the bottom of the Profile page (opened from the top-right profile button).
+  await page.getByRole("link", { name: "Your profile (Anni)" }).click();
+  await page.waitForURL("**/profile");
   await page.getByRole("button", { name: "Log out" }).click();
   await page.waitForURL("**/login");
   expect((await api(page, "GET", "/api/jobs")).status).toBe(401);

@@ -6,6 +6,8 @@ import { appTimezone } from "@/lib/google-sheets/config";
 import { recordVisit } from "@/lib/google-sheets/activity-service";
 import { getDueFollowUps } from "@/lib/google-sheets/follow-up-service";
 import { isMemberActive } from "@/lib/google-sheets/members-service";
+import { photoVersions } from "@/lib/google-sheets/member-files-service";
+import { MemberPhotosProvider } from "@/components/ui/member-photos";
 
 export const dynamic = "force-dynamic";
 
@@ -27,15 +29,27 @@ async function dueFollowUps(memberId: MemberId) {
   }
 }
 
+/** Uploaded professional photos for avatars; the built-in photos are used if this cannot be read. */
+async function uploadedPhotos() {
+  try {
+    return await photoVersions();
+  } catch (err) {
+    console.error("[profile] could not read uploaded photos", err instanceof Error ? err.name : typeof err);
+    return {};
+  }
+}
+
 export default async function AppLayout({ children }: { children: React.ReactNode }) {
   // Identity always comes from the validated session cookie, never from the browser.
   const session = await getSession();
   const member = session && getMember(session.memberId);
   if (!member) redirect("/login");
-  const followUps = await dueFollowUps(member.id);
+  const [followUps, photos] = await Promise.all([dueFollowUps(member.id), uploadedPhotos()]);
   return (
-    <AppShell member={member} followUps={followUps} timeZone={appTimezone()}>
-      {children}
-    </AppShell>
+    <MemberPhotosProvider versions={photos}>
+      <AppShell member={member} followUps={followUps} timeZone={appTimezone()}>
+        {children}
+      </AppShell>
+    </MemberPhotosProvider>
   );
 }

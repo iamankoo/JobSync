@@ -54,6 +54,9 @@ const DOMAIN_STATUS: Record<DomainErrorCode, number> = {
   call_in_progress: 409,
   call_not_active: 409,
   not_call_starter: 403,
+  member_file_not_found: 404,
+  resume_limit: 409,
+  member_files_unavailable: 503,
 };
 
 const SHEETS_STATUS: Record<SheetsErrorCode, number> = {
