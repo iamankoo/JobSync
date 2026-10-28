@@ -6,7 +6,42 @@
 
 ---
 
-## ⛔ STOPPED HERE FOR TODAY
+## 🔄 UPDATE 2026-10-28 evening (supersedes the "open issue" in §3 and parts of §2/§5)
+
+**Why Network Finder stopped after the morning run [VERIFIED from the sheet + Vercel logs]:**
+- Only 5 companies were ever queued today (all 02:15–02:50; HN thread + remoteintech are the only wired sources and
+  most posts are rejected). Window 1 finished 4 of 5 by 03:55; the 5th carried over and ran at 10:05. After that
+  discovery found **nothing new** in any later window (`ledger:…#enqueued` stayed 5; `cursor:remoteintech` stuck at 409
+  since 03:15 because a pass that ran past the deadline was killed before it saved its cursor).
+- From ~18:40 every call either **504'd at 60 s** (rate-limited Sheets writes retried up to 5× with 1–8 s sleeps each,
+  past the run's deadline) or **409 busy** (the killed run never released its 5-min lock, which outlived the next
+  5-min call) — so only about 1 call in 3 even started, and those timed out. Cron-job.org config was fine (unchanged).
+- Vercel Hobby keeps only ~1 h of runtime logs, so earlier call history was not available; conclusions come from the
+  sheet state.
+
+**Fixes (this branch):** Sheets retries stop at the run deadline (`setSheetsRetryDeadline`); run lock TTL 75 s
+(`RUN_LOCK_TTL_MS`), queue lease 90 s; discovery sources get a `deadline`, remoteintech stops early and keeps its
+cursor, a source is not started with <15 s left. Regression tests: `tests/integration/network-finder-reliability.test.ts`.
+
+**Job discovery now (`runDailyJobSearch`, `job-eligibility.ts`, `job-allocation.ts`):** per kind (internship, full-time)
+target **15/day = 5 US (remote only) + 5 India (remote/hybrid/on-site) + 5 other countries (remote only)** and **5 per
+member** (Anni/Lukky/Rishii), assigned by each member's VERIFIED skills (never the 200-skill taxonomy). Strict filters:
+2027/fresher eligible, no CGPA/backlog, no senior/experienced-only, pay minimums (remote internship ₹30k/mo, India
+on-site ₹50k/mo, full-time ₹10 LPA; undisclosed pay allowed only for explicit-fresher listings on an official board,
+noted on the job), paid portals rejected. Quality beats quota. Official company boards (Greenhouse/Lever/**Ashby**) rank
+first, then LinkedIn (**not automated** — terms forbid it), then Remote OK/Arbeitnow. One search per kind per hour.
+**Rishii has no verified skills yet, so he currently receives no jobs** — add his resume facts to
+`member-email-profiles.ts` to enable his 5. Env `NETWORK_FINDER_DAILY_INTERNSHIPS/FULL_TIME` default 15 (not set in Prod).
+
+**Drafts now:** `company-research.ts` reads the company's OWN site (meta description, verbatim) and careers board; each
+member is pointed at the real opening that fits their verified skills (`pickJobForMember`); no verifiable opening →
+role-family email, no invented job. Validation rejects wrong role, missing role/company, other member's identity,
+unverified skills, invented company facts/familiarity, generic text that ignores the company/job. NF companies' jobs are
+now saved BEFORE their contacts' drafts. Tests: `network-finder-personalised-drafts.test.ts`.
+
+---
+
+## ⛔ STOPPED HERE FOR TODAY (older note, kept for history)
 
 Tomorrow, in this order:
 1. Read `summary.md` (this file).

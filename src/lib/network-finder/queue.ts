@@ -41,7 +41,8 @@ export interface WorkQueue<T> {
 }
 
 export const MAX_ATTEMPTS = 5;
-export const LEASE_MS = 5 * 60_000;
+/** A run is killed at 60 s, so a claimed item whose run died is re-offered shortly after, well before the next 5-minute call. */
+export const LEASE_MS = 90_000;
 
 export class InMemoryQueue<T> implements WorkQueue<T> {
   private items = new Map<string, QueueItem<T>>();

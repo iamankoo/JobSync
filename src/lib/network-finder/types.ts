@@ -127,4 +127,10 @@ export interface JobCandidate {
   employment?: Employment;
   postedAt?: string;
   description?: string;
+  /** As stated by the source: remote / hybrid / on-site (remote is also reflected in `remote`). */
+  workplace?: "remote" | "hybrid" | "onsite";
+  /** Pay as the source states it (never estimated). */
+  salary?: { min?: number; max?: number; currency?: string; period?: "year" | "month" | "hour" };
+  /** Free text about pay, when the source gives only text (e.g. "₹12-18 LPA"). */
+  salaryText?: string;
 }

@@ -7,7 +7,10 @@ import { classifyPersona, rankPeople } from "./contacts";
 import { ConnectionIndex, JobIndex, normalizePersonName } from "./dedupe";
 import { countsByMember, nextAssignee, type Selection, type SelectionStore } from "./distribution";
 import { distributeDrafts, draftKey, type FanoutDeps, type MemberDraftOutcome } from "./draft-fanout";
-import { assembleEmail, buildEmailPlan, cleanParagraphs, composeFallback, jobForCompany, validateEmail, type EmailJob } from "./email-composer";
+import { allocate, jobLedgerKeys, pickJobForMember, type EvaluatedJob, type Capacity } from "./job-allocation";
+import { asEmailJob, type CompanyResearch, type CompanyResearcher } from "./company-research";
+import { evaluateJob, REGIONS } from "./job-eligibility";
+import { assembleEmail, buildEmailPlan, cleanParagraphs, composeFallback, jobsForCompany, validateEmail, type EmailJob } from "./email-composer";
 import { inferPattern, predictEmail, type PatternEvidence } from "./email-pattern";
 import { ApolloPoolExhausted, ProviderError } from "./errors";
 import type { ConnectionsGateway, JobsGateway } from "./gateways";
@@ -17,8 +20,8 @@ import type { CompanySource, ContactFinder, ContactProvider, JobSource } from ".
 import { planBatch, qualifyCompany } from "./qualify";
 import { backoffDelay, type WorkQueue } from "./queue";
 import { recordFor, dueForJobRecheck, type CompanyRegistry } from "./registry";
-import { classifyEmployment, matchRole, ruleVerdict, TARGET_ROLES } from "./roles";
-import { activeWindow, BATCH_WINDOWS, type ActiveWindow, type BatchLedger } from "./scheduler";
+import { classifyEmployment, ruleVerdict, TARGET_ROLES } from "./roles";
+import { activeWindow, BATCH_WINDOWS, localHour, type ActiveWindow, type BatchLedger } from "./scheduler";
 import { INTERNATIONAL_COUNTRIES, type CompanyCandidate, type EnrichedPerson, type JobCandidate, type QualifiedCompany, type RankedPerson } from "./types";
 
 /**
@@ -61,6 +64,8 @@ export interface PipelineDeps {
   enrichCompany?: (c: CompanyCandidate) => Promise<CompanyCandidate | null>;
   brain?: Brain;
   jobSources: readonly JobSource[];
+  /** Reads a company's own website and careers board for the email writer (verified facts and real openings only). */
+  research?: CompanyResearcher;
   queue: WorkQueue<CompanyTask>;
   registry: CompanyRegistry;
   ledger: BatchLedger;
@@ -90,6 +95,8 @@ const DRAFT_TIME_MS = 12_000;
 const ENRICH_TIME_MS = 8_000;
 /** Time a discovery pass may take (public sources at 1 request/second + enrichment): it only runs after queued work with this much left. */
 const DISCOVERY_TIME_MS = 40_000;
+/** Least time a single discovery source needs to make progress. */
+const SOURCE_MIN_TIME_MS = 15_000;
 
 export interface CompanyTask {
   company: QualifiedCompany;
@@ -144,8 +151,13 @@ export async function discoverCompanies(deps: PipelineDeps, wanted: number): Pro
   let enrichBudget = ENRICH_PER_RUN;
   deps.runState ??= {};
   for (const source of deps.sources) {
+    // A source is not started with too little time left: it would be killed mid-pass and lose its place.
+    if (timeLeft(deps) < SOURCE_MIN_TIME_MS) {
+      result.errors.push(`${source.id}: skipped (not enough time left in this run)`);
+      continue;
+    }
     try {
-      const page = await source.discover({ maxEmployees: 250, countries: ["US", ...INTERNATIONAL_COUNTRIES], limit: Math.max(wanted * 3, 10), cursor: await deps.registry.getCursor(source.id) });
+      const page = await source.discover({ maxEmployees: 250, countries: ["US", ...INTERNATIONAL_COUNTRIES], limit: Math.max(wanted * 3, 10), cursor: await deps.registry.getCursor(source.id), ...(deps.runState?.deadline ? { deadline: deps.runState.deadline } : {}) });
       await deps.registry.setCursor(source.id, page.nextCursor);
       for (const raw of page.companies) {
         let c = raw;
@@ -255,6 +267,9 @@ export async function processCompany(deps: PipelineDeps, company: QualifiedCompa
   const day = dateInTimezone(at, deps.config.timeZone);
   const out: CompanyOutcome = { companyKey: company.key, peopleFound: 0, contactsSaved: [], contactsSkipped: [], jobsSaved: [], jobsSkipped: [], warnings: [] };
 
+  // The company's openings go first: the drafts written for its contacts are about those real roles.
+  await saveCompanyJobs(deps, company, out, day);
+
   const existing = await deps.connections.list();
   const byId = new Map(existing.map((c) => [c.connectionId, c]));
   if (existing.length >= deps.config.contactLimit) {
@@ -262,8 +277,6 @@ export async function processCompany(deps: PipelineDeps, company: QualifiedCompa
   } else {
     await saveCompanyContacts(deps, company, out, existing, byId, day, at);
   }
-
-  await saveCompanyJobs(deps, company, out, day);
 
   const rec = (await deps.registry.get(company.key)) ?? recordFor(company, at.toISOString());
   await deps.registry.put({
@@ -395,14 +408,21 @@ export interface DraftTarget {
  * body within it → validation (falls back to the deterministic template fill if anything is off) → the member's
  * signature with their LinkedIn/GitHub. Never sends. Already-created/sent drafts are skipped (ledger).
  */
-export async function draftForContact(deps: Pick<PipelineDeps, "config" | "brain" | "drafts"> & Partial<Pick<PipelineDeps, "jobs">>, t: DraftTarget): Promise<MemberDraftOutcome[]> {
+export async function draftForContact(deps: Pick<PipelineDeps, "config" | "brain" | "drafts"> & Partial<Pick<PipelineDeps, "jobs" | "research">>, t: DraftTarget): Promise<MemberDraftOutcome[]> {
   const brain = brainOf(deps);
-  let job: EmailJob | undefined;
+  // The company's real openings already in Jobs. Each member gets the opening that fits THEIR verified skills.
+  const known: EmailJob[] = [];
   try {
-    job = deps.jobs ? jobForCompany(await deps.jobs.list(), t.company.name) : undefined;
+    if (deps.jobs) known.push(...jobsForCompany(await deps.jobs.list(), t.company.name));
   } catch {
-    job = undefined; // no job context: the email speaks of the role family instead
+    // no job context from Jobs: the company's own board is tried below
   }
+  // The company's own website and careers board, read at most once per contact and only when something is missing.
+  let researched: Promise<CompanyResearch | undefined> | undefined;
+  const research = () =>
+    (researched ??= deps.research
+      ? deps.research({ name: t.company.name, ...(t.company.website ? { website: t.company.website } : {}), ...(t.email ? { email: t.email } : {}) }).catch(() => undefined)
+      : Promise.resolve(undefined));
   return distributeDrafts(
     { type: "contact", id: t.connectionId, ...(t.email ? { to: t.email } : {}) },
     {
@@ -411,9 +431,14 @@ export async function draftForContact(deps: Pick<PipelineDeps, "config" | "brain
       isConnected: deps.drafts!.isConnected,
       ledger: deps.drafts!.ledger,
       compose: async (memberId, memberName) => {
+        let job = pickJobForMember(memberId, known);
+        const r = !job || !t.company.description ? await research() : undefined;
+        if (!job && r) job = pickJobForMember(memberId, r.jobs.map(asEmailJob));
+        const website = t.company.website ?? r?.website;
+        const description = t.company.description ?? r?.description;
         const plan = buildEmailPlan({
           memberId,
-          company: { name: t.company.name, ...(t.company.website ? { website: t.company.website } : {}), ...(t.company.description ? { description: t.company.description } : {}) },
+          company: { name: t.company.name, ...(website ? { website } : {}), ...(description ? { description } : {}) },
           person: { name: t.name, title: t.title },
           ...(t.email ? { recipientEmail: t.email } : {}),
           ...(job ? { job } : {}),
@@ -743,45 +768,144 @@ export async function recheckCompanyJobs(deps: PipelineDeps, limit: number): Pro
   return total;
 }
 
+/** One day's job search for one kind of job: what was saved and why the rest was not. */
+export interface DailyKindReport {
+  saved: string[];
+  considered: number;
+  rejected: number;
+  uncertain: number;
+  /** Rejection reasons, counted (e.g. "paid portal", "below the minimum pay"). */
+  reasons: Record<string, number>;
+}
+
+const payLabel = (j: JobCandidate): string | undefined => {
+  if (j.salaryText) return j.salaryText;
+  const s = j.salary;
+  if (!s || !s.currency || !s.period) return undefined;
+  const fmt = (n: number) => n.toLocaleString("en-US", { maximumFractionDigits: 0 });
+  const range = s.min && s.max && s.min !== s.max ? `${fmt(s.min)}-${fmt(s.max)}` : fmt((s.max ?? s.min)!);
+  return `${s.currency} ${range}/${s.period === "year" ? "yr" : s.period === "month" ? "mo" : "hr"}`;
+};
+
+const reasonKey = (r: string) => r.replace(/[₹$€£]?\d[\d,.]*/g, "N").replace(/\(.*?\)/g, "").replace(/\s+/g, " ").trim().slice(0, 60);
+
 /**
- * The daily extra search: up to N internships and N full-time openings across DIFFERENT companies, from job
- * sources that support searching. Remote first, then best match. Counted per local day so repeated calls never
- * exceed the targets.
+ * The daily job search: for EACH of internships and full-time roles, up to `target` (15) openings = 5 US (remote only)
+ * + 5 India + 5 other countries (remote only), and 5 for each member, chosen by that member's VERIFIED skills.
+ * Every job must pass the strict eligibility rules (fresher / 2027 batch, no CGPA or backlog bar, minimum pay,
+ * not a paid portal); official company boards rank first. A bucket that has too few genuinely qualifying jobs
+ * stays short: the quota never lowers the bar. Counted per local day, so repeated calls never exceed the targets.
  */
-export async function runDailyJobSearch(deps: PipelineDeps): Promise<{ internships: string[]; fullTime: string[]; warnings: string[] }> {
+export async function runDailyJobSearch(deps: PipelineDeps): Promise<{ internships: string[]; fullTime: string[]; warnings: string[]; report?: Record<string, DailyKindReport> }> {
   const at = now(deps);
   const day = dateInTimezone(at, deps.config.timeZone);
-  const result = { internships: [] as string[], fullTime: [] as string[], warnings: [] as string[] };
+  const result = { internships: [] as string[], fullTime: [] as string[], warnings: [] as string[], report: {} as Record<string, DailyKindReport> };
   const plan = [
-    { employment: "internship" as const, target: deps.config.dailyInternships, key: `${day}#jobs-internship`, into: result.internships },
-    { employment: "full_time" as const, target: deps.config.dailyFullTime, key: `${day}#jobs-full-time`, into: result.fullTime },
+    { kind: "internship" as const, target: deps.config.dailyInternships, into: result.internships },
+    { kind: "full_time" as const, target: deps.config.dailyFullTime, into: result.fullTime },
   ];
   for (const step of plan) {
-    const left = step.target - (await deps.ledger.get(step.key));
-    if (left <= 0) continue;
+    const keys = jobLedgerKeys(day, step.kind);
+    const perBucket = Math.max(1, Math.floor(step.target / 3));
+    if ((await deps.ledger.get(keys.total)) >= step.target) continue;
+    const capacity: Capacity = { regionUsed: {}, memberUsed: {}, companiesUsed: new Set<string>() };
+    for (const r of REGIONS) capacity.regionUsed[r] = await deps.ledger.get(keys.region(r));
+    for (const m of MEMBER_IDS) capacity.memberUsed[m] = await deps.ledger.get(keys.member(m));
+    if (REGIONS.every((r) => (capacity.regionUsed[r] ?? 0) >= perBucket) || MEMBER_IDS.every((m) => (capacity.memberUsed[m] ?? 0) >= perBucket)) continue;
+    // The quota may never fill (the bar is strict), so searching is limited to once per local hour per kind: it must not
+    // re-read the job sites and the Jobs sheet on every 5-minute call all day.
+    const hourKey = `${day}#jobs-${step.kind === "internship" ? "internship" : "full-time"}-search-h${Math.floor(localHour(at, deps.config.timeZone))}`;
+    if ((await deps.ledger.get(hourKey)) > 0) continue;
+    await deps.ledger.add(hourKey, 1);
+
+    // Companies already used today for this kind (a company gets one opening per kind per day).
+    const existing = await deps.jobs.list();
+    const jobType = step.kind === "internship" ? "Internship" : "Full-time";
+    const usedCompanies = new Set<string>();
+    for (const j of existing) if (j.jobType === jobType && /Found by Network Finder/.test(j.description ?? "") && (j.description ?? "").includes(` on ${day}.`)) usedCompanies.add(j.company.trim().toLowerCase());
+    capacity.companiesUsed = usedCompanies;
+
+    const known = (await deps.registry.all()).filter((r) => r.website || r.careersUrl).map((r) => ({ ...r, regionGroup: r.country === "US" ? "us" : "international", score: 0 }) as QualifiedCompany);
     const found: JobCandidate[] = [];
     for (const source of deps.jobSources) {
       if (!source.searchJobs) continue;
       try {
-        found.push(...(await source.searchJobs({ keywords: TARGET_ROLES, employment: step.employment, limit: left * 4 })));
+        found.push(...(await source.searchJobs({ keywords: TARGET_ROLES, employment: step.kind, limit: 200, companies: known, ...(deps.runState?.deadline ? { deadline: deps.runState.deadline } : {}) })));
       } catch (err) {
         result.warnings.push(err instanceof ProviderError ? `${err.provider}: ${err.kind}` : `${source.id}: unexpected error`);
       }
     }
-    // Remote first, then best match; one opening per company.
-    const ranked = found
-      .filter((j) => classifyEmployment(j.title, j.employment) === step.employment)
-      .sort((a, b) => Number(Boolean(b.remote)) - Number(Boolean(a.remote)) || matchRole(b.title).score - matchRole(a.title).score);
-    const companies = new Set<string>();
-    const company = (j: JobCandidate) => j.companyName.trim().toLowerCase();
-    const out = { jobsSaved: [] as string[], jobsSkipped: [] as Skip[] };
-    await saveJobs(deps, ranked, out, day, {
-      full: () => out.jobsSaved.length >= left,
-      skip: (j) => companies.has(company(j)),
-      onSaved: (j) => companies.add(company(j)),
-    });
-    if (out.jobsSaved.length) await deps.ledger.add(step.key, out.jobsSaved.length);
-    step.into.push(...out.jobsSaved);
+
+    const report: DailyKindReport = { saved: [], considered: 0, rejected: 0, uncertain: 0, reasons: {} };
+    const index = JobIndex.from(existing);
+    const candidates: EvaluatedJob[] = [];
+    const seen = new Set<string>();
+    for (const job of found) {
+      if (classifyEmployment(job.title, job.employment) !== step.kind || seen.has(job.url) || index.duplicateOf(job)) continue;
+      seen.add(job.url);
+      report.considered += 1;
+      const evaluation = evaluateJob(job, step.kind);
+      if (evaluation.verdict === "reject") report.rejected += 1;
+      else if (evaluation.verdict === "uncertain") report.uncertain += 1;
+      if (evaluation.verdict !== "qualifies") for (const reason of evaluation.reasons) report.reasons[reasonKey(reason)] = (report.reasons[reasonKey(reason)] ?? 0) + 1;
+      if (evaluation.verdict === "qualifies" && evaluation.region) candidates.push({ job, evaluation: { ...evaluation, region: evaluation.region } });
+    }
+
+    const brain = brainOf(deps);
+    deps.runState ??= {};
+    let pool = candidates;
+    for (let round = 0; round < 3 && pool.length; round++) {
+      const assignments = allocate(pool, capacity, MEMBER_IDS, perBucket, perBucket);
+      if (!assignments.length) break;
+      const failed = new Set<JobCandidate>();
+      for (const a of assignments) {
+        const memberName = getMember(a.memberId)?.name ?? a.memberId;
+        const release = () => {
+          capacity.regionUsed[a.region] = (capacity.regionUsed[a.region] ?? 1) - 1;
+          capacity.memberUsed[a.memberId] = (capacity.memberUsed[a.memberId] ?? 1) - 1;
+          capacity.companiesUsed = new Set([...capacity.companiesUsed].filter((c) => c !== a.job.companyName.trim().toLowerCase()));
+          failed.add(a.job);
+        };
+        // Titles the rules cannot place are decided by the brain, within a per-run budget (as for every saved job).
+        if (ruleVerdict(a.job.title).verdict === "unsure") {
+          const left = deps.runState.relevanceChecksLeft ?? RELEVANCE_CHECKS_PER_RUN;
+          if (left <= 0) {
+            release();
+            continue;
+          }
+          deps.runState.relevanceChecksLeft = left - 1;
+          if (!(await brain.isRelevantJob(a.job)).relevant) {
+            release();
+            continue;
+          }
+        }
+        try {
+          const notes = [...a.evaluation.notes, ...(a.fit.matched.length ? [`matches ${memberName} skills: ${a.fit.matched.join(", ")}`] : [])];
+          const res = await deps.jobs.create(a.memberId, toJobInput(a.job, day, { assignedTo: memberName, notes, workplace: a.evaluation.workplace, pay: payLabel(a.job) }));
+          if (!("created" in res)) {
+            release();
+            continue;
+          }
+          index.add(a.job);
+          report.saved.push(a.job.title);
+          step.into.push(a.job.title);
+          await deps.ledger.add(keys.total, 1);
+          await deps.ledger.add(keys.region(a.region), 1);
+          await deps.ledger.add(keys.member(a.memberId), 1);
+        } catch (err) {
+          if (err instanceof Error && err.name === "ZodError") {
+            release();
+            continue;
+          }
+          throw err;
+        }
+      }
+      if (!failed.size) break;
+      pool = pool.filter((c) => !failed.has(c.job));
+    }
+    result.report[step.kind] = report;
+    const short = MEMBER_IDS.filter((m) => (capacity.memberUsed[m] ?? 0) < perBucket).map((m) => `${m} ${capacity.memberUsed[m] ?? 0}/${perBucket}`);
+    if (short.length) result.warnings.push(`${step.kind}: ${report.considered} listings, ${report.rejected} rejected, ${report.uncertain} uncertain; below target for ${short.join(", ")}`);
   }
   return result;
 }

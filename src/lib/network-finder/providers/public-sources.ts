@@ -167,6 +167,9 @@ export function parseRemoteInTechProfile(slug: string, md: string): CompanyCandi
   };
 }
 
+/** Time a remoteintech pass leaves for the rest of the run. */
+const REMOTEINTECH_MARGIN_MS = 15_000;
+
 export function createRemoteInTechSource(fetcher: PoliteFetcher, repo = "remoteintech/remote-jobs"): CompanySource {
   let slugs: string[] | null = null;
   return {
@@ -181,6 +184,8 @@ export function createRemoteInTechSource(fetcher: PoliteFetcher, repo = "remotei
       const companies: CompanyCandidate[] = [];
       let i = start;
       for (; i < slugs.length && companies.length < query.limit; i++) {
+        // One profile per second: stop in time and keep the place reached (28 Oct: an unfinished pass lost its cursor every call).
+        if (query.deadline && Date.now() > query.deadline - REMOTEINTECH_MARGIN_MS) break;
         const r = await fetcher.get(`https://raw.githubusercontent.com/${repo}/main/src/companies/${slugs[i]}.md`, "remoteintech", { accept: "text/plain" });
         if (r.status !== 200) continue;
         const c = parseRemoteInTechProfile(slugs[i], r.text);

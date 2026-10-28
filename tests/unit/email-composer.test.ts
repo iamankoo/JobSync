@@ -108,7 +108,7 @@ describe("personalisation", () => {
   it("job-description skills the member has are preferred and named as the role's focus", () => {
     const p = plan("anni", "Software Engineer", { job: { title: "Software Engineer", description: "Our stack is Redis, PostgreSQL and Docker." } });
     expect(p.skillsInJob).toEqual(expect.arrayContaining(["Redis", "PostgreSQL"]));
-    expect(fallbackBody(p)).toMatch(/role's focus on (Redis|PostgreSQL|Docker) and (Redis|PostgreSQL|Docker)/);
+    expect(fallbackBody(p)).toMatch(/Software Engineer role's emphasis on (Redis|PostgreSQL|Docker)/);
   });
 
   it("chooses 1–2 genuinely relevant highlights for the role", () => {

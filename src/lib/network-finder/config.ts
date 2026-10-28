@@ -54,8 +54,8 @@ export function loadNetworkFinderConfig(env: NodeJS.ProcessEnv = process.env): N
     // One company per call keeps each call well inside a 60 s function limit (pages are read 1/s per site).
     maxCompaniesPerTick: posInt(env.NETWORK_FINDER_MAX_COMPANIES_PER_TICK, 1),
     jobRecheckIntervalMs: posInt(env.NETWORK_FINDER_JOB_RECHECK_HOURS, 24) * 3_600_000,
-    dailyInternships: posInt(env.NETWORK_FINDER_DAILY_INTERNSHIPS, 5),
-    dailyFullTime: posInt(env.NETWORK_FINDER_DAILY_FULL_TIME, 5),
+    dailyInternships: posInt(env.NETWORK_FINDER_DAILY_INTERNSHIPS, 15),
+    dailyFullTime: posInt(env.NETWORK_FINDER_DAILY_FULL_TIME, 15),
     contactLimit: posInt(env.NETWORK_FINDER_CONTACT_LIMIT, 1000),
     profiles: perMember(env, "NETWORK_FINDER_PROFILE_", 1500),
     signatures: perMember(env, "NETWORK_FINDER_SIGNATURE_", 500),
