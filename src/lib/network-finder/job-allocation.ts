@@ -18,7 +18,7 @@ export const PER_MEMBER = 5;
 
 export interface MemberFit {
   memberId: MemberId;
-  /** Higher is better; 0 means the member's verified skills do not fit the job. */
+  /** Higher is better. 0 = the member's verified skills give no match ("insufficient"): this ranks them lower, it never excludes them. */
   score: number;
   /** The member's own verified skills that the job asks for (for the saved note). */
   matched: string[];
@@ -71,12 +71,14 @@ const companyKey = (j: JobCandidate) => j.companyName.trim().toLowerCase();
 
 /**
  * Greedy best-first assignment: the best (official source, then fit) job/member pairs first, each job once, each
- * company once, never beyond 5 per region or 5 per member. Candidates a member does not fit are never assigned,
- * so buckets can stay below 5.
+ * company once, never beyond 5 per region or 5 per member. ELIGIBILITY IS THE SAME FOR EVERY MEMBER: a job in
+ * `candidates` already passed the common rules (evaluateJob), whatever a member's profile holds. A member's verified
+ * skills only RANK the pairs (best fit first) and are never a condition: an empty or partial profile is a low match,
+ * not an exclusion. Buckets stay below 5 only when too few jobs pass the common rules.
  */
 export function allocate(candidates: readonly EvaluatedJob[], capacity: Capacity, members: readonly MemberId[] = MEMBER_IDS, perRegion = PER_REGION, perMember = PER_MEMBER): Assignment[] {
   const pairs = candidates.flatMap((c) =>
-    members.map((m) => ({ c, fit: memberFit(m, c.job) })).filter((p) => p.fit.score > 0).map((p) => ({ ...p, rank: TIER_RANK[c.evaluation.tier] * 1000 + p.fit.score + (c.evaluation.payVerified ? 25 : 0) })),
+    members.map((m) => ({ c, fit: memberFit(m, c.job) })).map((p) => ({ ...p, rank: TIER_RANK[c.evaluation.tier] * 1000 + p.fit.score + (c.evaluation.payVerified ? 25 : 0) })),
   );
   pairs.sort((a, b) => b.rank - a.rank);
   const regionLeft = (r: Region) => perRegion - (capacity.regionUsed[r] ?? 0);

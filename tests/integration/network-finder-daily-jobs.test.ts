@@ -108,14 +108,15 @@ describe("daily allocation: 5 US + 5 India + 5 other, 5 per member", () => {
     }
   });
 
-  it("Rishii has no verified skills yet, so he is given nothing; the others keep their own 5 (quality before quota)", async () => {
+  it("an empty profile does not change eligibility: Rishii (no verified skills) gets his 5 from the same pool, marked as a low skill match", async () => {
     const { deps, jobSource } = setup();
     jobSource.searchResults = pool("internship");
     const day = await runDailyJobSearch(deps);
     const rows = kindRows("Internship");
-    expect(counts(rows, (r) => r[11])).toEqual({ anni: 5, lukky: 5 });
-    expect(day.internships).toHaveLength(10);
-    expect(day.warnings.join()).toMatch(/below target for rishii 0\/5/);
+    expect(counts(rows, (r) => r[11])).toEqual({ anni: 5, lukky: 5, rishii: 5 });
+    expect(day.internships).toHaveLength(15);
+    for (const r of rows.filter((x) => x[11] === "rishii")) expect(r[10]).toMatch(/low skill match for Rishii/);
+    expect(day.warnings.filter((w) => w.startsWith("internship"))).toEqual([]);
   });
 
   it("each job is saved under the member it fits, with who and why in the note", async () => {
@@ -239,10 +240,76 @@ describe("official company URL first; duplicates never saved", () => {
     jobSource.searchResults = pool("full_time", 4);
     await runDailyJobSearch(deps);
     const first = jobs().length;
-    expect(first).toBe(10);
+    expect(first).toBe(12);
     deps.now = () => new Date(NOON_IST + 24 * 3_600_000);
     jobSource.searchResults = pool("full_time", 4);
     await runDailyJobSearch(deps);
-    expect(jobs().length).toBe(first + 10);
+    expect(jobs().length).toBe(first + 12);
+  });
+});
+
+describe("REGRESSION: eligibility is the same for every member, whatever their profile holds", () => {
+  type Profiles = typeof MEMBER_EMAIL_PROFILES;
+  const states: Record<string, (real: Profiles[keyof Profiles]) => Profiles[keyof Profiles]> = {
+    complete: (real) => ({ ...real, skills: ["javascript", "typescript", "react", "nextjs", "nodejs", "express", "mongodb", "python", "rest-apis", "llm-integration", "rag"] }),
+    partial: (real) => ({ ...real, skills: ["javascript", "python"] }),
+    empty: (real) => ({ ...real, skills: [], highlights: [] }),
+  };
+  const withProfiles = async <T,>(state: string, fn: () => Promise<T>): Promise<T> => {
+    const saved = { ...MEMBER_EMAIL_PROFILES };
+    for (const m of ["anni", "lukky", "rishii"] as const) (MEMBER_EMAIL_PROFILES as Record<string, unknown>)[m] = states[state](saved[m]);
+    try {
+      return await fn();
+    } finally {
+      for (const m of ["anni", "lukky", "rishii"] as const) (MEMBER_EMAIL_PROFILES as Record<string, unknown>)[m] = saved[m];
+    }
+  };
+  /** 15 genuinely qualifying internships (5 per country group) plus listings that fail one common rule each. */
+  const fixedPool = () => {
+    seq = 1000;
+    const good = (["US", "IN", "OTHER"] as const).flatMap((r) => Array.from({ length: 5 }, () => opening(r, "internship", { title: "Software Engineering Intern", description: "Freshers welcome. Backend services and tooling." })));
+    const bad = [
+      opening("US", "internship", { workplace: "onsite", remote: false, location: "New York, NY" }),
+      opening("US", "internship", { description: "Freshers welcome. Minimum 8 CGPA." }),
+      opening("IN", "internship", { description: "Freshers welcome. No active backlogs." }),
+      opening("OTHER", "internship", { description: "Only the 2025 batch." }),
+      opening("OTHER", "internship", { salary: { max: 5_000, currency: "INR", period: "month" } }),
+    ];
+    return { good, bad, all: [...good, ...bad] };
+  };
+
+  it.each(["complete", "partial", "empty"])("%s profiles: the same jobs qualify and the same are rejected; 5 US + 5 India + 5 other, 5 per member", async (state) => {
+    await withProfiles(state, async () => {
+      const { deps, jobSource } = setup();
+      const { good, all } = fixedPool();
+      jobSource.searchResults = all;
+      const day = await runDailyJobSearch(deps);
+      const rows = kindRows("Internship");
+      expect(new Set(rows.map((r) => r[8]))).toEqual(new Set(good.map((g) => g.url))); // exactly the qualifying 15, no more, no fewer
+      expect(counts(rows, (r) => regionOf(r[7]))).toEqual({ US: 5, IN: 5, OTHER: 5 });
+      expect(counts(rows, (r) => r[11])).toEqual({ anni: 5, lukky: 5, rishii: 5 });
+      expect(day.report!.internship).toMatchObject({ considered: 20, rejected: 5, uncertain: 0 });
+    });
+  });
+
+  it("the verdict for each job is identical under complete, partial and empty profiles", async () => {
+    const { all } = fixedPool();
+    const { evaluateJob } = await import("@/lib/network-finder/job-eligibility");
+    const verdicts = async (state: string) => withProfiles(state, async () => all.map((j) => JSON.stringify(evaluateJob(j, "internship"))));
+    const complete = await verdicts("complete");
+    expect(await verdicts("partial")).toEqual(complete);
+    expect(await verdicts("empty")).toEqual(complete);
+  });
+
+  it("the unverified-skills rule still holds: an empty profile gains no skills, and the note says the match is low", async () => {
+    await withProfiles("empty", async () => {
+      const { deps, jobSource } = setup();
+      jobSource.searchResults = [opening("US", "internship", { description: "Freshers welcome. React, Node.js and MongoDB." })];
+      await runDailyJobSearch(deps);
+      const [row] = jobs();
+      expect(row[10]).toMatch(/low skill match/);
+      expect(row[10]).not.toMatch(/matches \w+ skills:/);
+      expect(MEMBER_EMAIL_PROFILES.anni.skills).toEqual([]);
+    });
   });
 });

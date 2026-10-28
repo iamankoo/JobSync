@@ -30,8 +30,9 @@ member** (Anni/Lukky/Rishii), assigned by each member's VERIFIED skills (never t
 on-site ₹50k/mo, full-time ₹10 LPA; undisclosed pay allowed only for explicit-fresher listings on an official board,
 noted on the job), paid portals rejected. Quality beats quota. Official company boards (Greenhouse/Lever/**Ashby**) rank
 first, then LinkedIn (**not automated** — terms forbid it), then Remote OK/Arbeitnow. One search per kind per hour.
-**Rishii has no verified skills yet, so he currently receives no jobs** — add his resume facts to
-`member-email-profiles.ts` to enable his 5. Env `NETWORK_FINDER_DAILY_INTERNSHIPS/FULL_TIME` default 15 (not set in Prod).
+**Eligibility is member-independent**: a member's verified skills only RANK job/member pairs and add a note ("low skill
+match" when insufficient); an empty/partial profile never excludes anyone, so 5/5/5 works for all three. Rishii's
+profile is still empty, so his jobs are low skill matches and his emails make no skill claims. Env `NETWORK_FINDER_DAILY_INTERNSHIPS/FULL_TIME` default 15 (not set in Prod).
 
 **Drafts now:** `company-research.ts` reads the company's OWN site (meta description, verbatim) and careers board; each
 member is pointed at the real opening that fits their verified skills (`pickJobForMember`); no verifiable opening →
