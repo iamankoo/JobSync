@@ -1,6 +1,6 @@
 # JobSync — Session Handoff Summary
 
-> Read this first in a new session. Last updated **2026-10-28, ~03:40 IST**.
+> Read this first in a new session. Last updated **2026-10-28, ~21:00 IST** (evening update below is the newest).
 > Items marked **[VERIFIED]** were checked in Production/the sheet; **[NEEDS VERIFICATION]** were not yet confirmed;
 > **[USER-REPORTED]** were confirmed by the user, not by me.
 
@@ -42,6 +42,26 @@ now saved BEFORE their contacts' drafts. Tests: `network-finder-personalised-dra
 
 ---
 
+**Final state of 28 Oct:** PR #9 (`c0dd859`, merge `03f13f2`) = stall fix + company-specific drafts + 15/day jobs;
+PR #10 (`22c486b`, merge `700a87b`) = eligibility identical for every member (skills only rank). Both live.
+Tests: typecheck + lint clean, **1,127 vitest passing (67 files)**; Playwright isolated connections+profile 48 passed / 10
+skipped (run for PR #9, no UI change since). Post-deploy: cron calls return 200 (no 504/409).
+
+**Decisions to remember:** "15/day" was read as 15 PER KIND (internship and full-time) = up to 30/day — unconfirmed by the
+user (set `NETWORK_FINDER_DAILY_*` to 8/7 for 15 total). LinkedIn stays unautomated. Never loosen filters to fill quota.
+Rishii's profile is empty (low skill matches, no-claims emails) until his resume facts are added to `member-email-profiles.ts`.
+
+**Next session, in order:**
+1. Read this file. One read only of the prod sheet (no polling): check `Jobs` for rows "Found by Network Finder" today,
+   per-member counts, and NF_State `ledger:…#jobs-*` keys; confirm eligible jobs really land.
+2. Check Vercel logs (1 h retention only) for `/api/cron/network-finder` status codes in an active window.
+3. Sheets 429s still occur after the fix (calls end 200 but retry a lot). Untriaged: likely NF cycle full-table
+   `fresh: true` reads. Consider caching/reducing reads per cycle.
+4. Supply of companies is thin (HN + remoteintech only, ~5/day). New permitted sources needed for 50/day.
+5. Do not touch cron-job.org unless proven wrong.
+
+---
+
 ## ⛔ STOPPED HERE FOR TODAY (older note, kept for history)
 
 Tomorrow, in this order:
@@ -62,7 +82,7 @@ Tomorrow, in this order:
 
 | Item | Value |
 |---|---|
-| Production deployment | `dpl_6kQWcB6sMUGtG5Tp2JbKpaGMuD5x` — `jobsbyarillabs-gw0h4kkdm-iamankoos-projects.vercel.app` — **Ready** [VERIFIED 03:20 IST] |
+| Production deployment | **`main` @ `700a87b`** (PR #10) — `jobsbyarillabs-k32r9sqbt-iamankoos-projects.vercel.app` — **Ready** [VERIFIED ~20:50 IST]. (Older table rows below are from 03:20 IST.) |
 | Production alias | `https://jobsbyarillabs.vercel.app` → that deployment [VERIFIED] |
 | Built from | `main` @ `194dd83` (merge of PR #7, commit `393bbc9`) [VERIFIED via GitHub deployment record] |
 | Feature branch | `profile-gmail-network-finder` (all work happens here; merged to `main` via PRs) |
@@ -329,6 +349,9 @@ Internal short names stay **Anni, Lukky, Rishii** in the app; drafts use full na
 | Automatic drafting of all new connections into all 3 mailboxes (button removed); Profile Photos library | `6347a1f` | #5 | `7effe32` |
 | Structured email templates, 200-skill taxonomy, verified member facts, validation | `9ed89bd` | #6 | `699cd6e` |
 | NF scheduling fix: queued companies before rediscovery | `393bbc9` | #7 | `194dd83` |
+| Handoff summary docs | `ae0cd39` | #8 | `aed4d0a` |
+| Stall fix (retry deadline, lock TTL, deadline-aware discovery), company-specific drafts, strict 15/day jobs | `c0dd859` | #9 | `03f13f2` |
+| Eligibility identical for every member; skills only rank | `22c486b` | #10 | `700a87b` |
 
 Earlier (before these PRs): NF code first deployed from a working tree (2026-10-27), NF Sheets tabs created
 (`NF_GmailAccounts`, `NF_Drafts`, `NF_Companies`, `NF_Queue`, `NF_State`, `NF_Selections`), cron-job.org job created by
