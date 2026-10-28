@@ -277,7 +277,7 @@ describe("batch scheduler", () => {
 describe("config and mapping", () => {
   it("is off by default; owners default to Anni and only accept real members", () => {
     const c = loadNetworkFinderConfig({} as NodeJS.ProcessEnv);
-    expect(c).toMatchObject({ enabled: false, contactOwner: "anni", jobOwner: "anni", batchSize: 10, peoplePerCompany: 3, dailyInternships: 5, dailyFullTime: 5 });
+    expect(c).toMatchObject({ enabled: false, contactOwner: "anni", jobOwner: "anni", batchSize: 10, peoplePerCompany: 3, dailyInternships: 15, dailyFullTime: 15 });
     expect(loadNetworkFinderConfig({ NETWORK_FINDER_ENABLED: "true", NETWORK_FINDER_CONTACT_OWNER: "lukky", NETWORK_FINDER_JOB_OWNER: "mallory" } as unknown as NodeJS.ProcessEnv)).toMatchObject({ enabled: true, contactOwner: "lukky", jobOwner: "anni" });
   });
 

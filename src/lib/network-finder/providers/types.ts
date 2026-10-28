@@ -16,6 +16,8 @@ export interface DiscoverQuery {
   limit: number;
   /** Opaque paging cursor returned by the previous call, if any. */
   cursor?: string;
+  /** Epoch ms by which the run must wrap up; slow sources stop early and return the cursor reached so far. */
+  deadline?: number;
 }
 
 export interface DiscoverPage {
@@ -89,6 +91,10 @@ export interface JobSearchQuery {
   keywords: readonly string[];
   employment: "internship" | "full_time";
   limit: number;
+  /** Companies already known to us, whose OFFICIAL boards a board source searches. */
+  companies?: readonly QualifiedCompany[];
+  /** Epoch ms by which the run must wrap up. */
+  deadline?: number;
 }
 
 export interface JobSource {

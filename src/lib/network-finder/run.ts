@@ -1,4 +1,5 @@
 import "server-only";
+import { setSheetsRetryDeadline } from "@/lib/google-sheets/client";
 import { ApolloPool, enabledApolloAccounts } from "./apollo-pool";
 import { loadNetworkFinderConfig, type NetworkFinderConfig } from "./config";
 import { ApolloPoolExhausted, ProviderError } from "./errors";
@@ -7,6 +8,7 @@ import { PoliteFetcher } from "./http/polite-fetch";
 import { recheckCompanyJobs, runBatchTick, runDailyJobSearch, runPendingDrafts, type PipelineDeps, type TickResult } from "./pipeline";
 import { createApolloProvider } from "./providers/apollo";
 import { createApolloOrgProvider } from "./providers/apollo-org";
+import { createCompanyResearcher } from "./company-research";
 import { createCompanyFactsFinder } from "./providers/company-facts";
 import { createArbeitnowSource, createCompanyBoardSource, createRemoteOkSource } from "./providers/job-boards";
 import { createNemotronBrain, createNemotronCompanyFactsExtractor, createNemotronPeopleExtractor, loadNemotronConfig } from "./providers/nemotron";
@@ -18,6 +20,14 @@ import type { CompanyCandidate } from "./types";
 
 /** The cron function may run 60 s; the run wraps up with this much margin. */
 export const RUN_BUDGET_MS = 50_000;
+/**
+ * How long the run lock holds. A run that Vercel kills at 60 s never reaches its `finally`, so the lock must expire
+ * soon after the longest possible run — NOT minutes later (28 Oct: a 5-minute TTL made every killed run block the
+ * next scheduled call with 409, so only about one call in three could do any work).
+ */
+export const RUN_LOCK_TTL_MS = 75_000;
+/** Latest moment (after the run starts) the lock release may still retry a rate-limited write. */
+const RELEASE_WINDOW_MS = 57_000;
 
 type Enricher = (c: CompanyCandidate) => Promise<CompanyCandidate | null>;
 type FactsFinder = Pick<ReturnType<typeof createCompanyFactsFinder>, "find">;
@@ -64,7 +74,8 @@ export function buildRealDeps(config: NetworkFinderConfig = loadNetworkFinderCon
   const org = pool ? createApolloOrgProvider(pool) : undefined;
   const apolloEnrich: Enricher | undefined = org ? (c) => (c.website ? org.enrichByDomain(new URL(c.website).hostname.replace(/^www\./, ""), c.source, c.sourceUrl) : Promise.resolve(null)) : undefined;
   const facts = createCompanyFactsFinder(fetcher, nemotron ? createNemotronCompanyFactsExtractor(nemotron) : null);
-  return {
+  const boards = createCompanyBoardSource(fetcher);
+  const built: PipelineDeps & { stores: ReturnType<typeof createSheetsStores> } = {
     stores,
     config,
     sources: [createHnHiringSource(fetcher), createRemoteInTechSource(fetcher)],
@@ -72,7 +83,8 @@ export function buildRealDeps(config: NetworkFinderConfig = loadNetworkFinderCon
     ...(pool ? { pool, contacts: createApolloProvider() } : {}),
     enrichCompany: chainEnrichers(apolloEnrich, facts),
     ...(nemotron ? { brain: createNemotronBrain(nemotron) } : {}),
-    jobSources: [createCompanyBoardSource(fetcher), createRemoteOkSource(fetcher), createArbeitnowSource(fetcher)],
+    jobSources: [boards, createRemoteOkSource(fetcher), createArbeitnowSource(fetcher)],
+    research: createCompanyResearcher(fetcher, boards, { deadline: () => built.runState?.deadline }),
     queue: stores.queue,
     registry: stores.registry,
     ledger: stores.ledger,
@@ -83,6 +95,7 @@ export function buildRealDeps(config: NetworkFinderConfig = loadNetworkFinderCon
     jobs: existingJobs,
     runState: {},
   };
+  return built;
 }
 
 export interface CycleResult {
@@ -101,8 +114,10 @@ export interface CycleResult {
 export async function runScheduledCycle(deps: PipelineDeps & { stores: ReturnType<typeof createSheetsStores> } = buildRealDeps(), budgetMs = RUN_BUDGET_MS): Promise<CycleResult> {
   if (!deps.config.enabled) return { ran: false, reason: "disabled", errors: [] };
   const at = Date.now();
-  if (!(await deps.stores.acquireRunLock(at, 5 * 60_000))) return { ran: false, reason: "busy", errors: [] };
+  if (!(await deps.stores.acquireRunLock(at, RUN_LOCK_TTL_MS))) return { ran: false, reason: "busy", errors: [] };
   deps.runState = { ...deps.runState, deadline: at + budgetMs };
+  // Rate-limited Sheets calls stop retrying at the run's deadline instead of sleeping past the function's time limit.
+  setSheetsRetryDeadline(at + budgetMs);
   const result: CycleResult = { ran: true, errors: [] };
   const step = async <T>(name: string, fn: () => Promise<T>): Promise<T | undefined> => {
     try {
@@ -122,7 +137,9 @@ export async function runScheduledCycle(deps: PipelineDeps & { stores: ReturnTyp
     if (hasTime(15_000)) result.dailyJobs = await step("daily-jobs", () => runDailyJobSearch(deps));
     if (hasTime(15_000)) result.recheck = await step("recheck", () => recheckCompanyJobs(deps, 2));
   } finally {
+    setSheetsRetryDeadline(at + RELEASE_WINDOW_MS);
     await deps.stores.releaseRunLock().catch(() => undefined);
+    setSheetsRetryDeadline(null);
   }
   return result;
 }

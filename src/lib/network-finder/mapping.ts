@@ -74,7 +74,9 @@ export interface JobInput {
   company: string;
   jobRole: string;
   jobType: "Internship" | "Full-time" | "Part-time" | "Contract";
-  workMode?: "Remote";
+  workMode?: "Remote" | "Hybrid" | "On-site";
+  experience?: string;
+  stipendSalary?: string;
   location: string;
   jobUrl: string;
   description?: string;
@@ -83,14 +85,16 @@ export interface JobInput {
 const JOB_TYPE = { internship: "Internship", full_time: "Full-time", part_time: "Part-time", contract: "Contract" } as const;
 
 /** A discovered posting as a new Jobs row. Location falls back to "Remote" / "Not specified", never a guess. */
-export function toJobInput(j: JobCandidate, discoveredOn: string): JobInput {
+export function toJobInput(j: JobCandidate, discoveredOn: string, extra: { assignedTo?: string; notes?: readonly string[]; workplace?: "remote" | "hybrid" | "onsite" | null; pay?: string } = {}): JobInput {
   const location = clip(j.location, 120) || (j.remote ? "Remote" : "Not specified");
-  const source = `Found by Network Finder via ${j.source} on ${discoveredOn}.`;
+  const source = `Found by Network Finder via ${j.source} on ${discoveredOn}.${extra.assignedTo ? ` Best match for ${extra.assignedTo}.` : ""}${extra.notes?.length ? ` ${extra.notes.join("; ")}.` : ""}`;
+  const mode = extra.workplace === "hybrid" ? ("Hybrid" as const) : extra.workplace === "onsite" ? ("On-site" as const) : extra.workplace === "remote" || j.remote ? ("Remote" as const) : undefined;
   return {
     company: clip(j.companyName, 120),
     jobRole: clip(j.title, 160),
     jobType: JOB_TYPE[classifyEmployment(j.title, j.employment)],
-    ...(j.remote ? { workMode: "Remote" as const } : {}),
+    ...(mode ? { workMode: mode } : {}),
+    ...(extra.pay ? { stipendSalary: clip(extra.pay, 80) } : {}),
     location,
     jobUrl: j.url.trim(),
     description: clip(`${source}${j.description ? ` ${j.description}` : ""}`, 5000),

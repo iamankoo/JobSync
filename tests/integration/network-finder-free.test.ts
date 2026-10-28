@@ -496,7 +496,7 @@ describe("1,000-contact limit", () => {
     expect(notifier.sent[0].title).toBe("Network Finder paused: 3 connections");
     expect(notifier.sent[0].body).toContain("Nothing was exported or deleted");
     expect(conns().map((r) => r.join("|"))).toEqual(before);
-    jobSource.searchResults = [mockJob("Intern Co", 1, { title: "Software Engineering Intern" })];
+    jobSource.searchResults = [mockJob("Intern Co", 1, { title: "Software Engineering Intern", source: "Greenhouse", description: "Freshers welcome. React and Node.js.", salary: { max: 60_000, currency: "INR", period: "month" }, workplace: "remote" })];
     expect((await runDailyJobSearch(deps)).internships).toEqual(["Software Engineering Intern"]);
   });
 });
@@ -530,9 +530,9 @@ describe("job discovery from public boards", () => {
     expect(jobs()).toHaveLength(1);
   });
 
-  it("daily search: 5 internships + 5 full-time from Remote OK / Arbeitnow, remote first, one per company, credited to the source", async () => {
+  it("daily search from Remote OK / Arbeitnow: only listings that qualify, one per company, credited to the source", async () => {
     const { deps } = setup();
-    const remoteok = [{ legal: "API terms" }, ...Array.from({ length: 6 }, (_, i) => ({ id: i, company: `ROK Co ${i}`, position: i < 3 ? "Software Engineering Intern" : "Junior Backend Engineer", url: `https://remoteOK.com/remote-jobs/${i}`, tags: [], location: "" }))];
+    const remoteok = [{ legal: "API terms" }, ...Array.from({ length: 6 }, (_, i) => ({ id: i, company: `ROK Co ${i}`, position: i < 3 ? "Software Engineering Intern" : "Junior Backend Engineer", url: `https://remoteOK.com/remote-jobs/${i}`, tags: [], location: i % 2 === 0 ? "United States" : "", description: "<p>Freshers welcome. React and Node.js.</p>", salary_min: 60_000, salary_max: i < 3 ? 70_000 : 90_000 }))];
     const arbeitnow = { data: [
       ...Array.from({ length: 4 }, (_, i) => ({ slug: `a${i}`, company_name: `AN Co ${i}`, title: "Data Analyst Intern", url: `https://www.arbeitnow.com/jobs/a${i}`, remote: false, job_types: ["internship"], location: "Berlin" })),
       ...Array.from({ length: 4 }, (_, i) => ({ slug: `b${i}`, company_name: `AN FT ${i}`, title: "Frontend Developer", url: `https://www.arbeitnow.com/jobs/b${i}`, remote: i === 0, job_types: ["full-time"], location: "Munich" })),
@@ -543,13 +543,14 @@ describe("job discovery from public boards", () => {
     }).fetchFn, () => clock);
     deps.jobSources = [createRemoteOkSource(f), createArbeitnowSource(f)];
     const day = await runDailyJobSearch(deps);
-    expect(day.internships).toHaveLength(5);
-    expect(day.fullTime).toHaveLength(5);
-    // Remote first: the three Remote OK internships come before the on-site Berlin ones.
-    expect(jobs().filter((j) => j[3] === "Internship").slice(0, 3).every((j) => j[4] === "Remote")).toBe(true);
-    expect(new Set(jobs().map((j) => j[1])).size).toBe(10);
-    expect(jobs().every((j) => j[11] === "anni")).toBe(true);
-    expect(jobs().filter((j) => j[10].includes("via Remote OK")).length).toBeGreaterThan(0);
+    // Only listings whose country, remote work and pay are stated and qualify are saved: the Berlin on-site / pay-less
+    // Arbeitnow listings and Remote OK listings without a country are not.
+    expect(day.internships).toHaveLength(2); // Remote OK listings 0 and 2 name the United States
+    expect(day.fullTime).toHaveLength(1); // listing 4
+    expect(jobs().every((j) => j[4] === "Remote" && j[7] === "United States")).toBe(true);
+    expect(new Set(jobs().map((j) => j[1])).size).toBe(3);
+    expect(jobs().every((j) => ["anni", "lukky"].includes(j[11]))).toBe(true);
+    expect(jobs().every((j) => j[10].includes("via Remote OK"))).toBe(true);
     expect(await runDailyJobSearch(deps)).toMatchObject({ internships: [], fullTime: [] });
   });
 });

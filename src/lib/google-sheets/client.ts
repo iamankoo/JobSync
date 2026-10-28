@@ -96,6 +96,18 @@ const realSleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 let sleepImpl = realSleep;
 const sleep = (ms: number) => sleepImpl(ms);
 
+let retryDeadline: number | null = null;
+
+/**
+ * A hard stop for retry sleeping (epoch ms), set by long-running scheduled work. Once a retry's wait would pass it,
+ * the error is thrown at once instead of sleeping beyond the function's time limit (28 Oct: five rate-limited
+ * retries per call kept every Network Finder run alive until Vercel killed it at 60 s, leaving its lock held).
+ * null removes the limit.
+ */
+export function setSheetsRetryDeadline(deadline: number | null): void {
+  retryDeadline = deadline;
+}
+
 /** Test hook: replace the backoff sleep (null restores real waiting). */
 export function setRetrySleepForTesting(fn: ((ms: number) => Promise<void>) | null): void {
   sleepImpl = fn ?? realSleep;
@@ -129,8 +141,10 @@ export async function withRetry<T>(
       const mapped = mapGoogleError(err);
       const limit = mapped.code === "rate_limited" ? RATE_LIMIT_MAX_ATTEMPTS : MAX_ATTEMPTS;
       if (!retryOn(mapped) || attempt >= limit - 1) throw mapped;
+      const wait = backoffMs(mapped, attempt, random);
+      if (retryDeadline !== null && Date.now() + wait > retryDeadline) throw mapped;
       console.warn(`[sheets] ${mapped.code}, retrying (attempt ${attempt + 2} of ${limit})`);
-      await sleepFn(backoffMs(mapped, attempt, random));
+      await sleepFn(wait);
     }
   }
 }

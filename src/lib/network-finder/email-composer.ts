@@ -89,6 +89,11 @@ export const wordCount = (s: string) => (s.match(/[A-Za-z0-9][A-Za-z0-9'’.+#/-
  * decides if it clearly points one way (≥ 2 keyword hits); otherwise the default (Software Engineer).
  */
 export function selectTemplate(title?: string, description?: string): TemplateId {
+  return matchTemplate(title, description) ?? DEFAULT_TEMPLATE;
+}
+
+/** The template the title (or a clear description) points to, or null when nothing does (no default applied). */
+export function matchTemplate(title?: string, description?: string): TemplateId | null {
   const t = norm(title ?? "");
   const scored = EMAIL_TEMPLATES.map((tpl) => ({ tpl, best: Math.max(0, ...tpl.keywords.filter((k) => mentions(t, k)).map((k) => k.length)) })).filter((x) => x.best > 0);
   const specific = scored.filter((x) => x.tpl.id !== "software");
@@ -99,18 +104,24 @@ export function selectTemplate(title?: string, description?: string): TemplateId
     const hits = EMAIL_TEMPLATES.filter((tpl) => tpl.id !== "software").map((tpl) => ({ id: tpl.id, n: tpl.keywords.filter((k) => mentions(d, k)).length })).sort((a, b) => b.n - a.n);
     if (hits[0]?.n >= 2 && hits[0].n > (hits[1]?.n ?? 0)) return hits[0].id;
   }
-  return DEFAULT_TEMPLATE;
+  return null;
 }
 
 const companyKey = (s: string) => s.toLowerCase().replace(/\b(inc|llc|ltd|limited|pvt|private|corp|corporation|co|gmbh|technologies|technology|labs?)\b/g, "").replace(/[^a-z0-9]/g, "");
 
+/** The company's open jobs in Jobs (early-career relevant first, newest first). */
+export function jobsForCompany(jobs: readonly Job[], companyName: string): EmailJob[] {
+  const key = companyKey(companyName);
+  if (!key) return [];
+  return jobs
+    .filter((j) => companyKey(j.company) === key)
+    .sort((a, b) => Number(matchRole(b.jobRole).relevant) - Number(matchRole(a.jobRole).relevant) || b.addedAt.localeCompare(a.addedAt))
+    .map((j) => ({ title: j.jobRole, ...(j.description ? { description: j.description } : {}), internship: j.jobType === "Internship", location: j.location, ...(j.workMode ? { workMode: j.workMode } : {}) }));
+}
+
 /** The company's best open job in Jobs (relevant for early-career roles, newest first), or undefined. */
 export function jobForCompany(jobs: readonly Job[], companyName: string): EmailJob | undefined {
-  const key = companyKey(companyName);
-  if (!key) return undefined;
-  const mine = jobs.filter((j) => companyKey(j.company) === key).sort((a, b) => Number(matchRole(b.jobRole).relevant) - Number(matchRole(a.jobRole).relevant) || b.addedAt.localeCompare(a.addedAt));
-  const j = mine[0];
-  return j ? { title: j.jobRole, ...(j.description ? { description: j.description } : {}), internship: j.jobType === "Internship", location: j.location, ...(j.workMode ? { workMode: j.workMode } : {}) } : undefined;
+  return jobsForCompany(jobs, companyName)[0];
 }
 
 export const isInternship = (job?: EmailJob) => Boolean(job && (job.internship || /\bintern(ship)?\b/i.test(job.title)));
@@ -258,11 +269,16 @@ export function composeFallback(p: EmailPlan): string[] {
 
   const fit: string[] = [];
   if (p.valueProposition) fit.push(p.valueProposition);
-  if (p.skillsInJob.length >= 2) fit.push(`The role's focus on ${listJoin(p.skillsInJob.slice(0, 2))} matches the work I have been doing.`);
+  // The job's own requirements, named only where the member really has the skill.
+  if (p.jobTitle && p.skillsInJob.length >= 1) fit.push(`The ${cleanTitle(p.jobTitle)} role's emphasis on ${listJoin(p.skillsInJob.slice(0, 3))} matches the work I have been doing.`);
+  else if (p.skillsInJob.length >= 2) fit.push(`The role's focus on ${listJoin(p.skillsInJob.slice(0, 2))} matches the work I have been doing.`);
   else if (!p.valueProposition) fit.push(`I am keen to build on my experience in this area and to learn from an experienced team.`);
   paras.push(fit.join(" "));
 
-  let motivation = `What particularly interests me about ${p.company} is ${p.motivation}. I would welcome the opportunity to contribute to ${p.contributeTo} while continuing to grow as an engineer.`;
+  // Company-specific reason: the company's own words when known, otherwise a neutral sentence (never invented).
+  let motivation = p.companyContext
+    ? `What draws me to ${p.company} is its work. Your website describes it this way: "${p.companyContext.replace(/["“”]/g, "").replace(/[.!?]+$/, "")}." I would welcome the opportunity to contribute to ${p.contributeTo} while continuing to grow as an engineer.`
+    : `What particularly interests me about ${p.company} is ${p.motivation}. I would welcome the opportunity to contribute to ${p.contributeTo} while continuing to grow as an engineer.`;
   if (p.mentionRemote) motivation += ` I am based in ${p.location} and comfortable working remotely.`;
   paras.push(motivation);
 
@@ -297,6 +313,33 @@ const BANNED = [
   "perfect fit", "ideal candidate", "thrilled to apply", "exciting opportunity", "innovative company", "cutting-edge", "leverage", "leveraging",
   "passionate about leveraging", "i am confident my skills", "synergy", "rockstar", "ninja", "world-class",
 ];
+/** Claims of knowing the company that nothing in the data supports. */
+const INVENTED_FAMILIARITY = /\b(congratulations|congrats|i (have been|am|was) (following|a (long-?time )?(user|customer|fan))|i (use|used|tried|tested) your (product|app|platform|tool)|your (recent|latest|new) (launch|release|funding|announcement|product|blog post|article)|i (saw|read|noticed|came across) your (recent|latest|new))\b/i;
+
+/** Role names the email states ("…the Frontend Engineer position / role / internship"). */
+export function namedRoles(content: string): string[] {
+  const out: string[] = [];
+  for (const m of content.matchAll(/\b(?:the|a|an)\s+((?:[A-Z][A-Za-z0-9+#./&-]*)(?:\s+(?:[A-Z][A-Za-z0-9+#./&-]*|and|of|&|\/)){0,5})\s+(?:position|role|internship|opening|vacancy)\b/g)) out.push(m[1].trim());
+  return out;
+}
+const roleKey = (s: string) => s.toLowerCase().replace(/\bintern(ship)?\b/g, "").replace(/[^a-z0-9]/g, "");
+const sameRole = (named: string, role: string) => {
+  const a = roleKey(named);
+  const b = roleKey(role);
+  return !a || !b || a === b || a.includes(b) || b.includes(a);
+};
+
+/** True when `a` and `b` share at least `n` content words (4+ letters). */
+function sharesWords(a: string, b: string, n: number, exclude: string): boolean {
+  const skip = new Set(exclude.toLowerCase().match(/[a-z]{4,}/g) ?? []);
+  const words = (s: string) => new Set((s.toLowerCase().match(/[a-z]{4,}/g) ?? []).filter((w) => !STOP.has(w) && !skip.has(w)));
+  const wb = words(b);
+  let hits = 0;
+  for (const w of words(a)) if (wb.has(w) && ++hits >= n) return true;
+  return wb.size < n;
+}
+const STOP = new Set(["with", "that", "this", "your", "from", "have", "their", "they", "into", "what", "will", "them", "been", "more", "also", "such", "than", "help", "make", "build", "team", "work", "company", "platform", "product", "products"]);
+
 const UNVERIFIABLE_COMPANY = /\b(founded in|funding|raised|series [a-e]\b|valuation|unicorn|award-winning|awarded|\d+\s*(million|billion)|\$\s?\d)/i;
 
 /** Every problem that must stop a draft from being saved as written (empty = OK). */
@@ -321,6 +364,17 @@ export function validateEmail(body: string, p: EmailPlan): string[] {
   const lower = content.toLowerCase();
   for (const b of BANNED) if (lower.includes(b)) problems.push(`banned phrase: ${b}`);
   if (UNVERIFIABLE_COMPANY.test(content) && !(p.companyContext && UNVERIFIABLE_COMPANY.test(p.companyContext))) problems.push("unverified company claim");
+  if (INVENTED_FAMILIARITY.test(content)) problems.push("invented familiarity with the company");
+  // The role: when the job is known, the email must name exactly that job, and no other role.
+  if (p.jobTitle) {
+    const role = cleanTitle(p.jobTitle);
+    if (!mentions(content, role)) problems.push("role title missing");
+    for (const named of namedRoles(content)) if (!sameRole(named, role)) problems.push(`wrong role: ${named}`);
+    if (!subjectFor(p).toLowerCase().includes(role.toLowerCase().replace(/\bintern$/i, "internship"))) problems.push("subject does not name the role");
+  }
+  // Company and job specifics must actually show up when they are available (no generic paragraphs).
+  if (p.companyContext && !sharesWords(content, p.companyContext, 2, p.company)) problems.push("does not reflect the company");
+  if (p.jobTitle && p.skillsInJob.length && !p.skillsInJob.some((s) => mentions(content, s))) problems.push("does not reflect the job requirements");
   // Technology claims must be the member's own; the job title, role label and company text may name any stack.
   for (const name of unverifiedSkills(content, p.memberId, [p.jobTitle ?? "", p.jobTitle ? cleanTitle(p.jobTitle) : "", p.roleLabel, p.company, p.companyContext ?? ""])) problems.push(`unverified skill: ${name}`);
   return [...new Set(problems)];

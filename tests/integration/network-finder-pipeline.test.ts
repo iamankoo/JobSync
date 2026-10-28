@@ -257,24 +257,21 @@ describe("re-checking known companies and the daily job search", () => {
     expect(jobs()).toHaveLength(2);
   });
 
-  it("adds 5 internships + 5 full-time roles a day, one per company, best matches first, never more", async () => {
+  it("one opening per company, best matches only, never more than a day's quota (full rules: network-finder-daily-jobs.test.ts)", async () => {
     const { deps, jobSource } = setup();
+    const eligible = { description: "New grads welcome. React and Node.js services.", salary: { max: 1_500_000, currency: "INR", period: "year" as const }, workplace: "remote" as const };
     jobSource.searchResults = [
-      ...Array.from({ length: 6 }, (_, i) => mockJob(`Intern Co ${i}`, 100 + i, { title: "Software Engineering Intern" })),
-      mockJob("Intern Co 0", 200, { title: "Data Analyst Intern" }), // same company again
-      ...Array.from({ length: 6 }, (_, i) => mockJob(`FT Co ${i}`, 300 + i, { title: "Junior Backend Engineer" })),
-      mockJob("FT Co 9", 400, { title: "Senior Backend Engineer" }), // not for freshers
-      mockJob("FT Co 8", 401, { title: "Sales Manager" }), // not a target profile
+      ...Array.from({ length: 4 }, (_, i) => mockJob(`FT Co ${i}`, 300 + i, { title: "Junior Backend Engineer", source: "Greenhouse", ...eligible })),
+      mockJob("FT Co 0", 350, { title: "Backend Engineer, New Grad", source: "Greenhouse", ...eligible }), // same company again
+      mockJob("FT Co 9", 400, { title: "Senior Backend Engineer", source: "Greenhouse", ...eligible }), // not for freshers
+      mockJob("FT Co 8", 401, { title: "Sales Manager", source: "Greenhouse", ...eligible }), // not a target profile
     ];
     const day = await runDailyJobSearch(deps);
-    expect(day.internships).toHaveLength(5);
-    expect(day.fullTime).toHaveLength(5);
-    expect(new Set(jobs().map((j) => j[1])).size).toBe(10); // ten different companies
-    expect(jobs().every((j) => j[11] === "anni")).toBe(true);
-    expect(jobs().filter((j) => j[3] === "Internship")).toHaveLength(5);
+    expect(day.fullTime).toHaveLength(4);
+    expect(new Set(jobs().map((j) => j[1])).size).toBe(4);
     expect(jobs().some((j) => /Senior|Sales/.test(j[2]))).toBe(false);
     expect(await runDailyJobSearch(deps)).toMatchObject({ internships: [], fullTime: [] });
-    expect(jobs()).toHaveLength(10);
+    expect(jobs()).toHaveLength(4);
   });
 });
 
