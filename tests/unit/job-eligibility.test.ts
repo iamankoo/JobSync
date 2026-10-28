@@ -233,7 +233,7 @@ describe("daily split: 5 per country group, 5 per member, quality before quota",
     ...Array.from({ length: 9 }, (_, i) => cand("OTHER", "Frontend Developer", `React JavaScript #${i}`)),
   ];
 
-  it("never more than 5 per region or 5 per member, one job per company; Rishii (no verified skills) gets none", () => {
+  it("5 per region and 5 per member, one job per company, for ALL three members (an empty profile is a low match, not an exclusion)", () => {
     const out = allocate(many(), empty());
     const byRegion = (r: Region) => out.filter((a) => a.region === r).length;
     const byMember = (m: string) => out.filter((a) => a.memberId === m).length;
@@ -242,16 +242,19 @@ describe("daily split: 5 per country group, 5 per member, quality before quota",
     expect(byRegion("OTHER")).toBeLessThanOrEqual(5);
     expect(byMember("anni")).toBe(5);
     expect(byMember("lukky")).toBe(5);
-    expect(byMember("rishii")).toBe(0);
-    expect(out).toHaveLength(10);
+    expect(byMember("rishii")).toBe(5);
+    expect(out).toHaveLength(15);
     expect(new Set(out.map((a) => a.job.companyName)).size).toBe(out.length);
   });
 
-  it("does not fill a quota with jobs nobody fits", () => {
+  it("skill fit only RANKS: a job nobody fits is still assigned (it passed the common rules), after the better matches", () => {
     const poor = [cand("US", "Embedded Firmware Engineer", "RTOS, Verilog and board bring-up."), cand("IN", "Salesforce Engineer", "Apex, Visualforce and Lightning."), cand("OTHER", "Backend Engineer", "Node.js and MongoDB.")];
     const out = allocate(poor, empty());
-    expect(out).toHaveLength(1);
-    expect(out[0].job.title).toBe("Backend Engineer");
+    expect(out).toHaveLength(3);
+    const fits = Object.fromEntries(out.map((a) => [a.job.title, a.fit.score]));
+    expect(fits["Backend Engineer"]).toBeGreaterThan(0);
+    expect(fits["Embedded Firmware Engineer"]).toBe(0);
+    expect(out[0].job.title).toBe("Backend Engineer"); // best match is placed first
   });
 
   it("counts what is already saved today (capacity carries over between calls)", () => {

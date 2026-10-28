@@ -880,7 +880,7 @@ export async function runDailyJobSearch(deps: PipelineDeps): Promise<{ internshi
           }
         }
         try {
-          const notes = [...a.evaluation.notes, ...(a.fit.matched.length ? [`matches ${memberName} skills: ${a.fit.matched.join(", ")}`] : [])];
+          const notes = [...a.evaluation.notes, ...(a.fit.matched.length ? [`matches ${memberName} skills: ${a.fit.matched.join(", ")}`] : [`low skill match for ${memberName} (not enough verified skills for this role)`])];
           const res = await deps.jobs.create(a.memberId, toJobInput(a.job, day, { assignedTo: memberName, notes, workplace: a.evaluation.workplace, pay: payLabel(a.job) }));
           if (!("created" in res)) {
             release();
