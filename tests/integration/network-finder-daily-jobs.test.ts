@@ -347,3 +347,24 @@ describe("REGRESSION: eligibility is the same for every member, whatever their p
     });
   });
 });
+
+describe("board reading across the two kinds in one run", () => {
+  it("REGRESSION (31 Oct, live logs): the full-time pass reuses the boards the internship pass listed even when no time is left to read new ones", async () => {
+    const { createCompanyBoardSource } = await import("@/lib/network-finder/providers/job-boards");
+    const { mockWeb, testFetcher } = await import("../helpers/network-finder-mocks");
+    const gh = JSON.stringify({ jobs: [
+      { id: 1, title: "Software Engineer Intern", absolute_url: "https://boards.greenhouse.io/acme/jobs/1", location: { name: "Remote - United States" } },
+      { id: 2, title: "Software Engineer, New Grad", absolute_url: "https://boards.greenhouse.io/acme/jobs/2", location: { name: "Remote - United States" } },
+    ] });
+    const web = mockWeb({ "https://boards-api.greenhouse.io/v1/boards/acme/jobs": { body: gh, type: "application/json" } });
+    const source = createCompanyBoardSource(testFetcher(web.fetchFn));
+    const companies = [{ key: "acme", name: "Acme", careersUrl: "https://boards.greenhouse.io/acme" }] as never;
+    const first = await source.searchJobs!({ keywords: [], employment: "internship", limit: 10, companies });
+    expect(first.map((j) => j.title)).toEqual(["Software Engineer Intern"]);
+    const requests = web.requests.length;
+    // no time left: a new board could not be read, but the cached one still serves the full-time pass
+    const second = await source.searchJobs!({ keywords: [], employment: "full_time", limit: 10, companies, deadline: Date.now() + 1000 });
+    expect(second.map((j) => j.title)).toEqual(["Software Engineer, New Grad"]);
+    expect(web.requests.length).toBe(requests);
+  });
+});

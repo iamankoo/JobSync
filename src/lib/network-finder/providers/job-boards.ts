@@ -229,8 +229,10 @@ export function createCompanyBoardSource(fetcher: PoliteFetcher): JobSource {
         const take = Math.min(BOARDS_PER_SEARCH[kind] ?? 2, group.length);
         const out: JobCandidate[] = [];
         for (let i = 0; i < take; i++) {
-          if (query.deadline && Date.now() > query.deadline - SEARCH_MARGIN_MS) break;
           const company = group[(slot * take + i) % group.length];
+          // Only a real network read needs time: a board already listed this run (by the other kind's pass) is free. Without
+          // this the full-time pass saw no boards at all once the internship pass had used the run's time (31 Oct, live logs).
+          if (!listings.has(company.key) && query.deadline && Date.now() > query.deadline - SEARCH_MARGIN_MS) break;
           try {
             const listed = await listBoard(company);
             if (!listed) {
