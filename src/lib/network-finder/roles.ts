@@ -30,7 +30,7 @@ const FAMILIES: RoleFamily[] = [
 
 /** Titles that are not realistic for fresh graduates. */
 const SENIOR = /\b(senior|sr\.?|staff|principal|lead|manager|director|head|vp|vice president|architect|chief)\b/;
-const JUNIOR = /\b(intern|internship|junior|jr\.?|graduate|new grad|entry[\s-]level|associate|trainee|apprentice|i)\b/;
+const JUNIOR = /\b(intern|internship|junior|jr\.?|graduate|new grad|entry[\s-]level|associate|trainee|apprentice)\b/;
 /** Engineering titles that are not software roles (avoid "Mechanical Engineer" matching "engineer"). */
 const NON_SOFTWARE = /\b(mechanical|civil|electrical|chemical|hardware|sales|solutions|support|field|manufacturing|process|quality|structural|biomedical)\s+engineer/;
 

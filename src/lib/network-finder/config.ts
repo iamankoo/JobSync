@@ -9,6 +9,11 @@ import { PEOPLE_PER_COMPANY } from "./contacts";
  */
 export interface NetworkFinderConfig {
   enabled: boolean;
+  /**
+   * Company → people → Connections discovery (the batch windows). OFF by default since 31 Oct 2026: members add
+   * connections by hand. Gmail drafting, sent tracking and the daily job search are NOT affected by this switch.
+   */
+  connectionDiscovery: boolean;
   /** Member recorded as "Added by" on discovered Connections. */
   contactOwner: MemberId;
   /** Member recorded as "Added by" on discovered Jobs (agreed: Anni). */
@@ -46,6 +51,7 @@ const posInt = (raw: string | undefined, fallback: number) => {
 export function loadNetworkFinderConfig(env: NodeJS.ProcessEnv = process.env): NetworkFinderConfig {
   return {
     enabled: env.NETWORK_FINDER_ENABLED === "true",
+    connectionDiscovery: env.NETWORK_FINDER_CONNECTION_DISCOVERY === "true",
     contactOwner: member(env.NETWORK_FINDER_CONTACT_OWNER, "anni"),
     jobOwner: member(env.NETWORK_FINDER_JOB_OWNER, "anni"),
     timeZone: resolveTimezone(env.APP_TIMEZONE),

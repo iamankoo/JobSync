@@ -31,6 +31,8 @@ export interface DraftRequest {
 export interface DraftContent {
   subject: string;
   body: string;
+  /** Set when the draft was written but a person should look at it (e.g. the role could not be read from the description). */
+  review?: string;
 }
 
 export interface Brain {

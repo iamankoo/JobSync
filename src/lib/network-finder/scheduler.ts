@@ -45,10 +45,20 @@ export function activeWindow(now: Date, timeZone: string): ActiveWindow | null {
 export interface BatchLedger {
   get(key: string): Promise<number>;
   add(key: string, n: number): Promise<number>;
+  /** Small text records (the daily job-search funnel). Optional: a ledger without them simply keeps no funnel. */
+  getNote?(key: string): Promise<string | undefined>;
+  setNote?(key: string, value: string): Promise<void>;
 }
 
 export class InMemoryBatchLedger implements BatchLedger {
   private map = new Map<string, number>();
+  private notes = new Map<string, string>();
+  async getNote(key: string) {
+    return this.notes.get(key);
+  }
+  async setNote(key: string, value: string) {
+    this.notes.set(key, value);
+  }
   async get(key: string) {
     return this.map.get(key) ?? 0;
   }

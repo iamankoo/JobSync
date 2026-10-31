@@ -174,6 +174,7 @@ async function writePlannedDraft(ask: ReturnType<typeof makeAsk>, plan: EmailPla
     company: plan.company,
     companyContext: plan.companyContext ?? null,
     role: plan.jobTitle ?? `${plan.roleLabel} opportunities`,
+    roleFocus: plan.roleFocus ?? null,
     internship: plan.internship,
     jobDescriptionExcerpt: plan.jobDescriptionExcerpt ?? null,
     recipientFirstName: plan.recipientFirstName,

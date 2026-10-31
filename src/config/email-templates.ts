@@ -98,7 +98,7 @@ export const EMAIL_TEMPLATES: readonly EmailTemplate[] = [
   },
   {
     id: "ai-ml", version: 1, roleLabel: "AI/ML Engineer",
-    keywords: ["ai/ml", "ai ml", "machine learning", "ml engineer", "ml intern", "ai intern", "artificial intelligence", "deep learning", "computer vision", "nlp", "data scientist", "data science"],
+    keywords: ["ai/ml", "ai ml", "ai internship", "ml internship", "data ai", "data and ai", "machine learning", "ml engineer", "ml intern", "ai intern", "artificial intelligence", "deep learning", "computer vision", "nlp", "data scientist", "data science"],
     prioritySkills: ["python", "machine-learning", "scikit-learn", "openai-api", "gemini-api", "rag", "embeddings", "prompt-engineering", "ai-agents", "langchain", "langgraph", "mcp", "computer-vision", "data-pipelines"],
     areas: [
       { text: "integrating AI models into applications", skills: ["openai-api", "gemini-api", "llm-integration", "ai-apps"] },
@@ -114,7 +114,7 @@ export const EMAIL_TEMPLATES: readonly EmailTemplate[] = [
   },
   {
     id: "data-analyst", version: 1, roleLabel: "Data Analyst",
-    keywords: ["data analyst", "business analyst", "analytics", "bi analyst", "bi developer", "business intelligence", "reporting analyst", "product analyst"],
+    keywords: ["data analyst", "data internship", "business analyst", "analytics", "bi analyst", "bi developer", "business intelligence", "reporting analyst", "product analyst"],
     prioritySkills: ["python", "sql", "pandas", "numpy", "data-cleaning", "data-validation", "power-bi", "excel", "data-visualization", "data-reporting", "statistics", "data-analysis"],
     areas: [
       { text: "data cleaning and validation", skills: ["data-cleaning", "data-validation", "pandas"] },
@@ -146,7 +146,7 @@ export const EMAIL_TEMPLATES: readonly EmailTemplate[] = [
   },
   {
     id: "llm", version: 1, roleLabel: "AI Engineer (LLM)",
-    keywords: ["llm", "large language model", "generative ai", "genai", "gen ai", "rag", "prompt engineer", "ai engineer", "applied ai", "ai application", "langchain", "agents", "agentic"],
+    keywords: ["ai applied engineer", "applied ai engineer", "ai applied", "llm", "large language model", "generative ai", "genai", "gen ai", "rag", "prompt engineer", "ai engineer", "applied ai", "ai application", "langchain", "agents", "agentic"],
     prioritySkills: ["openai-api", "gemini-api", "prompt-engineering", "langchain", "langgraph", "rag", "ai-agents", "mcp", "embeddings", "retrieval-pipelines", "chunking", "indexing", "llm-integration", "context-engineering"],
     areas: [
       { text: "retrieval-augmented generation", skills: ["rag", "retrieval-pipelines", "embeddings", "chunking", "indexing"] },

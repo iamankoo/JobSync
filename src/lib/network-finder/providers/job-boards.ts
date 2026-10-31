@@ -74,8 +74,12 @@ const commitment = (c: string | undefined): Employment | undefined =>
 /** Description requests per company when looking for one company's jobs (outreach), and per company when searching. */
 const DETAIL_LIMIT_COMPANY = 3;
 const DETAIL_LIMIT_SEARCH = 6;
-/** Boards read per search call (each is a few seconds of the run). */
-const BOARDS_PER_SEARCH = 6;
+/**
+ * Boards read per search call, per applicant-tracking system. The three systems are different hosts, so they are read in
+ * parallel (each host still gets at most one request per second); consecutive calls read different slices, so the whole
+ * list is swept in under an hour.
+ */
+const BOARDS_PER_SEARCH: Record<string, number> = { greenhouse: 12, ashby: 5, lever: 6, other: 2 };
 /** Time a board search leaves for the rest of the run. */
 const SEARCH_MARGIN_MS = 15_000;
 
@@ -130,8 +134,23 @@ export function createCompanyBoardSource(fetcher: PoliteFetcher): JobSource {
     }
   }
 
-  async function boardJobs(company: BoardCompany, detailLimit: number): Promise<JobCandidate[]> {
-    const board = await boardFor(company);
+  /** A board's listings as the board shows them (Greenhouse: no descriptions yet). Read once per run per company. */
+  const listings = new Map<string, Promise<{ board: Board; jobs: JobCandidate[] } | null>>();
+  const listBoard = (company: BoardCompany) => {
+    let p = listings.get(company.key);
+    if (!p) {
+      p = (async () => {
+        const board = await boardFor(company);
+        return board ? { board, jobs: await boardJobs(company, 0, board) } : null;
+      })();
+      listings.set(company.key, p);
+    }
+    return p;
+  };
+  const details = new Map<string, Promise<JobCandidate>>();
+
+  async function boardJobs(company: BoardCompany, detailLimit: number, known?: Board): Promise<JobCandidate[]> {
+    const board = known ?? (await boardFor(company));
     if (!board) return [];
     if (board.kind === "greenhouse") {
       const body = await fetcher.getJson<{ jobs?: GreenhouseJob[] }>(`https://boards-api.greenhouse.io/v1/boards/${encodeURIComponent(board.token)}/jobs`, "greenhouse");
@@ -199,18 +218,47 @@ export function createCompanyBoardSource(fetcher: PoliteFetcher): JobSource {
     async searchJobs(query: JobSearchQuery): Promise<JobCandidate[]> {
       const companies = query.companies ?? [];
       if (!companies.length) return [];
-      const start = Math.floor(Date.now() / 300_000) % companies.length;
-      const out: JobCandidate[] = [];
-      for (let i = 0; i < Math.min(BOARDS_PER_SEARCH, companies.length); i++) {
-        if (query.deadline && Date.now() > query.deadline - SEARCH_MARGIN_MS) break;
-        try {
-          const jobs = await boardJobs(companies[(start + i) % companies.length], DETAIL_LIMIT_SEARCH);
-          out.push(...jobs.filter((j) => classifyEmployment(j.title, j.employment) === query.employment));
-        } catch {
-          // This board is not reachable right now: another slice is tried on the next call.
-        }
+      // Group by applicant-tracking system (a seeded or registered careers link names it; anything else is "other").
+      const groups = new Map<string, QualifiedCompany[]>();
+      for (const c of companies) {
+        const kind = (c.careersUrl && boardFromUrl(c.careersUrl)?.kind) || "other";
+        groups.set(kind, [...(groups.get(kind) ?? []), c]);
       }
-      return out;
+      const slot = Math.floor(Date.now() / 300_000);
+      const readGroup = async (kind: string, group: QualifiedCompany[]): Promise<JobCandidate[]> => {
+        const take = Math.min(BOARDS_PER_SEARCH[kind] ?? 2, group.length);
+        const out: JobCandidate[] = [];
+        for (let i = 0; i < take; i++) {
+          if (query.deadline && Date.now() > query.deadline - SEARCH_MARGIN_MS) break;
+          const company = group[(slot * take + i) % group.length];
+          try {
+            const listed = await listBoard(company);
+            if (!listed) {
+              if (query.stats) query.stats.boardsFailed += 1;
+              continue;
+            }
+            if (query.stats) {
+              query.stats.boardsRead += 1;
+              query.stats.listed += listed.jobs.length;
+            }
+            const wanted = listed.jobs.filter((j) => classifyEmployment(j.title, j.employment) === query.employment && (!query.accept || query.accept(j)));
+            // Descriptions and posted pay only for the roles that matter and can still qualify (Greenhouse lists carry neither).
+            let left = DETAIL_LIMIT_SEARCH;
+            for (const j of wanted) {
+              if (listed.board.kind === "greenhouse" && left > 0 && matchRole(j.title).relevant && !j.description && !(query.deadline && Date.now() > query.deadline - SEARCH_MARGIN_MS)) {
+                left -= 1;
+                let d = details.get(j.url);
+                if (!d) details.set(j.url, (d = greenhouseDetail(listed.board.token, j)));
+                out.push(await d);
+              } else out.push(j);
+            }
+          } catch {
+            if (query.stats) query.stats.boardsFailed += 1; // not reachable right now: another slice is tried on the next call
+          }
+        }
+        return out;
+      };
+      return (await Promise.all([...groups].map(([kind, group]) => readGroup(kind, group)))).flat();
     },
   };
 }

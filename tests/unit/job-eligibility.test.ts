@@ -278,3 +278,11 @@ describe("daily split: 5 per country group, 5 per member, quality before quota",
     expect(out).toHaveLength(0);
   });
 });
+
+describe("fresher-level titles (found by the 31 Oct source sweep: 1,300 of 1,600 full-time listings were 'uncertain')", () => {
+  const undisclosed = { salary: undefined, description: "Build backend services in Go.", location: "Bengaluru, India" };
+  it("treats level-one titles as fresher-friendly on an official board, but not Engineer II/III or Senior", () => {
+    for (const title of ["Software Engineer I", "Software Engineer 1", "SDE-1", "SDE 1", "Backend Developer I"]) expect(full({ ...undisclosed, title }).verdict, title).toBe("qualifies");
+    for (const title of ["Software Engineer II", "Software Engineer III", "Software Engineer 2", "Software Engineer"]) expect(full({ ...undisclosed, title }).verdict, title).toBe("uncertain");
+  });
+});

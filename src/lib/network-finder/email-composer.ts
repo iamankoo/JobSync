@@ -16,6 +16,8 @@ import { matchRole } from "./roles";
 
 export interface EmailJob {
   title: string;
+  /** What the role works on, e.g. "Video Generation" (from the connection's description). */
+  focus?: string;
   description?: string;
   internship?: boolean;
   location?: string;
@@ -28,6 +30,11 @@ export interface EmailInput {
   person?: { name: string; title?: string };
   recipientEmail?: string;
   job?: EmailJob;
+  /**
+   * True when no role could be established (missing / ambiguous description): the plan is a neutral enquiry that
+   * assumes no role, no template emphasis and no skills — never a default "Software Engineer".
+   */
+  neutral?: boolean;
 }
 
 export interface EmailPlan {
@@ -39,6 +46,10 @@ export interface EmailPlan {
   companyContext?: string;
   /** The exact job title when known; otherwise null (the email then speaks of the role family). */
   jobTitle: string | null;
+  /** What the role works on (after the title), when the description names it. */
+  roleFocus: string | null;
+  /** A neutral enquiry about opportunities: the role is unknown, so nothing role-specific is claimed. */
+  neutral: boolean;
   roleLabel: string;
   internship: boolean;
   jobDescriptionExcerpt?: string;
@@ -69,6 +80,7 @@ export const MAX_WORDS = 300;
 export const MIN_WORDS = 180;
 export const MIN_WORDS_ONE_HIGHLIGHT = 150;
 export const MIN_WORDS_THIN_PROFILE = 90;
+export const MIN_WORDS_NEUTRAL = 60;
 export const MAX_SKILLS = 8;
 
 // ---- text helpers ------------------------------------------------------------------------------------------------
@@ -186,7 +198,8 @@ export function recipientFirstName(name?: string): string | null {
 
 const cleanTitle = (s: string) => s.replace(/\s+/g, " ").replace(/\s*[-–—|(].*$/, "").trim() || s.trim();
 
-export function subjectFor(plan: Pick<EmailPlan, "jobTitle" | "roleLabel" | "internship" | "company">): string {
+export function subjectFor(plan: Pick<EmailPlan, "jobTitle" | "roleLabel" | "internship" | "company"> & { neutral?: boolean }): string {
+  if (plan.neutral) return `Enquiry about opportunities at ${plan.company}`;
   if (plan.jobTitle) {
     let role = cleanTitle(plan.jobTitle);
     if (plan.internship) role = /\bintern\b$/i.test(role) ? role.replace(/\bintern$/i, "Internship") : /\binternship\b/i.test(role) ? role : `${role} Internship`;
@@ -204,19 +217,21 @@ function companyContextOf(description?: string): string | undefined {
 export function buildEmailPlan(input: EmailInput): EmailPlan {
   const m = getMember(input.memberId)!;
   const profile = MEMBER_EMAIL_PROFILES[input.memberId];
-  const templateId = selectTemplate(input.job?.title, input.job?.description);
+  const neutral = Boolean(input.neutral) && !input.job;
+  const templateId = selectTemplate(input.job?.title, `${input.job?.focus ?? ""} ${input.job?.description ?? ""}`);
   const tpl: EmailTemplate = TEMPLATES_BY_ID.get(templateId)!;
-  const jobText = `${input.job?.title ?? ""} ${input.job?.description ?? ""}`;
-  const { skills, inJob } = matchSkills(templateId, profile, jobText);
-  const highlights = pickHighlights(profile, skills, templateId);
+  const jobText = `${input.job?.title ?? ""} ${input.job?.focus ?? ""} ${input.job?.description ?? ""}`;
+  // A neutral enquiry claims no skills and names no role: the template only supplies safe default wording.
+  const { skills, inJob } = neutral ? { skills: [], inJob: [] } : matchSkills(templateId, profile, jobText);
+  const highlights = neutral ? [] : pickHighlights(profile, skills, templateId);
   const own = new Set(profile.skills);
   // Template sentences are only used when they claim nothing the member has not verified.
   const honest = (text: string) => unverifiedSkills(text, input.memberId).length === 0;
-  const areas = tpl.areas.filter((a) => a.skills.some((s) => own.has(s)) && honest(a.text)).slice(0, 3).map((a) => a.text);
-  const supported = tpl.prioritySkills.filter((s) => own.has(s)).length >= 2 && honest(tpl.valueProposition);
+  const areas = neutral ? [] : tpl.areas.filter((a) => a.skills.some((s) => own.has(s)) && honest(a.text)).slice(0, 3).map((a) => a.text);
+  const supported = !neutral && tpl.prioritySkills.filter((s) => own.has(s)).length >= 2 && honest(tpl.valueProposition);
   const firstName = recipientFirstName(input.person?.name);
   const internship = isInternship(input.job);
-  const base = { jobTitle: input.job?.title?.trim() || null, roleLabel: tpl.roleLabel, internship, company: input.company.name.trim() };
+  const base = { jobTitle: input.job?.title?.trim() || null, roleLabel: neutral ? "engineering" : tpl.roleLabel, internship, company: input.company.name.trim(), neutral };
   const remote = /remote/i.test(`${input.job?.workMode ?? ""} ${input.job?.location ?? ""}`);
   return {
     memberId: input.memberId,
@@ -224,6 +239,7 @@ export function buildEmailPlan(input: EmailInput): EmailPlan {
     templateId,
     templateVersion: tpl.version,
     ...base,
+    roleFocus: input.job?.focus?.trim() || null,
     companyContext: companyContextOf(input.company.description),
     jobDescriptionExcerpt: input.job?.description ? input.job.description.replace(/\s+/g, " ").trim().slice(0, 900) : undefined,
     recipientFirstName: firstName,
@@ -237,23 +253,32 @@ export function buildEmailPlan(input: EmailInput): EmailPlan {
     highlights,
     capabilities: highlights.length && tpl.capabilities.every(honest) ? [...tpl.capabilities] : [],
     valueProposition: supported ? tpl.valueProposition : null,
-    motivation: honest(tpl.neutralMotivation) ? tpl.neutralMotivation : "the work your team is doing",
-    contributeTo: honest(tpl.contributeTo) ? tpl.contributeTo : "your engineering team",
+    motivation: !neutral && honest(tpl.neutralMotivation) ? tpl.neutralMotivation : "the work your team is doing",
+    contributeTo: !neutral && honest(tpl.contributeTo) ? tpl.contributeTo : "your engineering team",
     mentionRemote: remote && Boolean(profile.location),
-    guidance: tpl.guidance,
+    guidance: neutral ? "Neutral enquiry: the role is not known, so ask which roles are open. Claim no skills." : tpl.guidance,
     // Fewer verified facts → shorter (but complete) emails, never padding.
-    minWords: profile.highlights.length >= 2 ? MIN_WORDS : profile.highlights.length === 1 ? MIN_WORDS_ONE_HIGHLIGHT : MIN_WORDS_THIN_PROFILE,
+    minWords: neutral ? MIN_WORDS_NEUTRAL : profile.highlights.length >= 2 ? MIN_WORDS : profile.highlights.length === 1 ? MIN_WORDS_ONE_HIGHLIGHT : MIN_WORDS_THIN_PROFILE,
   };
 }
 
 // ---- deterministic fallback (no AI) --------------------------------------------------------------------------------
 
-const roleText = (p: EmailPlan) => (p.jobTitle ? `the ${cleanTitle(p.jobTitle)} ${p.internship && !/\bintern(ship)?\b/i.test(p.jobTitle) ? "internship" : "position"}` : `${p.roleLabel} opportunities`);
+const roleText = (p: EmailPlan) => {
+  if (p.neutral) return "opportunities";
+  if (!p.jobTitle) return `${p.roleLabel} opportunities`;
+  const title = cleanTitle(p.jobTitle);
+  // "…Internship" / "…Intern" already says what it is; other titles get "position" or "internship".
+  return /\bintern(ship)?\b/i.test(title) ? `the ${title}` : `the ${title} ${p.internship ? "internship" : "position"}`;
+};
 
 /** A complete, honest email body (paragraphs only, no greeting/sign-off) from the plan's verified facts. */
 export function composeFallback(p: EmailPlan): string[] {
   const paras: string[] = [];
-  let opening = `I am writing to express my interest in ${roleText(p)} at ${p.company}.`;
+  if (p.neutral) return composeNeutral(p);
+  let opening = p.neutral
+    ? `I am writing to ask about engineering opportunities at ${p.company}.`
+    : `I am writing to express my interest in ${roleText(p)}${p.roleFocus ? `, with a focus on ${p.roleFocus},` : ""} at ${p.company}.`;
   if (p.education) opening += ` I am a ${p.education}${p.areas.length ? `, with hands-on experience in ${listJoin(p.areas)}.` : "."}`;
   else if (p.areas.length) opening += ` I have hands-on experience in ${listJoin(p.areas)}.`;
   paras.push(opening);
@@ -270,6 +295,7 @@ export function composeFallback(p: EmailPlan): string[] {
   const fit: string[] = [];
   if (p.valueProposition) fit.push(p.valueProposition);
   // The job's own requirements, named only where the member really has the skill.
+  if (p.roleFocus) fit.push(`The ${p.roleFocus} side of the ${cleanTitle(p.jobTitle ?? p.roleLabel)} role is what interests me most.`);
   if (p.jobTitle && p.skillsInJob.length >= 1) fit.push(`The ${cleanTitle(p.jobTitle)} role's emphasis on ${listJoin(p.skillsInJob.slice(0, 3))} matches the work I have been doing.`);
   else if (p.skillsInJob.length >= 2) fit.push(`The role's focus on ${listJoin(p.skillsInJob.slice(0, 2))} matches the work I have been doing.`);
   else if (!p.valueProposition) fit.push(`I am keen to build on my experience in this area and to learn from an experienced team.`);
@@ -283,6 +309,19 @@ export function composeFallback(p: EmailPlan): string[] {
   paras.push(motivation);
 
   paras.push("I would be glad to share my resume and to discuss how my background aligns with your team's needs. Thank you for your time and consideration.");
+  return paras;
+}
+
+/** An honest enquiry when the role is unknown: no role, skills or projects are claimed. */
+function composeNeutral(p: EmailPlan): string[] {
+  const paras: string[] = [`I am writing to ask about engineering opportunities at ${p.company}.${p.education ? ` I am a ${p.education}.` : ""}`];
+  paras.push(
+    p.companyContext
+      ? `What draws me to ${p.company} is its work. Your website describes it this way: "${p.companyContext.replace(/["“”]/g, "").replace(/[.!?]+$/, "")}."`
+      : `I would like to learn more about what ${p.company} is building and where a new engineer could contribute.`,
+  );
+  paras.push(`Could you let me know which roles or internships are currently open? I would be glad to send my resume and a focused application for the one that fits.`);
+  paras.push("Thank you for your time and consideration.");
   return paras;
 }
 
@@ -366,6 +405,8 @@ export function validateEmail(body: string, p: EmailPlan): string[] {
   if (UNVERIFIABLE_COMPANY.test(content) && !(p.companyContext && UNVERIFIABLE_COMPANY.test(p.companyContext))) problems.push("unverified company claim");
   if (INVENTED_FAMILIARITY.test(content)) problems.push("invented familiarity with the company");
   // The role: when the job is known, the email must name exactly that job, and no other role.
+  if (p.neutral && /software (engineer|developer)/i.test(content)) problems.push("assumes a Software Engineer role");
+  if (p.roleFocus && !mentions(content, p.roleFocus)) problems.push("role focus missing");
   if (p.jobTitle) {
     const role = cleanTitle(p.jobTitle);
     if (!mentions(content, role)) problems.push("role title missing");
@@ -376,6 +417,6 @@ export function validateEmail(body: string, p: EmailPlan): string[] {
   if (p.companyContext && !sharesWords(content, p.companyContext, 2, p.company)) problems.push("does not reflect the company");
   if (p.jobTitle && p.skillsInJob.length && !p.skillsInJob.some((s) => mentions(content, s))) problems.push("does not reflect the job requirements");
   // Technology claims must be the member's own; the job title, role label and company text may name any stack.
-  for (const name of unverifiedSkills(content, p.memberId, [p.jobTitle ?? "", p.jobTitle ? cleanTitle(p.jobTitle) : "", p.roleLabel, p.company, p.companyContext ?? ""])) problems.push(`unverified skill: ${name}`);
+  for (const name of unverifiedSkills(content, p.memberId, [p.jobTitle ?? "", p.jobTitle ? cleanTitle(p.jobTitle) : "", p.roleFocus ?? "", p.roleLabel, p.company, p.companyContext ?? ""])) problems.push(`unverified skill: ${name}`);
   return [...new Set(problems)];
 }

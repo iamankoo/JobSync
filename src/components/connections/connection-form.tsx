@@ -109,7 +109,7 @@ export function ConnectionForm({ connection, onSaved, onCancel }: { connection?:
         <p className="mt-1 text-xs text-muted">{values.message.length}/{MESSAGE_MAX}. JobSync never sends this anywhere: copy it and send it yourself.</p>
       </Labeled>
       <Labeled id={id("notes")} label="Notes" error={errors.notes}>
-        <textarea {...aria("notes")} value={values.notes} onChange={set("notes")} rows={3} maxLength={NOTES_MAX} placeholder="Where you met, referral hints, follow-up date…" className={`${input} resize-y py-2.5`} />
+        <textarea {...aria("notes")} value={values.notes} onChange={set("notes")} rows={3} maxLength={NOTES_MAX} placeholder="Role: the job you are asking about (e.g. Role: Machine Learning Engineer), plus where you met, referral hints…" className={`${input} resize-y py-2.5`} />
       </Labeled>
       {formError && (
         <p role="alert" className="rounded-lg border border-red-500/40 bg-red-500/10 px-3 py-2 text-sm text-red-100">

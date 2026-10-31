@@ -130,12 +130,13 @@ describe("daily allocation: 5 US + 5 India + 5 other, 5 per member", () => {
     expect(rows).toHaveLength(2);
     for (const r of rows) {
       const member = r[11];
-      expect(["anni", "lukky"]).toContain(member);
-      expect(r[10]).toContain(`Best match for ${member === "anni" ? "Anni" : "Lukky"}.`);
-      expect(r[10]).toMatch(/matches \w+ skills:/);
+      expect(["anni", "lukky", "rishii"]).toContain(member);
+      // who it was assigned to and why: a skills match, or an honest "low skill match" (never an exclusion)
+      expect(r[10]).toMatch(/matches \w+ skills:|low skill match for \w+/);
     }
-    // Lukky (LLM integration, RAG, Python) has no Flutter; the Flutter role can only go to Anni
-    expect(rows.find((r) => /Flutter/.test(r[2]))![11]).toBe("anni");
+    // jobs are shared across members (different members, different jobs); the AI role goes to the member whose skills fit
+    expect(new Set(rows.map((r) => r[11])).size).toBe(2);
+    expect(["anni", "lukky"]).toContain(rows.find((r) => /AI Engineer/.test(r[2]))![11]);
   });
 
   it("stores the work mode and the stated pay on the job", async () => {
@@ -221,18 +222,51 @@ describe("official company URL first; duplicates never saved", () => {
     expect(jobs()).toHaveLength(2); // only the two created above
   });
 
-  it("searches at most once per local hour per kind, so an unfilled quota does not hammer the job sites every 5 minutes", async () => {
+  it("REGRESSION (29–31 Oct): a scan that finds or reads nothing burns nothing — the next call searches again, and the Jobs sheet is not read when nothing qualifies", async () => {
     const { deps, jobSource } = setup();
-    jobSource.searchResults = [opening("US", "full_time")];
+    let jobReads = 0;
+    const realList = deps.jobs.list.bind(deps.jobs);
+    deps.jobs = { ...deps.jobs, list: async () => (jobReads++, realList()) };
+    jobSource.searchResults = [];
     await runDailyJobSearch(deps);
-    const first = jobSource.searches.length;
-    expect(first).toBe(2); // one internship search + one full-time search
     await runDailyJobSearch(deps);
+    expect(jobSource.searches.length).toBe(4); // two kinds × two calls: no "once per hour" key was spent
+    expect(jobReads).toBe(0);
+    // the source recovers on the next call and the jobs are saved
+    jobSource.searchResults = pool("full_time", 2);
+    const day = await runDailyJobSearch(deps);
+    expect(day.fullTime.length).toBe(6);
+    expect(jobReads).toBeGreaterThan(0);
+  });
+
+  it("stops searching for a kind once its quota is full", async () => {
+    const { deps, jobSource } = setup();
+    jobSource.searchResults = pool("full_time", 8);
     await runDailyJobSearch(deps);
-    expect(jobSource.searches.length).toBe(first);
-    deps.now = () => new Date(NOON_IST + 3_600_000);
+    const searches = jobSource.searches.filter((q) => q.employment === "full_time").length;
     await runDailyJobSearch(deps);
-    expect(jobSource.searches.length).toBe(first * 2);
+    expect(jobSource.searches.filter((q) => q.employment === "full_time").length).toBe(searches);
+  });
+
+  it("records the day's funnel (discovered → parsed → rejected → eligible → duplicates → allocated → saved) with counts only", async () => {
+    const { deps, jobSource } = setup();
+    jobSource.searchResults = [...pool("full_time", 2), opening("US", "full_time", { title: "Senior Staff Engineer", description: "8+ years of experience required." }), opening("US", "full_time", { location: "New York, NY", workplace: "onsite" })];
+    const day = await runDailyJobSearch(deps);
+    const r = day.report!.full_time;
+    expect(r).toMatchObject({ discovered: 8, parsed: 8, rejected: 2, eligible: 6, duplicates: 0, allocated: 6 });
+    expect(r.saved).toHaveLength(6);
+    const note = JSON.parse((await deps.ledger.getNote!(`${DAY}#funnel-full-time`))!);
+    expect(note).toMatchObject({ scans: 1, discovered: 8, parsed: 8, rejected: 2, eligible: 6, allocated: 6, saved: 6 });
+    expect(JSON.stringify(note)).not.toMatch(/Company \d/); // no company names in the record
+  });
+
+  it("official seed boards are handed to the sources as the supply, independent of any discovered company", async () => {
+    const { deps, jobSource } = setup();
+    deps.seedBoards = [{ name: "Acme Labs", ats: "greenhouse", token: "acmelabs" }, { name: "Beta", ats: "lever", token: "beta" }];
+    await runDailyJobSearch(deps);
+    const q = jobSource.searches[0];
+    expect(q.companies?.map((c) => c.careersUrl)).toEqual(["https://boards.greenhouse.io/acmelabs", "https://jobs.lever.co/beta"]);
+    expect(await deps.registry.all()).toHaveLength(0);
   });
 
   it("the quota is per local day: tomorrow searches again", async () => {

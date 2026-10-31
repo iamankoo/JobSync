@@ -82,6 +82,12 @@ class SheetsLedger implements BatchLedger {
     if (n !== 0) await this.s.set(`ledger:${key}`, String(v));
     return v;
   }
+  async getNote(key: string) {
+    return (await this.s.get(`note:${key}`)) || undefined;
+  }
+  async setNote(key: string, value: string) {
+    await this.s.set(`note:${key}`, value);
+  }
 }
 
 class SheetsApolloUsage implements ApolloUsageStore {
