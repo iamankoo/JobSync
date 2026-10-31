@@ -95,6 +95,21 @@ export interface JobSearchQuery {
   companies?: readonly QualifiedCompany[];
   /** Epoch ms by which the run must wrap up. */
   deadline?: number;
+  /**
+   * Cheap pre-check on a listing as the board shows it (title, location): details (description, posted pay) are fetched
+   * only for listings it accepts, so the run's time goes to jobs that can still qualify.
+   */
+  accept?: (job: JobCandidate) => boolean;
+  /** Counts what the source saw, for the daily funnel report. */
+  stats?: SearchStats;
+}
+
+export interface SearchStats {
+  /** Boards read this run / boards that could not be read. */
+  boardsRead: number;
+  boardsFailed: number;
+  /** Listings returned by the boards read (before any filtering). */
+  listed: number;
 }
 
 export interface JobSource {

@@ -121,7 +121,7 @@ describe("personalisation", () => {
     const p = plan("lukky", "Full Stack Developer Intern", { company: { name: "Learnosphere" }, person: { name: "Asha Verma" } });
     const body = fallbackBody(p);
     expect(body.startsWith("Dear Asha,")).toBe(true);
-    expect(body).toContain("Full Stack Developer Intern position at Learnosphere");
+    expect(body).toContain("the Full Stack Developer Intern at Learnosphere");
     expect(body).toMatch(/React.*Node\.js|Node\.js.*React/);
     expect(body).toContain("MERN stack");
     expect(body).toContain("Lakshya Singh");

@@ -61,7 +61,7 @@ export async function distributeDrafts(item: FanoutItem, deps: FanoutDeps): Prom
       const content = await deps.compose(memberId, getMember(memberId)?.fullName ?? memberId);
       const res = await deps.createDraft(memberId, { ...(item.to ? { to: item.to } : {}), subject: content.subject, body: content.body });
       if (res.status === "created") {
-        await deps.ledger.record({ draftKey: key, memberId, itemType: item.type, itemId: item.id, gmailDraftId: res.draftId, ...(res.threadId ? { threadId: res.threadId } : {}), status: "created", detail: "" });
+        await deps.ledger.record({ draftKey: key, memberId, itemType: item.type, itemId: item.id, gmailDraftId: res.draftId, ...(res.threadId ? { threadId: res.threadId } : {}), status: "created", detail: content.review ?? "" });
         outcomes.push({ memberId, result: "created" });
       } else if (res.status === "failed") {
         await deps.ledger.record({ draftKey: key, memberId, itemType: item.type, itemId: item.id, gmailDraftId: "", status: "failed", detail: res.reason });

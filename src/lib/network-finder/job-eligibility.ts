@@ -140,6 +140,8 @@ const CGPA_RE = /\b(min(imum)?\.?\s*(cgpa|gpa|percentage|aggregate)|(cgpa|gpa)\s
 const BACKLOG_RE = /\b(no (active |standing |current |pending )?(backlogs?|arrears)|without (any )?(active )?(backlogs?|arrears)|backlogs?[- ]free|zero (active )?backlogs?|(should|must) not have (any )?(active )?(backlogs?|arrears)|no (history of )?(backlogs?|arrears)|(backlogs?|arrears) (are )?not (allowed|permitted))\b/i;
 const EXPERIENCED_ONLY_RE = /\b(experienced (candidates|professionals) only|not (open|suitable) (to|for) (freshers|fresh graduates|students)|no freshers|freshers (need not|should not) apply|prior (industry|professional|work) experience (is )?(required|mandatory))\b/i;
 const FRESHER_RE = /\b(freshers?|fresh graduates?|new[- ]grads?|new graduates?|recent graduates?|graduate (program|programme|role|engineer|developer)|entry[- ]level|early[- ]career|campus|0\s*[-–to]+\s*[12]\s*(\+\s*)?years?|(zero|no) (prior )?(work |industry |professional )?experience|2027 (batch|graduat|grads?|pass(ing)?[- ]?out)|class of 2027|graduating in 2027|(batch|graduation|passing out|pass-?out)( year| of)?:?\s*2027)\b/i;
+/** Entry-level titles that say so by level: "Software Engineer I", "Engineer 1", "SDE-1". */
+const LEVEL_ONE_TITLE_RE = /\b(engineer|developer|analyst|scientist|sde|swe)\s*[-–]?\s*(i|1)\b(?![\s-]*(?:i|v|x|\d))/i;
 const GRAD_CONTEXT_RE = /(batch|graduat\w*|pass(?:ing)?[- ]?outs?|class of|degree|alumni)[^.\n]{0,60}?\b(20[12]\d)(?:\s*(?:[,/&-]|and|or|to)\s*(20[12]\d))*/gi;
 
 /** Graduation years the listing names in a graduation/batch context. */
@@ -239,7 +241,7 @@ export function evaluateJob(job: JobCandidate, kind: JobKind): JobEvaluation {
   const exp = requiredExperienceYears(text);
   if (exp !== null && exp >= 2) rejects.push(`requires ${exp}+ years of experience`);
   else if (exp === 1) unknown.push("asks for 1+ year of experience");
-  const fresherFriendly = FRESHER_RE.test(text) || years.includes(2027) || kind === "internship" || /\b(junior|jr\.?|associate|trainee|graduate)\b/i.test(job.title);
+  const fresherFriendly = FRESHER_RE.test(text) || years.includes(2027) || kind === "internship" || /\b(junior|jr\.?|associate|trainee|graduate)\b/i.test(job.title) || LEVEL_ONE_TITLE_RE.test(job.title);
   if (!fresherFriendly) unknown.push("does not say freshers / the 2027 batch are eligible");
   else if (years.includes(2027)) notes.push("lists the 2027 batch");
 

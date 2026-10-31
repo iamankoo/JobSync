@@ -112,7 +112,7 @@ describe("discovery never loses its place or overruns the run", () => {
   it("a source is not started with too little time left; the run reports it instead of being killed", async () => {
     const source = new MockCompanySource("yc", [mockCompany(1)]);
     const deps: PipelineDeps = {
-      config: loadNetworkFinderConfig({ NETWORK_FINDER_ENABLED: "true", APP_TIMEZONE: "Asia/Kolkata" } as unknown as NodeJS.ProcessEnv),
+      config: loadNetworkFinderConfig({ NETWORK_FINDER_ENABLED: "true", NETWORK_FINDER_CONNECTION_DISCOVERY: "true", APP_TIMEZONE: "Asia/Kolkata" } as unknown as NodeJS.ProcessEnv),
       sources: [source],
       jobSources: [],
       queue: new InMemoryQueue<CompanyTask>(),

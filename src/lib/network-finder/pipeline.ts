@@ -1,5 +1,6 @@
 import { getMember, MEMBER_IDS, type MemberId } from "@/config/members";
-import type { Connection } from "@/types/domain";
+import type { Connection, Job } from "@/types/domain";
+import { boardUrl, type SeedBoard } from "@/config/job-boards";
 import { dateInTimezone } from "@/lib/utils/time";
 import type { ApolloPool } from "./apollo-pool";
 import type { NetworkFinderConfig } from "./config";
@@ -15,13 +16,14 @@ import { inferPattern, predictEmail, type PatternEvidence } from "./email-patter
 import { ApolloPoolExhausted, ProviderError } from "./errors";
 import type { ConnectionsGateway, JobsGateway } from "./gateways";
 import { toConnectionInput, toJobInput } from "./mapping";
+import { roleForConnection, type RoleReading } from "./connection-role";
 import { ruleBrain, type Brain } from "./providers/brain";
-import type { CompanySource, ContactFinder, ContactProvider, JobSource } from "./providers/types";
+import type { CompanySource, ContactFinder, ContactProvider, JobSource, SearchStats } from "./providers/types";
 import { planBatch, qualifyCompany } from "./qualify";
 import { backoffDelay, type WorkQueue } from "./queue";
 import { recordFor, dueForJobRecheck, type CompanyRegistry } from "./registry";
 import { classifyEmployment, ruleVerdict, TARGET_ROLES } from "./roles";
-import { activeWindow, BATCH_WINDOWS, localHour, type ActiveWindow, type BatchLedger } from "./scheduler";
+import { activeWindow, BATCH_WINDOWS, type ActiveWindow, type BatchLedger } from "./scheduler";
 import { INTERNATIONAL_COUNTRIES, type CompanyCandidate, type EnrichedPerson, type JobCandidate, type QualifiedCompany, type RankedPerson } from "./types";
 
 /**
@@ -64,6 +66,8 @@ export interface PipelineDeps {
   enrichCompany?: (c: CompanyCandidate) => Promise<CompanyCandidate | null>;
   brain?: Brain;
   jobSources: readonly JobSource[];
+  /** Official ATS boards the daily job search reads (config/job-boards.ts). Independent of company / people discovery. */
+  seedBoards?: readonly SeedBoard[];
   /** Reads a company's own website and careers board for the email writer (verified facts and real openings only). */
   research?: CompanyResearcher;
   queue: WorkQueue<CompanyTask>;
@@ -400,6 +404,29 @@ export interface DraftTarget {
   title: string;
   email?: string;
   company: Pick<QualifiedCompany, "name" | "website" | "description">;
+  /**
+   * Present for a MANUALLY added connection: its description (Notes, then the suggested message) is the primary source of
+   * the role. The draft then names that role, researches the company, and never falls back to a default role.
+   */
+  manual?: { notes?: string; message?: string };
+}
+
+const GENERIC_TITLE_WORDS = new Set(["engineer", "developer", "intern", "internship", "software", "engineering", "associate", "junior", "senior"]);
+const titleWords = (s: string) => new Set(s.toLowerCase().match(/[a-z0-9+#]{2,}/g) ?? []);
+
+/** The company's own board opening that is the same role as the one the member named (for its stated requirements), if any. */
+export function matchingBoardJob(title: string, jobs: readonly JobCandidate[]): JobCandidate | undefined {
+  const want = titleWords(title);
+  let best: { job: JobCandidate; score: number } | undefined;
+  for (const job of jobs) {
+    const have = titleWords(job.title);
+    const shared = [...want].filter((w) => have.has(w));
+    const specific = shared.filter((w) => !GENERIC_TITLE_WORDS.has(w));
+    if (!specific.length || shared.length < Math.min(2, want.size)) continue;
+    const score = shared.length * 2 + (job.description ? 3 : 0) - Math.abs(have.size - want.size);
+    if (!best || score > best.score) best = { job, score };
+  }
+  return best?.job;
 }
 
 /**
@@ -412,8 +439,10 @@ export async function draftForContact(deps: Pick<PipelineDeps, "config" | "brain
   const brain = brainOf(deps);
   // The company's real openings already in Jobs. Each member gets the opening that fits THEIR verified skills.
   const known: EmailJob[] = [];
+  // A manual connection names its own role: the Jobs sheet is not consulted (and not read) for it.
+  const reading: RoleReading | undefined = t.manual ? roleForConnection(t.manual) : undefined;
   try {
-    if (deps.jobs) known.push(...jobsForCompany(await deps.jobs.list(), t.company.name));
+    if (deps.jobs && !reading) known.push(...jobsForCompany(await deps.jobs.list(), t.company.name));
   } catch {
     // no job context from Jobs: the company's own board is tried below
   }
@@ -431,20 +460,39 @@ export async function draftForContact(deps: Pick<PipelineDeps, "config" | "brain
       isConnected: deps.drafts!.isConnected,
       ledger: deps.drafts!.ledger,
       compose: async (memberId, memberName) => {
-        let job = pickJobForMember(memberId, known);
-        const r = !job || !t.company.description ? await research() : undefined;
-        if (!job && r) job = pickJobForMember(memberId, r.jobs.map(asEmailJob));
+        let job: EmailJob | undefined;
+        let r: CompanyResearch | undefined;
+        let review: string | undefined;
+        if (reading) {
+          // Manual connection: the description decides the role; the company's own site and careers board add the company
+          // context and (when the same role is listed there) the real requirements.
+          r = await research();
+          if (reading.status === "found") {
+            const board = matchingBoardJob(reading.role.title, r?.jobs ?? []);
+            const description = [t.manual?.notes?.trim(), board?.description].filter(Boolean).join("\n").slice(0, 4000);
+            job = { title: reading.role.title, ...(reading.role.focus ? { focus: reading.role.focus } : {}), internship: reading.role.internship, ...(description ? { description } : {}) };
+          } else {
+            review = reading.status === "ambiguous" ? `review: several roles in the description (${reading.roles.join(" / ")}); neutral enquiry drafted` : "review: no role found in the description; neutral enquiry drafted";
+          }
+        } else {
+          job = pickJobForMember(memberId, known);
+          r = !job || !t.company.description ? await research() : undefined;
+          if (!job && r) job = pickJobForMember(memberId, r.jobs.map(asEmailJob));
+        }
         const website = t.company.website ?? r?.website;
         const description = t.company.description ?? r?.description;
+        const neutral = Boolean(reading) && !job;
         const plan = buildEmailPlan({
           memberId,
           company: { name: t.company.name, ...(website ? { website } : {}), ...(description ? { description } : {}) },
           person: { name: t.name, title: t.title },
           ...(t.email ? { recipientEmail: t.email } : {}),
           ...(job ? { job } : {}),
+          ...(neutral ? { neutral: true } : {}),
         });
         let body: string | null = null;
-        try {
+        // A neutral enquiry is never handed to the writer: nothing in it may drift into a role the member did not name.
+        if (!neutral) try {
           const d = await brain.writeDraft({
             kind: job ? "job_application" : "outreach",
             member: { id: memberId, name: memberName, ...(deps.config.profiles[memberId] ? { profile: deps.config.profiles[memberId] } : {}) },
@@ -459,7 +507,7 @@ export async function draftForContact(deps: Pick<PipelineDeps, "config" | "brain
         }
         body ??= assembleEmail(plan, composeFallback(plan));
         const signature = deps.config.signatures?.[memberId];
-        return { subject: plan.subject, body: signature ? `${body}\n\n-- \n${signature}` : body };
+        return { subject: plan.subject, body: signature ? `${body}\n\n-- \n${signature}` : body, ...(review ? { review } : {}) };
       },
     },
   );
@@ -553,7 +601,7 @@ async function saveJobs(deps: PipelineDeps, found: readonly JobCandidate[], out:
 // ---- scheduler tick -------------------------------------------------------------------------------------
 
 export type TickResult =
-  | { ran: false; reason: "disabled" | "outside_window" | "batch_complete" }
+  | { ran: false; reason: "disabled" | "discovery_off" | "outside_window" | "batch_complete" }
   | { ran: false; reason: "contact_limit"; contacts: number; limit: number }
   | { ran: false; reason: "paused"; resumeAt?: number; pauseReason?: string }
   | { ran: true; window: ActiveWindow; processed: CompanyOutcome[]; remaining: number; discovery?: DiscoveryResult; pausedUntil?: number; failed: string[]; notified?: boolean };
@@ -577,6 +625,8 @@ async function notifyContactLimit(deps: PipelineDeps, day: string, count: number
  */
 export async function runBatchTick(deps: PipelineDeps): Promise<TickResult> {
   if (!deps.config.enabled) return { ran: false, reason: "disabled" };
+  // Members add connections by hand: no company/people discovery and no automatic connection creation unless re-enabled.
+  if (!deps.config.connectionDiscovery) return { ran: false, reason: "discovery_off" };
   const at = now(deps);
   const window = activeWindow(at, deps.config.timeZone);
   if (!window) return { ran: false, reason: "outside_window" };
@@ -673,12 +723,14 @@ export async function runPendingDrafts(deps: PipelineDeps, options: { days?: num
   if (!deps.drafts) return none;
   const members = deps.drafts.members ?? MEMBER_IDS;
   const connected = new Set<MemberId>();
-  for (const m of members) if (await deps.drafts.isConnected(m)) connected.add(m);
+  const loadConnected = async () => {
+    for (const m of members) if (await deps.drafts!.isConnected(m)) connected.add(m);
+  };
 
   const at = now(deps).getTime();
   const cutoff = new Date(at - (options.days ?? 3) * 86_400_000).toISOString();
   const manualCutoff = new Date(at - (options.manualDays ?? MANUAL_DRAFT_DAYS) * 86_400_000).toISOString();
-  const snapshot = deps.drafts.snapshot ? new Map(await deps.drafts.snapshot()) : null;
+  let snapshot: Map<string, { status: string }> | null = null;
   const statusOf = async (connectionId: string, m: MemberId) => {
     const key = draftKey({ type: "contact", id: connectionId }, m);
     return (snapshot ? snapshot.get(key) : await deps.drafts!.ledger.get(key))?.status;
@@ -689,16 +741,23 @@ export async function runPendingDrafts(deps: PipelineDeps, options: { days?: num
     if (s === "created" || s === "sent") return true;
     return !connected.has(m) && s !== undefined; // not connected: settled once it has a record (skipped)
   };
-  const selections = deps.selections ? await deps.selections.all() : [];
-  const selectedIds = new Map(selections.map((s) => [s.connectionId, s]));
+  const hasFailed = (connectionId: string) => (snapshot ? members.some((m) => snapshot?.get(draftKey({ type: "contact", id: connectionId }, m))?.status === "failed") : false);
+  let selectedIds = new Map<string, Selection>();
   const wanted = (c: Connection) =>
     c.status === "Not Connected" &&
     (isNetworkFinderEntry(c) ? !options.manualOnly && c.createdAt >= cutoff : Boolean(c.email?.trim()) && c.createdAt >= manualCutoff);
-  const contacts = (await deps.connections.list())
-    .filter(wanted)
+  const recent = (await deps.connections.list()).filter(wanted);
+  // Nothing to draft: no Gmail-account, draft-ledger or selection reads at all (a quiet cycle stays cheap).
+  if (!recent.length) return none;
+  await loadConnected();
+  snapshot = deps.drafts.snapshot ? new Map(await deps.drafts.snapshot()) : null;
+  selectedIds = new Map((deps.selections ? await deps.selections.all() : []).map((s) => [s.connectionId, s]));
+  const contacts = recent
     .sort(
       (a, b) =>
         Number(isNetworkFinderEntry(a)) - Number(isNetworkFinderEntry(b)) ||
+        // A connection whose last attempt failed waits behind the ones never tried, so one broken record cannot block the rest.
+        Number(hasFailed(a.connectionId)) - Number(hasFailed(b.connectionId)) ||
         Number(selectedIds.has(b.connectionId)) - Number(selectedIds.has(a.connectionId)) ||
         a.createdAt.localeCompare(b.createdAt),
     );
@@ -740,7 +799,14 @@ export async function runPendingDrafts(deps: PipelineDeps, options: { days?: num
     const s = selectedIds.get(c.connectionId);
     const outcomes = s
       ? await createSelectionDrafts(runDeps, s, companyOf(c), c.role ?? "")
-      : await draftForContact(runDeps, { connectionId: c.connectionId, name: c.name, title: c.role ?? "", ...(c.email ? { email: c.email } : {}), company: companyOf(c) });
+      : await draftForContact(runDeps, {
+          connectionId: c.connectionId,
+          name: c.name,
+          title: c.role ?? "",
+          ...(c.email ? { email: c.email } : {}),
+          company: companyOf(c),
+          ...(isNetworkFinderEntry(c) ? {} : { manual: { ...(c.notes ? { notes: c.notes } : {}), ...(c.message ? { message: c.message } : {}) } }),
+        });
     result.checked += 1;
     result.remaining -= 1;
     result.created += outcomes.filter((o) => o.result === "created").length;
@@ -771,6 +837,16 @@ export async function recheckCompanyJobs(deps: PipelineDeps, limit: number): Pro
 /** One day's job search for one kind of job: what was saved and why the rest was not. */
 export interface DailyKindReport {
   saved: string[];
+  /** Funnel for this scan: listings the sources returned → valid for this kind → rejected / uncertain / eligible → not a duplicate → allocated → saved. */
+  discovered: number;
+  parsed: number;
+  eligible: number;
+  duplicates: number;
+  allocated: number;
+  boardsRead: number;
+  boardsFailed: number;
+  /** Listings on the boards read, before any filtering. */
+  listed: number;
   considered: number;
   rejected: number;
   uncertain: number;
@@ -787,6 +863,9 @@ const payLabel = (j: JobCandidate): string | undefined => {
   return `${s.currency} ${range}/${s.period === "year" ? "yr" : s.period === "month" ? "mo" : "hr"}`;
 };
 
+/** A seeded board as the company record the board source reads (its careers link names the board). */
+const seedCompany = (b: SeedBoard) => ({ key: b.token, name: b.name, careersUrl: boardUrl(b), regionGroup: "international", score: 0 }) as unknown as QualifiedCompany;
+
 const reasonKey = (r: string) => r.replace(/[₹$€£]?\d[\d,.]*/g, "N").replace(/\(.*?\)/g, "").replace(/\s+/g, " ").trim().slice(0, 60);
 
 /**
@@ -796,6 +875,38 @@ const reasonKey = (r: string) => r.replace(/[₹$€£]?\d[\d,.]*/g, "N").replac
  * not a paid portal); official company boards rank first. A bucket that has too few genuinely qualifying jobs
  * stays short: the quota never lowers the bar. Counted per local day, so repeated calls never exceed the targets.
  */
+/**
+ * The day's cumulative funnel for one kind, kept in NF_State (one small row per kind per day) so the real counts at every
+ * stage survive Vercel's one-hour log retention: scans, boards read/failed, listed, discovered, parsed, rejected,
+ * uncertain, eligible, duplicates, allocated, saved, and the commonest rejection reasons.
+ */
+async function recordFunnel(deps: PipelineDeps, day: string, kind: "internship" | "full_time", r: DailyKindReport): Promise<void> {
+  if (!deps.ledger.setNote || !deps.ledger.getNote || (r.discovered === 0 && r.boardsRead === 0 && r.boardsFailed === 0)) return;
+  const key = `${day}#funnel-${kind === "internship" ? "internship" : "full-time"}`;
+  try {
+    let prev: Record<string, unknown> = {};
+    try {
+      prev = JSON.parse((await deps.ledger.getNote(key)) ?? "{}") as Record<string, unknown>;
+    } catch {
+      prev = {};
+    }
+    const n = (k: string) => (typeof prev[k] === "number" ? (prev[k] as number) : 0);
+    const reasons = { ...((prev.reasons as Record<string, number> | undefined) ?? {}) };
+    for (const [k, v] of Object.entries(r.reasons)) reasons[k] = (reasons[k] ?? 0) + v;
+    const top = Object.fromEntries(Object.entries(reasons).sort((a, b) => b[1] - a[1]).slice(0, 8));
+    await deps.ledger.setNote(
+      key,
+      JSON.stringify({
+        scans: n("scans") + 1, boardsRead: n("boardsRead") + r.boardsRead, boardsFailed: n("boardsFailed") + r.boardsFailed, listed: n("listed") + r.listed,
+        discovered: n("discovered") + r.discovered, parsed: n("parsed") + r.parsed, rejected: n("rejected") + r.rejected, uncertain: n("uncertain") + r.uncertain,
+        eligible: n("eligible") + r.eligible, duplicates: n("duplicates") + r.duplicates, allocated: n("allocated") + r.allocated, saved: n("saved") + r.saved.length, reasons: top,
+      }),
+    );
+  } catch {
+    // Bookkeeping only: never stops the search.
+  }
+}
+
 export async function runDailyJobSearch(deps: PipelineDeps): Promise<{ internships: string[]; fullTime: string[]; warnings: string[]; report?: Record<string, DailyKindReport> }> {
   const at = now(deps);
   const day = dateInTimezone(at, deps.config.timeZone);
@@ -812,51 +923,82 @@ export async function runDailyJobSearch(deps: PipelineDeps): Promise<{ internshi
     for (const r of REGIONS) capacity.regionUsed[r] = await deps.ledger.get(keys.region(r));
     for (const m of MEMBER_IDS) capacity.memberUsed[m] = await deps.ledger.get(keys.member(m));
     if (REGIONS.every((r) => (capacity.regionUsed[r] ?? 0) >= perBucket) || MEMBER_IDS.every((m) => (capacity.memberUsed[m] ?? 0) >= perBucket)) continue;
-    // The quota may never fill (the bar is strict), so searching is limited to once per local hour per kind: it must not
-    // re-read the job sites and the Jobs sheet on every 5-minute call all day.
-    const hourKey = `${day}#jobs-${step.kind === "internship" ? "internship" : "full-time"}-search-h${Math.floor(localHour(at, deps.config.timeZone))}`;
-    if ((await deps.ledger.get(hourKey)) > 0) continue;
-    await deps.ledger.add(hourKey, 1);
-
-    // Companies already used today for this kind (a company gets one opening per kind per day).
-    const existing = await deps.jobs.list();
-    const jobType = step.kind === "internship" ? "Internship" : "Full-time";
-    const usedCompanies = new Set<string>();
-    for (const j of existing) if (j.jobType === jobType && /Found by Network Finder/.test(j.description ?? "") && (j.description ?? "").includes(` on ${day}.`)) usedCompanies.add(j.company.trim().toLowerCase());
-    capacity.companiesUsed = usedCompanies;
-
-    const known = (await deps.registry.all()).filter((r) => r.website || r.careersUrl).map((r) => ({ ...r, regionGroup: r.country === "US" ? "us" : "international", score: 0 }) as QualifiedCompany);
+    // Supply: the official boards seeded in config/job-boards.ts (independent of people discovery) plus any company the
+    // registry already knows. Every scan reads a different slice, so the whole list is swept within the hour; nothing
+    // here is throttled by a "once per hour" key any more (that key was burned even when the run died before searching).
+    const stats: SearchStats = { boardsRead: 0, boardsFailed: 0, listed: 0 };
+    const seeded = (deps.seedBoards ?? []).map(seedCompany);
+    const seededKeys = new Set(seeded.map((s) => s.key));
+    const registered = (await deps.registry.all())
+      .filter((r) => (r.website || r.careersUrl) && !seededKeys.has(r.key))
+      .map((r) => ({ ...r, regionGroup: r.country === "US" ? "us" : "international", score: 0 }) as QualifiedCompany);
+    const known = [...seeded, ...registered];
     const found: JobCandidate[] = [];
     for (const source of deps.jobSources) {
       if (!source.searchJobs) continue;
       try {
-        found.push(...(await source.searchJobs({ keywords: TARGET_ROLES, employment: step.kind, limit: 200, companies: known, ...(deps.runState?.deadline ? { deadline: deps.runState.deadline } : {}) })));
+        found.push(
+          ...(await source.searchJobs({
+            keywords: TARGET_ROLES,
+            employment: step.kind,
+            limit: 200,
+            companies: known,
+            stats,
+            // Details (description, posted pay) are fetched only for listings that can still qualify.
+            accept: (j) => evaluateJob(j, step.kind).verdict !== "reject",
+            ...(deps.runState?.deadline ? { deadline: deps.runState.deadline } : {}),
+          })),
+        );
       } catch (err) {
         result.warnings.push(err instanceof ProviderError ? `${err.provider}: ${err.kind}` : `${source.id}: unexpected error`);
       }
     }
 
-    const report: DailyKindReport = { saved: [], considered: 0, rejected: 0, uncertain: 0, reasons: {} };
-    const index = JobIndex.from(existing);
+    const report: DailyKindReport = { saved: [], discovered: found.length, parsed: 0, considered: 0, rejected: 0, uncertain: 0, eligible: 0, duplicates: 0, allocated: 0, boardsRead: stats.boardsRead, boardsFailed: stats.boardsFailed, listed: stats.listed, reasons: {} };
     const candidates: EvaluatedJob[] = [];
     const seen = new Set<string>();
     for (const job of found) {
-      if (classifyEmployment(job.title, job.employment) !== step.kind || seen.has(job.url) || index.duplicateOf(job)) continue;
+      if (classifyEmployment(job.title, job.employment) !== step.kind || seen.has(job.url)) continue;
       seen.add(job.url);
+      report.parsed += 1;
       report.considered += 1;
       const evaluation = evaluateJob(job, step.kind);
       if (evaluation.verdict === "reject") report.rejected += 1;
       else if (evaluation.verdict === "uncertain") report.uncertain += 1;
       if (evaluation.verdict !== "qualifies") for (const reason of evaluation.reasons) report.reasons[reasonKey(reason)] = (report.reasons[reasonKey(reason)] ?? 0) + 1;
-      if (evaluation.verdict === "qualifies" && evaluation.region) candidates.push({ job, evaluation: { ...evaluation, region: evaluation.region } });
+      if (evaluation.verdict === "qualifies" && evaluation.region) {
+        // Without an AI judge, a title the rules cannot place ("Renewals Associate") is not a software/data role: it must not take a slot.
+        if (brainOf(deps).id === "rules" && ruleVerdict(job.title).verdict === "unsure") {
+          report.rejected += 1;
+          report.reasons["title is not a recognised software/data role"] = (report.reasons["title is not a recognised software/data role"] ?? 0) + 1;
+          continue;
+        }
+        candidates.push({ job, evaluation: { ...evaluation, region: evaluation.region } });
+      }
     }
+    report.eligible = candidates.length;
+
+    // The Jobs sheet is read only when something qualifies: duplicates and "one opening per company per day" need it, nothing else does.
+    let existing: Job[] = [];
+    if (candidates.length) {
+      existing = await deps.jobs.list();
+      const jobType = step.kind === "internship" ? "Internship" : "Full-time";
+      const usedCompanies = new Set<string>();
+      for (const j of existing) if (j.jobType === jobType && /Found by Network Finder/.test(j.description ?? "") && (j.description ?? "").includes(` on ${day}.`)) usedCompanies.add(j.company.trim().toLowerCase());
+      capacity.companiesUsed = usedCompanies;
+    }
+    const index = JobIndex.from(existing);
+    const fresh = candidates.filter((c) => !index.duplicateOf(c.job));
+    report.duplicates = candidates.length - fresh.length;
+
 
     const brain = brainOf(deps);
     deps.runState ??= {};
-    let pool = candidates;
+    let pool = fresh;
     for (let round = 0; round < 3 && pool.length; round++) {
       const assignments = allocate(pool, capacity, MEMBER_IDS, perBucket, perBucket);
       if (!assignments.length) break;
+      report.allocated += assignments.length;
       const failed = new Set<JobCandidate>();
       for (const a of assignments) {
         const memberName = getMember(a.memberId)?.name ?? a.memberId;
@@ -904,6 +1046,7 @@ export async function runDailyJobSearch(deps: PipelineDeps): Promise<{ internshi
       pool = pool.filter((c) => !failed.has(c.job));
     }
     result.report[step.kind] = report;
+    await recordFunnel(deps, day, step.kind, report);
     const short = MEMBER_IDS.filter((m) => (capacity.memberUsed[m] ?? 0) < perBucket).map((m) => `${m} ${capacity.memberUsed[m] ?? 0}/${perBucket}`);
     if (short.length) result.warnings.push(`${step.kind}: ${report.considered} listings, ${report.rejected} rejected, ${report.uncertain} uncertain; below target for ${short.join(", ")}`);
   }

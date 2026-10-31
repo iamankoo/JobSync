@@ -64,7 +64,7 @@ function setup(options: { companies?: CompanyCandidate[]; config?: Partial<Netwo
   const jobSource = new MockJobSource();
   const source = new MockCompanySource("hn", companies);
   const deps: PipelineDeps = {
-    config: { ...loadNetworkFinderConfig({ NETWORK_FINDER_ENABLED: "true", APP_TIMEZONE: "Asia/Kolkata" } as unknown as NodeJS.ProcessEnv), maxCompaniesPerTick: 10, ...options.config },
+    config: { ...loadNetworkFinderConfig({ NETWORK_FINDER_ENABLED: "true", NETWORK_FINDER_CONNECTION_DISCOVERY: "true", APP_TIMEZONE: "Asia/Kolkata" } as unknown as NodeJS.ProcessEnv), maxCompaniesPerTick: 10, ...options.config },
     sources: [source],
     contactFinders: [createWebsiteContactFinder(fetcher, extractor)],
     jobSources: [jobSource],

@@ -5,13 +5,14 @@ import { loadNetworkFinderConfig, type NetworkFinderConfig } from "./config";
 import { ApolloPoolExhausted, ProviderError } from "./errors";
 import { existingConnections, existingDraftDeps, existingJobs, existingSentTrackerDeps, teamNotifier } from "./gateways";
 import { PoliteFetcher } from "./http/polite-fetch";
-import { recheckCompanyJobs, runBatchTick, runDailyJobSearch, runPendingDrafts, type PipelineDeps, type TickResult } from "./pipeline";
+import { recheckCompanyJobs, runBatchTick, runDailyJobSearch, runPendingDrafts, type DailyKindReport, type PipelineDeps, type TickResult } from "./pipeline";
 import { createApolloProvider } from "./providers/apollo";
 import { createApolloOrgProvider } from "./providers/apollo-org";
 import { createCompanyResearcher } from "./company-research";
 import { createCompanyFactsFinder } from "./providers/company-facts";
 import { createArbeitnowSource, createCompanyBoardSource, createRemoteOkSource } from "./providers/job-boards";
 import { createNemotronBrain, createNemotronCompanyFactsExtractor, createNemotronPeopleExtractor, loadNemotronConfig } from "./providers/nemotron";
+import { SEED_BOARDS } from "@/config/job-boards";
 import { createHnHiringSource, createRemoteInTechSource } from "./providers/public-sources";
 import { createWebsiteContactFinder } from "./providers/website-contacts";
 import { runSentTracking, type SentTrackingResult } from "./sent-tracker";
@@ -84,6 +85,7 @@ export function buildRealDeps(config: NetworkFinderConfig = loadNetworkFinderCon
     enrichCompany: chainEnrichers(apolloEnrich, facts),
     ...(nemotron ? { brain: createNemotronBrain(nemotron) } : {}),
     jobSources: [boards, createRemoteOkSource(fetcher), createArbeitnowSource(fetcher)],
+    seedBoards: SEED_BOARDS,
     research: createCompanyResearcher(fetcher, boards, { deadline: () => built.runState?.deadline }),
     queue: stores.queue,
     registry: stores.registry,
@@ -105,7 +107,7 @@ export interface CycleResult {
   batch?: TickResult;
   manualDrafts?: { checked: number; created: number; remaining: number };
   pendingDrafts?: { checked: number; created: number; remaining: number };
-  dailyJobs?: { internships: string[]; fullTime: string[]; warnings: string[] };
+  dailyJobs?: { internships: string[]; fullTime: string[]; warnings: string[]; report?: Record<string, DailyKindReport> };
   recheck?: { checked: number; jobsSaved: string[]; warnings: string[] };
   errors: string[];
 }
@@ -129,19 +131,34 @@ export async function runScheduledCycle(deps: PipelineDeps & { stores: ReturnTyp
   };
   const hasTime = (ms: number) => deps.runState!.deadline! - Date.now() > ms;
   try {
-    result.sentTracking = await step("sent-tracking", () => runSentTracking(existingSentTrackerDeps(), 30));
-    // Manually added connections first (one per call), so they are drafted within ~10 minutes even during a batch.
-    result.manualDrafts = await step("manual-drafts", () => runPendingDrafts(deps, { limit: 1, manualOnly: true }));
+    // Order matters when Sheets is slow: the two things members see come first (drafts for manually added connections, then
+    // the daily jobs); bookkeeping (sent tracking, re-checks) takes whatever time is left. Before 31 Oct the job search ran
+    // last and was skipped whenever the earlier steps used up the budget — on 29–31 Oct it was almost never reached.
+    // ONE drafting pass per call (it re-reads Connections and the draft ledger, so a second pass doubled the Sheets reads);
+    // manually added connections sort first inside it.
+    result.manualDrafts = await step("drafts", () => runPendingDrafts(deps, { limit: 2 }));
+    // Connection discovery (batch windows) is off by default; this returns at once without reading Sheets.
     result.batch = await step("batch", () => runBatchTick(deps));
-    result.pendingDrafts = await step("pending-drafts", () => runPendingDrafts(deps, { limit: 6 }));
-    if (hasTime(15_000)) result.dailyJobs = await step("daily-jobs", () => runDailyJobSearch(deps));
+    if (hasTime(20_000)) result.dailyJobs = await step("daily-jobs", () => runDailyJobSearch(deps));
+    if (hasTime(10_000)) result.sentTracking = await step("sent-tracking", () => runSentTracking(existingSentTrackerDeps(), 30));
     if (hasTime(15_000)) result.recheck = await step("recheck", () => recheckCompanyJobs(deps, 2));
+    if (result.dailyJobs?.report) console.log(`[daily-jobs] ${JSON.stringify(funnelCounts(result.dailyJobs.report))}`);
   } finally {
     setSheetsRetryDeadline(at + RELEASE_WINDOW_MS);
     await deps.stores.releaseRunLock().catch(() => undefined);
     setSheetsRetryDeadline(null);
   }
   return result;
+}
+
+/** Counts only: what each stage of one job scan kept (discovered → parsed → eligible → not duplicate → allocated → saved). */
+export function funnelCounts(report: Record<string, DailyKindReport>) {
+  return Object.fromEntries(
+    Object.entries(report).map(([kind, r]) => [
+      kind,
+      { boardsRead: r.boardsRead, boardsFailed: r.boardsFailed, listed: r.listed, discovered: r.discovered, parsed: r.parsed, rejected: r.rejected, uncertain: r.uncertain, eligible: r.eligible, duplicates: r.duplicates, allocated: r.allocated, saved: r.saved.length },
+    ]),
+  );
 }
 
 /**
@@ -174,7 +191,7 @@ export function summarizeCycle(r: CycleResult) {
           },
     manualDrafts: r.manualDrafts ?? null,
     pendingDrafts: r.pendingDrafts ?? null,
-    dailyJobs: r.dailyJobs ? { internships: r.dailyJobs.internships.length, fullTime: r.dailyJobs.fullTime.length, warnings: r.dailyJobs.warnings } : null,
+    dailyJobs: r.dailyJobs ? { internships: r.dailyJobs.internships.length, fullTime: r.dailyJobs.fullTime.length, warnings: r.dailyJobs.warnings, funnel: r.dailyJobs.report ? funnelCounts(r.dailyJobs.report) : null } : null,
     recheck: r.recheck ? { checked: r.recheck.checked, jobsSaved: r.recheck.jobsSaved.length } : null,
     errors: r.errors,
   };

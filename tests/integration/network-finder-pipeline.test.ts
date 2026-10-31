@@ -50,7 +50,7 @@ function setup(options: { companies?: CompanyCandidate[]; apolloKeys?: number; d
   const apollo = new MockApollo();
   const jobSource = new MockJobSource();
   const deps: PipelineDeps = {
-    config: { ...loadNetworkFinderConfig({ NETWORK_FINDER_ENABLED: "true", APP_TIMEZONE: "Asia/Kolkata" } as unknown as NodeJS.ProcessEnv), maxCompaniesPerTick: 10, ...options.config },
+    config: { ...loadNetworkFinderConfig({ NETWORK_FINDER_ENABLED: "true", NETWORK_FINDER_CONNECTION_DISCOVERY: "true", APP_TIMEZONE: "Asia/Kolkata" } as unknown as NodeJS.ProcessEnv), maxCompaniesPerTick: 10, ...options.config },
     sources: [source],
     contacts: apollo,
     jobSources: [jobSource],

@@ -92,7 +92,7 @@ describe("drafts land in each member's REAL Gmail module path (mock Google)", ()
     const q = qualifyCompany(mockCompany(1));
     if (!q.qualified) throw new Error(q.reason);
     const out = await processCompany({
-      config: { ...loadNetworkFinderConfig({ NETWORK_FINDER_ENABLED: "true", APP_TIMEZONE: "Asia/Kolkata" } as unknown as NodeJS.ProcessEnv), profiles: { lukky: "Final-year CS student who built a React Native expense app." }, signatures: { lukky: "Lukky K. | linkedin.example.test/lukky" } },
+      config: { ...loadNetworkFinderConfig({ NETWORK_FINDER_ENABLED: "true", NETWORK_FINDER_CONNECTION_DISCOVERY: "true", APP_TIMEZONE: "Asia/Kolkata" } as unknown as NodeJS.ProcessEnv), profiles: { lukky: "Final-year CS student who built a React Native expense app." }, signatures: { lukky: "Lukky K. | linkedin.example.test/lukky" } },
       sources: [],
       contactFinders: [createWebsiteContactFinder(testFetcher(web.fetchFn), new MockExtractor())],
       jobSources: [],

@@ -86,14 +86,29 @@ export function allocate(candidates: readonly EvaluatedJob[], capacity: Capacity
   const taken = new Set<JobCandidate>();
   const companies = new Set(capacity.companiesUsed);
   const out: Assignment[] = [];
-  for (const { c, fit } of pairs) {
-    const region = c.evaluation.region;
-    if (taken.has(c.job) || companies.has(companyKey(c.job)) || regionLeft(region) <= 0 || memberLeft(fit.memberId) <= 0) continue;
-    taken.add(c.job);
-    companies.add(companyKey(c.job));
-    capacity.regionUsed[region] = (capacity.regionUsed[region] ?? 0) + 1;
-    capacity.memberUsed[fit.memberId] = (capacity.memberUsed[fit.memberId] ?? 0) + 1;
-    out.push({ job: c.job, memberId: fit.memberId, region, fit, evaluation: c.evaluation });
+  // Round-robin over members (the one with the fewest jobs so far picks first), each taking the best remaining job for
+  // THEM. When jobs are plentiful everyone reaches 5; when they are scarce they are shared evenly instead of all going to
+  // the member whose verified skills happen to fit best.
+  const perMemberPairs = new Map(members.map((m) => [m, pairs.filter((p) => p.fit.memberId === m)]));
+  const bestFor = (m: MemberId) => (perMemberPairs.get(m) ?? []).find(({ c }) => !taken.has(c.job) && !companies.has(companyKey(c.job)) && regionLeft(c.evaluation.region) > 0);
+  let progress = true;
+  while (progress) {
+    progress = false;
+    // Fewest jobs first; among equals, the member with the best-fitting job available picks first.
+    const order = [...members].sort((a, b) => (capacity.memberUsed[a] ?? 0) - (capacity.memberUsed[b] ?? 0) || (bestFor(b)?.rank ?? -1) - (bestFor(a)?.rank ?? -1));
+    for (const m of order) {
+      if (memberLeft(m) <= 0) continue;
+      const pick = bestFor(m);
+      if (!pick) continue;
+      const { c, fit } = pick;
+      const region = c.evaluation.region;
+      taken.add(c.job);
+      companies.add(companyKey(c.job));
+      capacity.regionUsed[region] = (capacity.regionUsed[region] ?? 0) + 1;
+      capacity.memberUsed[fit.memberId] = (capacity.memberUsed[fit.memberId] ?? 0) + 1;
+      out.push({ job: c.job, memberId: fit.memberId, region, fit, evaluation: c.evaluation });
+      progress = true;
+    }
   }
   return out;
 }
