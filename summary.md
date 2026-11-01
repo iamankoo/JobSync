@@ -1,8 +1,121 @@
 # JobSync — Session Handoff Summary
 
-> Read this first in a new session. Last updated **2026-11-01, ~10:00 IST** (the 1 Nov update below is the newest).
+> Read this first in a new session. Last updated **2026-11-01, ~12:30 IST** (the three 1 Nov updates below are the newest, newest first).
 > Items marked **[VERIFIED]** were checked in Production/the sheet; **[NEEDS VERIFICATION]** were not yet confirmed;
 > **[USER-REPORTED]** were confirmed by the user, not by me.
+
+---
+
+## 🔄 UPDATE 2026-11-01 (third change): job notifications, admin rights, end-to-end checks
+
+**Production:** `main` @ `50b6b39` (PR #18), deployment `uumrtW` Ready and receiving cron calls [VERIFIED]. Connection discovery still OFF.
+
+### Notifications for discovered jobs (root cause: `notify:false`)
+Jobs saved by the daily search never notified anyone: `existingJobs.create` passed `notify:false` for a batch summary that no longer exists.
+Now every saved job is queued **after the row is saved** (`job-alerts.ts`, NF_State note `job-alerts`) and delivered to the **other two members** by the
+cron's `job-alerts` step with the existing push layer (`notifyMember`): title "New job/internship found for <member>: <role>" (never "added by"),
+body "<company> · <type> [· mode] — tap to view the job", link `/all-jobs?job=<id>`. Each recipient is removed from the job as soon as their delivery
+succeeds; a failed delivery is retried for that recipient only (max 6 attempts, then dropped); expired/no devices count as handled; "push not
+configured" is retried, not silently dropped. Rejected listings, duplicates and failed writes are never queued. Manual adds keep the old mechanism.
+Tests (`job-alerts.test.ts`, 12): all three member combinations (6 notifications for 3 jobs), duplicate/rejected/failed-write → none, restart,
+crash-before-flush, partial failure retry, expired device, push unconfigured, manual add per actor, visibility in All Jobs.
+**[NOT VERIFIED IN PROD]**: no job has been saved since this deployed, so no real push has gone through the new path yet. Check the next saved job:
+the other two members should receive "New … found for …".
+
+### Administrator
+`ADMIN_MEMBER_ID="anni"`, `isAdmin()` in `config/members.ts`; enforced **in the services** (`updateJob/deleteJob`, `updateConnection/deleteConnection`) from the
+session member id (routes take identity only from the validated session; inactive members are refused first). Ordinary members: own records only
+(403 `not_job_owner` / `not_connection_owner`). Owner/AddedBy/ids/AddedAt never change on an edit. Admin edit/delete of someone else's record writes
+an Activity audit row (MemberID=actor, Action=`admin_edit`|`admin_delete`, JobID column = record id, timestamp); these are classified `AUDIT_ACTIONS`
+(neither work nor presence, in no total). Job delete uses the existing rules (the job's application rows go, nobody else's); connection delete leaves the
+draft ledger/Gmail drafts alone; edits never create connections or drafts (tests). UI: Edit/Delete on every job and connection for Anni, own records
+only for Lukky/Rishii; delete confirmations unchanged. Tests: `admin-permissions.test.ts` (24, direct route calls incl. forged body/headers, inactive
+admin, no session, cross-origin), unit UI tests, Playwright `connections.spec.ts` admin flow (desktop + mobile, 8/8).
+
+### Tests (1 Nov, final)
+typecheck + lint clean; **1,223 vitest (74 files)**; Playwright connections 8/8; live disposable-sheet job-window test passes.
+
+---
+
+## 🔄 UPDATE 2026-11-01 (second change): education, worldwide remote, progressive recency
+
+**Production:** `main` @ `dd4e2cf` (PR #17), first deployed as `h8nCXb`; Ready and receiving cron calls [VERIFIED via GitHub deployment record + Vercel logs].
+Connection discovery is still OFF; manual-connection drafting untouched; retention untouched; no production data deleted or rewritten.
+
+### Eligibility rules now enforced (both kinds; every member identical — skills only rank)
+1. **Education (2027 B.Tech / B.E.)** — `job-education.ts`. REJECT: postgraduate-only (Master's, M.Tech, M.E., MBA, MSc, MCA, PhD/doctoral)
+   when stated as a requirement and no bachelor-level degree is also accepted; other degrees (MBBS, B.Com, BBA, B.Pharm, LLB…); an explicit
+   exclusion of B.Tech/B.E.; any graduation year without 2027. VERIFIED = B.Tech/B.E./Bachelor of Technology|Engineering (or a Bachelor's in
+   computer science/engineering/IT) **and** the 2027 batch both stated. A 2027 year alone never verifies. **UNVERIFIED** (degree and/or year not
+   stated, nothing excludes): allowed only for a fresher listing on an official board — the same safe handling as undisclosed pay — with the
+   note "… not stated: 2027 B.Tech / B.E. eligibility is not verified" and `educationVerified=false`; otherwise uncertain (not saved).
+   **Decision for you:** this keeps unstated-degree listings. Requiring explicit B.Tech/B.E.+2027 on every job would cut supply to near zero
+   (0 of ~600 full-time listings in the sweep stated both).
+2. **Worldwide remote** — `remoteScope()` in `job-eligibility.ts`. India (location names India): remote/hybrid/on-site as before. Anywhere else:
+   needs evidence — location says worldwide/anywhere/global, or the text says worldwide / work-from-anywhere, or India is named eligible.
+   REJECT: a country/state/region in the location without worldwide/India (US, Canada, UK, EMEA, "Remote (California)"…), "US-only"/"must be located
+   in…"/"authorised to work in…"/"work authorisation"/"residents of…" without India. Conflicts (worldwide + US work authorisation) are rejected.
+   Plain "Remote" is UNCERTAIN ("does not show applicants in India are eligible"). Company HQ is never consulted. The reason is stored in the
+   funnel counts and in the saved job's note ("worldwide remote: …"). Non-India pay uses the remote thresholds (INR-equivalent).
+3. **Recency by ORIGINAL posting date** — `job-recency.ts`: windows 0–7, 8–15, 16–30, 31–60, 61–90, 91–120 calendar days in `APP_TIMEZONE`;
+   >120 rejected; undated/unparseable/future-dated → uncertain (never "new"). Dates used: Greenhouse `first_published` (NOT `updated_at`, which
+   changes on every edit), Lever `createdAt`, Remote OK `date`, Arbeitnow `created_at`.
+4. Unchanged: 13 role families (unsure titles rejected up front), no CGPA/backlog rule, ₹30k/₹50k stipends, ₹10 LPA, paid portals, 15+15 targets,
+   5 per member (round-robin). New: when one non-India group is empty, US+OTHER share a combined allowance of 10 (India stays 5).
+
+### Progressive search over the REMAINING quota (`runDailyJobSearch`)
+Per kind and local day, state in NF_State (`<day>#funnel-<kind>`: window `w`, sweep counter `n`, scans, cumulative funnel + per-window counts).
+Window 1 is open from the start of the day; only open windows are allocated, newest first (recency dominates tier and skill fit in the rank).
+After a full sweep of the board list (≈ ⌈boards/12⌉ scans) with the quota still unmet, the next-older window opens. A kind whose total is reached
+is not searched at all (the other continues alone) — examples A/B/C and "no starvation" are integration tests. Each save bumps the ledger as it
+happens, and the scan count/window/funnel are written in a `finally`, so an interrupted run neither repeats nor loses progress. The board slice is
+a persisted counter, so a sweep survives restarts. Duplicates: same job from two sources counts once (official wins); jobs already in Jobs are
+never re-allocated. Resets at local midnight (day-keyed).
+
+### Diagnosis (before): what the pipeline did
+Sources return Greenhouse (list incl. `first_published`), Lever, Remote OK, Arbeitnow (all with posting dates); degree/year came only from
+`graduationYears()` (no degree rule existed); "Remote" + a US/other country was accepted as remote (no worldwide check); recency was ignored;
+quotas were per day with no window concept; duplicates by URL/company+title against the Jobs sheet. Counters reset correctly (day-keyed). No
+cursor/throttle blocked searching since #12–#15 (Sheets 429s still occur; calls are 200). The two kinds could starve each other until #13.
+
+### Tests (1 Nov)
+typecheck + lint clean; **1,182 vitest passing (72 files)** incl. `job-rules-2027.test.ts` (education, remote, exact window boundaries, tz edge,
+undated), `progressive-windows.test.ts` (A/B/C, exhaustion, shortfall, duplicates, restart, no starvation, empty profile), updated daily-jobs tests;
+live run on the **disposable test spreadsheet** (`tests/live/job-windows.live.test.ts`, 1/1 pass: cursor + funnel persisted across fresh "processes",
+15 jobs, 5/5/5, no duplicate links). The live test needed an `NF_State` tab on the TEST sheet (added there only). Production was not read by that
+test. NOTE: Sheets read quota (60/min) is project-wide and shared with production; two earlier live runs hit it.
+
+### Production results
+**Production (deployments `h8nCXb`, `uumrtW`; all cron calls 200, no 504/409 since #15):**
+- Window cursor works in Production: window 1 open from the start of the day, **window 2 opened after the 9th scan (06:30 UTC)**, and the cursor survived the next deploy (still window 2 on `uumrtW`).
+- Counts for 7 scans of `h8nCXb` (05:40–06:25 UTC, window 1 only), by category — *discovered ≠ saved*:
+  | stage | internships | full-time |
+  |---|---:|---:|
+  | listings on boards read (84 board reads) | — | — |
+  | discovered after prefilter | 151 | 2,698 |
+  | parsed (valid, this kind, unique) | 150 | 2,631 |
+  | rejected | 95 | 2,068 |
+  | uncertain (not saved) | 54 | 560 |
+  | eligible | 1 (window 6) | 3 (window 1: 2, window 2: 1) |
+  | deferred (older window not open yet) | 1 | 1 |
+  | duplicates (already in Jobs) | 0 | 2 |
+  | allocated / **saved** | 0 / **0** | 0 / **0** |
+- Day totals so far (NF_State, 1 Nov IST ≈ 12:15): **saved 1 internship + 3 full-time**; the Jobs tab read through the All Jobs service shows exactly the same
+  rows for 1 Nov (internship: Anni 1; full-time: Anni 1, Lukky 1, Rishii 1). 15 + 15 was **not** reached.
+- 31 Oct: the funnel counter says 1 internship + 6 full-time saved, the sheet holds 4 full-time + 0 internships stamped "on 2026-10-31" — 3 rows fewer
+  than the counter (consistent with members deleting jobs; **not investigated / not verified**).
+- Real-source end-to-end run (public boards → real pipeline → in-memory sheet, all six windows opened, fake devices): **2 internships + 3 full-time
+  real listings saved** (Celonis, HackerRank, Stripe ×2, Sumo Logic), all five visible in All Jobs to all three members, **10 notifications = 2 per job**.
+  Funnel of that run — internships: 213 discovered → 212 parsed → 135 rejected, 75 uncertain → 2 eligible → 2 saved; full-time: 3,783 → 3,695 → 2,953
+  rejected, 738 uncertain → 4 eligible (1 duplicate) → 3 saved. Education was "not verified" for all five (no listing states B.Tech/B.E. + 2027).
+- Why so few: under these rules only ~2–5 listings per sweep of 106 Greenhouse boards qualify (top reasons: pay not disclosed / not an explicit fresher
+  listing, US/other remote not worldwide, "Remote" without India eligibility, role not a target family, unstated degree on non-fresher listings).
+
+
+### Still open
+- Supply under the new rules is far below 15+15/day (see results). Levers: more official boards (Greenhouse tokens are cheap; Lever/Ashby gave none/are
+  robots-blocked), accepting plain-"Remote" listings whose description is silent (rejected today as unknown), APAC/Asia-wide wording, a permitted LinkedIn route.
+- 2 of 106 seeded boards return nothing each scan (dead tokens); "Connections: 3 row issue(s)" still logged each call.
 
 ---
 
