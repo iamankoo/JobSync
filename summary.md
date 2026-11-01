@@ -1,10 +1,18 @@
 # JobSync — Session Handoff Summary
 
-> Read this first in a new session. Last updated **2026-11-01, ~12:30 IST** (the three 1 Nov updates below are the newest, newest first).
+> Read this first in a new session. Last updated **2026-11-01, ~19:45 IST** (the three 1 Nov updates below are the newest, newest first).
 > Items marked **[VERIFIED]** were checked in Production/the sheet; **[NEEDS VERIFICATION]** were not yet confirmed;
 > **[USER-REPORTED]** were confirmed by the user, not by me.
 
 ---
+
+## UPDATE 2026-11-01 (email closing: "attached my resume")
+
+- **Change:** every email now ends "I have attached my resume for your reference. Thank you for your time and consideration." (was "I would be glad to share my resume and to discuss how my background aligns with your team's needs…"). PRs #23 and #24, main d744bbe, **live in Production** (deployment d744bbe, state success).
+- **Why two PRs:** #23 changed only the deterministic template (`composeFallback`, constant `CLOSING` in `email-composer.ts`); most drafts are written by the Nemotron writer, whose prompt said "offer to share the resume", so it kept writing the old line. #24 makes the closing code-enforced: `assembleEmail` strips any resume/thank-you sentence from the writer's last paragraph and appends `CLOSING` (the neutral enquiry already says "attached my resume" mid-body, so it gets only the thank-you); the prompt step (5) no longer mentions the resume.
+- **Word floors lowered by 15** (shorter closing): `MIN_WORDS` 180→165, one-highlight 150→135, thin-profile 90→75 (neutral stays 60). Tests updated; 1246 pass, tsc clean.
+- **Existing Gmail drafts keep the OLD text.** Not changed (owner: leave it). Doing so would need new code (drafts.list/get/update with the existing `gmail.compose` scope — untested) and breaks the "app never edits existing mail" rule in `gmail/drafts.ts`; propose dry-run first, JobSync-created drafts only. Alternative: delete old drafts and let Network Finder regenerate.
+- **Drafts still have NO attachment** — the text now says the resume is attached, so the member must attach the PDF by hand before sending (or build an auto-attach feature; not done).
 
 ## UPDATE 2026-11-01 (owner decisions: Himalayas internships, Amazon and Workday)
 
@@ -458,11 +466,11 @@ Files: `src/config/members.ts`, `src/config/skills.ts`, `src/config/member-email
 - **Personalisation:** "Dear {first name}," when a real first name is known, else "Dear Hiring Team,"; exact company
   and role; company facts only from verified discovery text (else a neutral sentence); remote line only when relevant.
 - **Writing:** Nemotron writes body paragraphs only, from a facts plan; subject/greeting/signature are fixed by code.
-- **Validation** (every draft): 180–300 words (lower minimum for thin profiles), no placeholders/ellipsis/cut-off,
+- **Validation** (every draft): 165–300 words (lower minimum for thin profiles), no placeholders/ellipsis/cut-off,
   company mentioned, no other member's name/links, no internal ids (anni/lukky/rishii), no banned buzzwords, no
   unverified company claims (e.g. funding), **no unverified skills**, full signature last. Fails → deterministic
   template fill from verified facts (never empty, invented or truncated). Nemotron down → same fallback.
-- **Resume:** drafts have no attachments (never did); text offers "I would be glad to share my resume".
+- **Resume:** drafts have no attachments (never did); the fixed closing says "I have attached my resume for your reference" (see the 1 Nov closing update — the member attaches the PDF by hand).
 - **Signature:**
   ```
   Best regards,
