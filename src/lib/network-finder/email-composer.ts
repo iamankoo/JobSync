@@ -325,6 +325,8 @@ function composeNeutral(p: EmailPlan): string[] {
   return paras;
 }
 
+const CLOSING = "I have attached my resume for your reference. Thank you for your time and consideration.";
+
 // ---- assembly ------------------------------------------------------------------------------------------------------
 
 export const signatureFor = (p: Pick<EmailPlan, "member">) => `Best regards,\n${p.member.fullName}\nLinkedIn: ${p.member.linkedinUrl}\nGitHub: ${p.member.githubUrl}`;
@@ -342,7 +344,11 @@ export function cleanParagraphs(paragraphs: string[], fullName: string): string[
 
 export function assembleEmail(p: EmailPlan, paragraphs: string[]): string {
   const paras = [...paragraphs];
-  if (!/thank you/i.test(paras[paras.length - 1] ?? "")) paras.push("Thank you for your time and consideration.");
+  // The closing is fixed, whoever wrote the body: drop any resume offer / thanks the writer put in the last paragraph, then add ours.
+  const last = paras.pop() ?? "";
+  const kept = (last.match(/[^.!?]+[.!?]+(\s+|$)|[^.!?]+$/g) ?? []).map((x) => x.trim()).filter((x) => x && !/resume|\bCV\b|thank you|thanks/i.test(x)).join(" ");
+  if (kept) paras.push(kept);
+  paras.push(paras.some((x) => /attached my resume/i.test(x)) ? "Thank you for your time and consideration." : CLOSING);
   return `${p.greeting}\n\n${paras.join("\n\n")}\n\n${signatureFor(p)}`;
 }
 
