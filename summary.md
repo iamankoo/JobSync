@@ -1,8 +1,83 @@
 # JobSync — Session Handoff Summary
 
-> Read this first in a new session. Last updated **2026-10-28, ~21:00 IST** (evening update below is the newest).
+> Read this first in a new session. Last updated **2026-11-01, ~10:00 IST** (the 1 Nov update below is the newest).
 > Items marked **[VERIFIED]** were checked in Production/the sheet; **[NEEDS VERIFICATION]** were not yet confirmed;
 > **[USER-REPORTED]** were confirmed by the user, not by me.
+
+---
+
+## 🔄 UPDATE 2026-11-01 (supersedes everything below where they differ)
+
+**Production:** `main` @ `b3d1555` (PRs #12 `0dc98cd`, #13 `93c3476`, #14 `07dd719`, #15 `b3d1555`) — deployment Ready, built from that
+merge commit [VERIFIED via GitHub deployment record]. Cron-job.org schedule unchanged (every 5 min, 200s in logs).
+
+### 1. Connection discovery is OFF
+`NETWORK_FINDER_CONNECTION_DISCOVERY` (default **off**, not set in Prod). `runBatchTick` returns `discovery_off` before reading
+Sheets. No company/people discovery, no automatic connections. Existing connections/data untouched; manual Connections page,
+Gmail drafting, sent tracking and the daily job search all still run. Re-enable only with `NETWORK_FINDER_CONNECTION_DISCOVERY=true`.
+
+### 2. Gmail drafts — root cause and fix
+- **Root cause:** the draft never read the connection's description. The role came from (a) the company's row in the Jobs sheet,
+  (b) the company's careers board, else (c) the default template = **Software Engineer**. The person's *designation* was the only
+  connection field passed, and Notes were ignored. Tests passed because they supplied a Jobs row.
+- **Fix:** `connection-role.ts` reads the role from **Notes** (then "Message to send"): `Role: X`, `Position:`, `Job title:`,
+  `Hiring for X – focus`, `X Intern`, any labelled title (not tied to engineer-style words). Focus after a dash/parenthesis
+  (“Video Generation”, “Payments”) is kept and must appear in the email. Two different roles → ambiguous. Missing/ambiguous →
+  **neutral enquiry** (no role, no skills, never Software Engineer), ledger detail `review: …`. The Notes placeholder now says
+  `Role: …`. Company website + careers board are researched; a board opening with the same role supplies requirements.
+  Only each member's verified skills/projects are used; Rishi (no verified profile) gets role-specific emails with no skill claims.
+- **Duplicates/status:** unchanged ledger (`created`/`sent` never recreated; failed retried; disconnected Gmail skipped once, others
+  unaffected). New: a connection whose last attempt failed sorts behind never-tried ones (no head-of-line blocking).
+- **Tests** (`manual-connection-role-drafts.test.ts`, `connection-role.test.ts`): Magic Hour AI (Machine Learning Engineer – Video
+  Generation), Learnosphere (Full Stack Developer Intern), Alehar (Technology, Data & AI Internship), backend, data engineering →
+  15 drafts, each member's own name/links, bodies differ per member and per role, no “Software Engineer”, designation not mistaken
+  for the role; neutral/ambiguous cases; retries; disconnected mailbox; discovery-off. **[NOT VERIFIED IN PROD]**: no real manual
+  connection has been drafted by the new code yet (I did not create production data). Next real manual connection: put
+  `Role: <title>` in Notes and check the three drafts.
+
+### 3. Job discovery — where jobs were lost (real numbers)
+Production NF_State (read-only, counts): **28 Oct** 5 internships + 5 full-time; **29 Oct and 30 Oct: 0 saved** (12 and 7 hourly
+searches ran); **31 Oct before the fix: no search started at all**. Causes, in order of impact:
+1. **Supply = 5 companies.** The search read only boards of companies in NF_Companies (5 rows, 4 of them `no_contacts`) plus Remote OK
+   / Arbeitnow. Strict filters + dedupe left nothing. → 106 official Greenhouse boards seeded (`src/config/job-boards.ts`),
+   independent of people discovery; each scan reads a rotating slice (12 boards), full sweep ≈ 1 h.
+2. **The search ran last** and was skipped whenever drafts/sent tracking/batch used up the 50 s budget (Sheets 429s). → order is now
+   drafts → jobs → sent tracking → re-checks; one drafting pass; batch step returns instantly.
+3. **The hourly key was written before searching** — a run killed mid-search burned the hour. → throttle removed.
+4. **Jobs sheet read on every scan** → only when something qualifies. Quiet cycle ≈ 9 Sheets reads (test guards ≤ 12, ≤ 2 per tab).
+5. **Ashby boards never worked**: `api.ashbyhq.com` robots.txt disallows automated access and the app (correctly) honours it. 28
+   candidate Ashby boards removed. SmartRecruiters is also robots-disallowed. LinkedIn: not automated (terms) — unchanged.
+6. **Second kind starved**: the full-time pass could not use boards the internship pass had listed (found from live logs, fixed #13).
+7. **Same unplaceable titles allocated every scan** (“Renewals Associate”…): allocated 147 vs saved 6 on 31 Oct → rejected once up front.
+8. **Level-one titles** (“Software Engineer I”, SDE-1) now count as fresher-friendly; matcher bug fixed (“Senior … I/II” was “junior”).
+9. **Allocation** is round-robin across members (was greedy: all scarce jobs went to Aniket); still 5 per member / 5 per country group.
+10. **504s** (≈1 in 4 calls): run budget 50→44 s and the endpoint now answers 200 at 55 s (`timedOut:true`) instead of being killed.
+
+**Funnel is now persistent** (NF_State rows `note:<day>#funnel-internship|full-time`) and logged per call (`[daily-jobs]`, counts only):
+boards read/failed → listed → discovered → parsed → rejected/uncertain → eligible → duplicates → allocated → saved, plus top reasons
+(including `released: …`). Sheet check at ~09:40 IST on 1 Nov: **saved so far today 1 internship + 3 full-time; 31 Oct 1 internship +
+6 full-time**.
+
+**The honest shortfall (rules unchanged — the quota never lowers the bar):** full-time, 1 Nov, ~69k listings seen across scans →
+246 eligible; top rejections: pay not disclosed + not an explicit-fresher listing (~36k), “does not say freshers/2027 batch” (~36k),
+role not suitable (~27k), US/other remote not stated (~23k), country unclear (~10k). Internships: 4.8k parsed, 96 eligible; most US
+internships are on-site (rejected by the remote-only rule). A live sweep of all boards at one moment gave ≈ 7 internships and ≈ 23
+full-time eligible (before the title fixes) — i.e. **15+15/day is not reachable from official Greenhouse boards alone under these
+rules**. Levers (need your decision): more boards (Lever/Greenhouse tokens are cheap to add), accepting “pay not disclosed” for
+non-explicit-fresher official listings, or a permitted LinkedIn route.
+
+### 4. Tests (all run 1 Nov)
+typecheck + lint clean; **1,152 vitest passing (70 files)**; Playwright isolated `connections.spec.ts` desktop+mobile 6/6; live
+Network-Finder suite vs the disposable test sheet: 12/13 (HN source returned an empty body — external, discovery is off); the generic
+`test:live` run hit Google's **60 reads/min/user quota, which Production shares** (my run briefly competed with the cron — don't repeat
+while the cron runs). Live public-source sweeps and read-only forensic reads wrote nothing.
+
+### 5. Still needs verification
+- A real manual connection drafted by the new code in all three Gmails (see §2).
+- 504 rate over a longer window (last sample on `SKsYBq`: 2 calls, both 200).
+- “Connections: 3 row issue(s) while reading” appears every call — 3 Connections rows fail validation and are skipped (unrelated; inspect which).
+- Sheets 429 retries still occur (quota is project-wide); further read reductions possible (NF_State full-tab fresh read).
+- Rishi's profile is still empty (low skill matches; no-claim emails).
 
 ---
 
