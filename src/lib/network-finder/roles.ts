@@ -82,8 +82,10 @@ export function ruleVerdict(title: string): RuleVerdict {
 
 /** Employment type from what the source said, else from the title. */
 export function classifyEmployment(title: string, stated?: Employment): Employment {
-  if (stated) return stated;
   const t = norm(title);
+  // Companies often tag an internship "full time"; the title decides, so the internship stipend rules apply to it.
+  if (stated === "full_time" && /\b(intern|internship)\b/.test(t)) return "internship";
+  if (stated) return stated;
   if (/\b(intern|internship|co-op|coop|trainee|apprentice)\b/.test(t)) return "internship";
   if (/\bpart[\s-]?time\b/.test(t)) return "part_time";
   if (/\b(contract|contractor|freelance)\b/.test(t)) return "contract";

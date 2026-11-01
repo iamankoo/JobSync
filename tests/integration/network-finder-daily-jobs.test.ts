@@ -240,6 +240,19 @@ describe("official company URL first; duplicates never saved", () => {
     expect(jobReads).toBeGreaterThan(0);
   });
 
+  it("keeps the target at 15 per kind and reports the shortfall separately for internships and full-time", async () => {
+    const { deps, jobSource } = setup();
+    jobSource.searchResults = [...pool("internship", 2), ...pool("full_time", 6)];
+    const res = await runDailyJobSearch(deps);
+    const { internship, full_time } = res.report!;
+    expect(internship.target).toBe(15);
+    expect(full_time.target).toBe(15);
+    expect(internship.shortfall).toBe(15 - internship.saved.length);
+    expect(full_time.shortfall).toBe(15 - full_time.saved.length);
+    expect(internship.saved.length).toBeLessThan(15); // never padded with unsuitable jobs to reach the quota
+    expect(internship.shortfall).toBeGreaterThan(0);
+  });
+
   it("stops searching for a kind once its quota is full", async () => {
     const { deps, jobSource } = setup();
     jobSource.searchResults = pool("full_time", 8);

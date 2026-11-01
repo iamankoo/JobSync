@@ -6,6 +6,15 @@
 
 ---
 
+## UPDATE 2026-11-01 (source terms and yield research)
+
+- **Amazon (amazon.jobs) — NOT integrated.** robots.txt only disallows `/internal` and `/en/search.json` works technically, but the site's footer links to Amazon's Conditions of Use, which prohibit "any use of data mining, robots, or similar data gathering and extraction tools". The location filter was also ignored in a test query. Terms forbid it.
+- **Workday career sites (`*.myworkdayjobs.com`) — NOT integrated, terms unclear.** The `/wday/cxs/<tenant>/<site>/jobs` JSON works and a tenant's robots.txt (checked: NVIDIA) does not disallow it, but it is an undocumented front-end endpoint; there is no Workday API terms for it, each employer's own site terms apply (not reviewed per employer), and posting dates come only as "Posted N Days Ago" / "30+ Days Ago", which cannot be placed in the recency windows. Workday's own site terms forbid scraping workday.com (not the tenants). Needs the owner's approval per employer.
+- **Himalayas, Remotive, Jobicy — evaluated, NOT integrated (0 qualifying).** Terms allow free API use with attribution (Remotive: max 4 requests/day, link back, no re-submission to other job sites; Jobicy: credit + link; Himalayas: free, 20 per request). Real yield with the real rules: Himalayas (India entry-level 120, India internships 134, worldwide entry-level 120 listings) 0 qualify, about 49 internships are "degree and batch not stated" on an aggregator (not an official employer board, so they stay uncertain); Remotive (48) 0; Jobicy (198) 0 (108 senior, 20 limited to a country).
+- **More official boards:** 297 further Greenhouse/Lever tokens probed, 28 answered; only Hevo Data (Lever) produced qualifying roles (Pune/Bangalore) and was added.
+- **Fix:** a title containing "Intern" is an internship even when the company tags it full time (so the stipend rules apply).
+- **Reporting:** the `[daily-jobs]` log line and report carry `target` (15) and `shortfall` per kind.
+
 ## UPDATE 2026-11-01 (supply audit) — why 15 + 15 is not reached, and what changed
 
 - **Counter check:** the day's funnel row (`<day>#funnel-<kind>`) is cumulative per day and matches the ledger and the Jobs sheet (1 Nov: 1 internship + 3 full-time). The earlier "saved 0 for 7 scans" came from aggregating one deployment's Vercel logs (the saves happened in earlier scans/deployments). 31 Oct: ledger 6 full-time + 1 internship vs sheet 4 + 0 — not explained by code (members may have deleted rows).
