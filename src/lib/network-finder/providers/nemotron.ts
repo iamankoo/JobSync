@@ -194,7 +194,7 @@ async function writePlannedDraft(ask: ReturnType<typeof makeAsk>, plan: EmailPla
       `Name the exact role from the DATA field role, word for word, and no other role title. Use 4 or 5 short paragraphs, ${plan.minWords}–${MAX_WORDS} words in total. Structure: (1) interest in the exact role at the company + member.education if given;`,
       `(2) background using ONLY skillsToMention and projectsOrExperience (mention at most 8 skills, 1–2 projects, say what the member did);`,
       `(3) why it fits the role (roleValueSentence if given; skillsAlsoInJobPosting if any, tied to what jobDescriptionExcerpt asks for, in the member's own words, not copied); (4) why this company: if companyContext is given, say specifically what draws the member to that work, using ONLY that sentence; otherwise neutralCompanyReason;`,
-      `(5) offer to share the resume and discuss, then thank them.`,
+      `(5) stop after the company paragraph: do NOT mention the resume and do NOT thank them (a fixed closing about the attached resume is added separately).`,
       `STRICT RULES: claim NO skill, project, employer, metric or experience that is not in the DATA. Invent NOTHING about the company (no products, mission, funding, stack, achievements).`,
       `Do not copy the job description. No greeting line, no sign-off, no name at the end (they are added separately). No placeholders. No ellipses.`,
       `Avoid buzzwords and these phrases: perfect fit, ideal candidate, thrilled, exciting opportunity, innovative company, cutting-edge, leverage.`,
