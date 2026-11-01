@@ -1,6 +1,7 @@
 import { getMember, MEMBER_IDS, type MemberId } from "@/config/members";
 import type { Connection, Job } from "@/types/domain";
 import { boardUrl, type SeedBoard } from "@/config/job-boards";
+import { sweepScans } from "./providers/job-boards";
 import { dateInTimezone } from "@/lib/utils/time";
 import type { ApolloPool } from "./apollo-pool";
 import type { NetworkFinderConfig } from "./config";
@@ -882,9 +883,6 @@ const reasonKey = (r: string) => r.replace(/[₹$€£]?\d[\d,.]*/g, "N").replac
 
 // ---- the daily job search: progressive recency windows over the REMAINING quota -------------------------------------
 
-/** Boards in one slice of the sweep (see BOARDS_PER_SEARCH in providers/job-boards.ts). */
-const BOARDS_PER_SLICE = 12;
-
 const funnelKey = (day: string, kind: "internship" | "full_time") => `${day}#funnel-${kind === "internship" ? "internship" : "full-time"}`;
 
 /**
@@ -992,6 +990,7 @@ export async function runDailyJobSearch(deps: PipelineDeps): Promise<{ internshi
             cursor,
             // Details (description, posted pay) are fetched only for listings that can still qualify.
             accept: (j) => evaluateJob(j, step.kind, ctx).verdict !== "reject",
+            confirm: (j) => evaluateJob(j, step.kind, ctx).verdict === "qualifies",
             ...(deps.runState?.deadline ? { deadline: deps.runState.deadline } : {}),
           })),
         );
@@ -1126,7 +1125,7 @@ export async function runDailyJobSearch(deps: PipelineDeps): Promise<{ internshi
         if (remainingNow > 0) {
           state.n += 1;
           // A whole sweep of the board list has now been read with this kind's quota still unmet: open the next-older window.
-          if (state.n >= Math.max(1, Math.ceil(known.length / BOARDS_PER_SLICE)) && state.w < LAST_WINDOW) {
+          if (state.n >= sweepScans(known) && state.w < LAST_WINDOW) {
             state.w += 1;
             state.n = 0;
           }

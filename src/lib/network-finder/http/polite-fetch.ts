@@ -14,7 +14,8 @@ export const USER_AGENT = "JobSyncNetworkFinder/1.0 (+private job-search assista
 const TIMEOUT_MS = 12_000;
 /** Pages are capped smaller than API responses (a full public job feed can be a few MB). */
 const MAX_PAGE_BYTES = 1_500_000;
-const MAX_JSON_BYTES = 8_000_000;
+// A Greenhouse board listed WITH descriptions is 3-6 MB for the large companies (Stripe 5.8 MB, 31 Oct measurement).
+const MAX_JSON_BYTES = 14_000_000;
 const DEFAULT_GAP_MS = 1_000;
 
 export interface PoliteResponse {

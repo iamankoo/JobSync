@@ -1,3 +1,4 @@
+import { ProviderError } from "../errors";
 import { classifyEmployment, matchRole } from "../roles";
 import { extractLinks, htmlToText } from "../http/html";
 import type { PoliteFetcher } from "../http/polite-fetch";
@@ -76,6 +77,10 @@ const commitment = (c: string | undefined): Employment | undefined =>
 /** Description requests per company when looking for one company's jobs (outreach), and per company when searching. */
 const DETAIL_LIMIT_COMPANY = 3;
 const DETAIL_LIMIT_SEARCH = 10;
+/** Pay lookups per board per call, for listings that already meet every other rule. */
+const PAY_LOOKUP_LIMIT = 6;
+/** Description text kept per Greenhouse posting (requirements usually come last, so this is longer than the saved excerpt). */
+const GREENHOUSE_TEXT_CHARS = 8000;
 /** Full-time listings worth a description request: the title itself signals an early-career role (the rest are mid-level or above). */
 const EARLY_CAREER_TITLE = /\b(?:intern|internship|new grad|graduate|junior|jr|entry|early career|associate|trainee|apprentice|university|campus|(?:engineer|developer|analyst|scientist)\s*(?:i|1)|sde[- ]?1)\b/i;
 /**
@@ -84,6 +89,21 @@ const EARLY_CAREER_TITLE = /\b(?:intern|internship|new grad|graduate|junior|jr|e
  * list is swept in under an hour.
  */
 const BOARDS_PER_SEARCH: Record<string, number> = { greenhouse: 12, ashby: 5, lever: 6, other: 2 };
+
+/**
+ * Searches (cron calls) needed to read every board once. The systems are read in parallel, so it is the slowest system's list
+ * that sets the length of a sweep, not the total number of boards.
+ */
+export function sweepScans(companies: readonly Pick<QualifiedCompany, "careersUrl">[]): number {
+  const sizes = new Map<string, number>();
+  for (const c of companies) {
+    const kind = (c.careersUrl && boardFromUrl(c.careersUrl)?.kind) || "other";
+    sizes.set(kind, (sizes.get(kind) ?? 0) + 1);
+  }
+  let scans = 1;
+  for (const [kind, n] of sizes) scans = Math.max(scans, Math.ceil(n / (BOARDS_PER_SEARCH[kind] ?? 2)));
+  return scans;
+}
 /** Time a board search leaves for the rest of the run. */
 const SEARCH_MARGIN_MS = 15_000;
 
@@ -157,12 +177,24 @@ export function createCompanyBoardSource(fetcher: PoliteFetcher): JobSource {
     const board = known ?? (await boardFor(company));
     if (!board) return [];
     if (board.kind === "greenhouse") {
-      const body = await fetcher.getJson<{ jobs?: GreenhouseJob[] }>(`https://boards-api.greenhouse.io/v1/boards/${encodeURIComponent(board.token)}/jobs`, "greenhouse");
+      // ONE request returns every posting with its description (and original posting date): the listing text is what the
+      // education / experience / fresher / remote rules are decided on, so no per-job request is needed to read it. A board too
+      // large for that (or one that refuses it) falls back to the plain list plus a few detail requests below.
+      const url = `https://boards-api.greenhouse.io/v1/boards/${encodeURIComponent(board.token)}/jobs`;
+      let body: { jobs?: GreenhouseJob[] } | null = null;
+      try {
+        body = await fetcher.getJson<{ jobs?: GreenhouseJob[] }>(`${url}?content=true`, "greenhouse");
+      } catch (err) {
+        if (err instanceof ProviderError && err.kind === "forbidden") throw err;
+      }
+      body ??= await fetcher.getJson<{ jobs?: GreenhouseJob[] }>(url, "greenhouse");
       const listed: JobCandidate[] = (body?.jobs ?? [])
         .filter((j) => j.title && j.absolute_url)
         .map((j) => ({
           source: "Greenhouse", sourceId: String(j.id ?? ""), companyName: company.name, companyKey: company.key, title: j.title!.trim(), url: j.absolute_url!,
           ...(j.location?.name ? { location: j.location.name } : {}), remote: isRemote(`${j.title} ${j.location?.name ?? ""}`), ...(j.first_published ? { postedAt: j.first_published } : {}),
+          // Text only for the roles that matter (converting every posting of a 700-job board would waste the run's time).
+          ...(j.content && matchRole(j.title!).relevant ? { description: htmlToText(htmlToText(j.content)).slice(0, GREENHOUSE_TEXT_CHARS) } : {}),
         }));
       // Descriptions only for the roles that matter (early-career software/data), a few per company.
       let left = detailLimit;
@@ -251,12 +283,25 @@ export function createCompanyBoardSource(fetcher: PoliteFetcher): JobSource {
             const wanted = listed.jobs.filter((j) => classifyEmployment(j.title, j.employment) === query.employment && (!query.accept || query.accept(j)));
             // Descriptions and posted pay only for the roles that matter and can still qualify (Greenhouse lists carry neither).
             let left = DETAIL_LIMIT_SEARCH;
+            let payLeft = PAY_LOOKUP_LIMIT;
+            const outOfTime = () => Boolean(query.deadline && Date.now() > query.deadline - SEARCH_MARGIN_MS);
             for (const j of wanted) {
-              if (listed.board.kind === "greenhouse" && left > 0 && matchRole(j.title).relevant && (query.employment === "internship" || EARLY_CAREER_TITLE.test(j.title)) && !j.description && !(query.deadline && Date.now() > query.deadline - SEARCH_MARGIN_MS)) {
-                left -= 1;
+              const lookup = (): Promise<JobCandidate> => {
                 let d = details.get(j.url);
                 if (!d) details.set(j.url, (d = greenhouseDetail(listed.board.token, j)));
-                out.push(await d);
+                return d;
+              };
+              if (listed.board.kind !== "greenhouse" || !matchRole(j.title).relevant) out.push(j);
+              else if (j.description) {
+                // Text already read from the list. Pay is looked up only for a listing that already meets every other rule.
+                if (payLeft > 0 && !outOfTime() && query.confirm?.(j)) {
+                  payLeft -= 1;
+                  out.push(await lookup());
+                } else out.push(j);
+              } else if (left > 0 && (query.employment === "internship" || EARLY_CAREER_TITLE.test(j.title)) && !outOfTime()) {
+                // Fallback for a board whose list came without descriptions: the old per-job request, early-career titles only.
+                left -= 1;
+                out.push(await lookup());
               } else out.push(j);
             }
           } catch {

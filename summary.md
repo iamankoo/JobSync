@@ -6,6 +6,14 @@
 
 ---
 
+## UPDATE 2026-11-01 (supply audit) — why 15 + 15 is not reached, and what changed
+
+- **Counter check:** the day's funnel row (`<day>#funnel-<kind>`) is cumulative per day and matches the ledger and the Jobs sheet (1 Nov: 1 internship + 3 full-time). The earlier "saved 0 for 7 scans" came from aggregating one deployment's Vercel logs (the saves happened in earlier scans/deployments). 31 Oct: ledger 6 full-time + 1 internship vs sheet 4 + 0 — not explained by code (members may have deleted rows).
+- **Measured supply (all 6 windows open, 145 boards, real eligibility rules):** 304 internship and 16,421 full-time listings → **2 internships and 5 full-time qualify**. Full-time: 13,232 wrong role (not one of the 13 families), 1,439 US/Canada-limited remote, 782 older than 120 days, 596 experience requirement, 272 uncertain (no degree and no fresher wording), 31 remote without India eligibility. Internships: 155 limited remote, 55 wrong role, 50 expired, 20 master's/PhD. The inventory, not the code, is the limit.
+- **Changed:** (1) Greenhouse boards are listed WITH descriptions in one request (`?content=true`), so every software/data listing is decided on its own text instead of only early-career-looking titles; pay is looked up (one request) only for a listing that already meets every other rule. (2) 20 boards added, including the first 9 Lever boards (the seed list had none); 22 more Lever and 31 more Greenhouse boards were probed and yielded 0 qualifying listings at the time, so only India-heavy ones were kept. (3) A sweep (window-opening rule) is as long as the slowest ATS list (`sweepScans`), not total boards / 12.
+- **Not changed:** every eligibility rule. Ashby, SmartRecruiters (robots.txt), LinkedIn, Workable (no jobs on probed accounts) are not used. Workday/Amazon career-site JSON were NOT integrated — terms of service unverified; needs the owner's decision.
+- **Trade-off:** a content list is 0.1–6 MB per board; each board is read about once per sweep (~50 min).
+
 ## 🔄 UPDATE 2026-11-01 (third change): job notifications, admin rights, end-to-end checks
 
 **Production:** `main` @ `50b6b39` (PR #18), deployment `uumrtW` Ready and receiving cron calls [VERIFIED]. Connection discovery still OFF.
