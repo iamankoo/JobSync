@@ -146,6 +146,7 @@ export const SEED_BOARDS: readonly SeedBoard[] = [
   { name: "Paytm", ats: "lever", token: "paytm" },
   { name: "Pocket FM", ats: "lever", token: "pocketfm" },
   { name: "Zeta", ats: "lever", token: "zeta" },
+  { name: "Hevo Data", ats: "lever", token: "hevodata" },
 ];
 
 export const boardUrl = (b: Pick<SeedBoard, "ats" | "token">) =>

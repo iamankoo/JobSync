@@ -185,7 +185,7 @@ export function funnelCounts(report: Record<string, DailyKindReport>) {
   return Object.fromEntries(
     Object.entries(report).map(([kind, r]) => [
       kind,
-      { boardsRead: r.boardsRead, boardsFailed: r.boardsFailed, listed: r.listed, discovered: r.discovered, parsed: r.parsed, rejected: r.rejected, uncertain: r.uncertain, eligible: r.eligible, deferred: r.deferred, duplicates: r.duplicates, allocated: r.allocated, saved: r.saved.length, educationVerified: r.educationVerified, window: r.window, byWindow: r.byWindow },
+      { target: r.target, shortfall: r.shortfall, boardsRead: r.boardsRead, boardsFailed: r.boardsFailed, listed: r.listed, discovered: r.discovered, parsed: r.parsed, rejected: r.rejected, uncertain: r.uncertain, eligible: r.eligible, deferred: r.deferred, duplicates: r.duplicates, allocated: r.allocated, saved: r.saved.length, educationVerified: r.educationVerified, window: r.window, byWindow: r.byWindow },
     ]),
   );
 }

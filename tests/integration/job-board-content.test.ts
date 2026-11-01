@@ -84,3 +84,13 @@ describe("the board list", () => {
     expect(sweepScans([])).toBe(1);
   });
 });
+
+describe("employment type from the title", () => {
+  it("a role titled Intern is an internship even when the company tags it full time, so the stipend rules apply", async () => {
+    const { classifyEmployment } = await import("@/lib/network-finder/roles");
+    expect(classifyEmployment("Associate SDE Intern", "full_time")).toBe("internship");
+    expect(classifyEmployment("Software Engineer", "full_time")).toBe("full_time");
+    expect(classifyEmployment("Software Engineer", "contract")).toBe("contract");
+    expect(classifyEmployment("Data Intern", undefined)).toBe("internship");
+  });
+});

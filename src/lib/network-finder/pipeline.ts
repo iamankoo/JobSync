@@ -842,6 +842,9 @@ export async function recheckCompanyJobs(deps: PipelineDeps, limit: number): Pro
 /** One day's job search for one kind of job: what was saved and why the rest was not. */
 export interface DailyKindReport {
   saved: string[];
+  /** The day's target for this kind (unchanged: 15) and how many are still missing after this scan (target − saved today). */
+  target: number;
+  shortfall: number;
   /** Funnel for this scan: listings the sources returned → valid for this kind → rejected / uncertain / eligible → not a duplicate → allocated → saved. */
   discovered: number;
   parsed: number;
@@ -1000,7 +1003,7 @@ export async function runDailyJobSearch(deps: PipelineDeps): Promise<{ internshi
     }
 
     const report: DailyKindReport = {
-      saved: [], discovered: found.length, parsed: 0, considered: 0, rejected: 0, uncertain: 0, eligible: 0, deferred: 0, duplicates: 0, allocated: 0, educationVerified: 0,
+      saved: [], target: step.target, shortfall: Math.max(0, step.target - savedBefore), discovered: found.length, parsed: 0, considered: 0, rejected: 0, uncertain: 0, eligible: 0, deferred: 0, duplicates: 0, allocated: 0, educationVerified: 0,
       boardsRead: stats.boardsRead, boardsFailed: stats.boardsFailed, listed: stats.listed, window: state.w, byWindow: {}, reasons: {},
     };
     const bump = (reason: string) => (report.reasons[reason] = (report.reasons[reason] ?? 0) + 1);
@@ -1118,6 +1121,7 @@ export async function runDailyJobSearch(deps: PipelineDeps): Promise<{ internshi
       }
     } finally {
       // Progress is stored even when the run is cut short: the scan count, the window cursor and the funnel.
+      report.shortfall = Math.max(0, step.target - savedBefore - report.saved.length);
       const read = stats.boardsRead + stats.boardsFailed > 0 || report.discovered > 0;
       if (read) {
         state.scans += 1;
