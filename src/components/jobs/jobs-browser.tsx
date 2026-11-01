@@ -17,7 +17,7 @@ import {
   type JobFilters, type SortDirection,
 } from "@/lib/jobs/query";
 import { countApplications, notAppliedCount } from "@/lib/counting";
-import type { MemberId } from "@/config/members";
+import { isAdmin, type MemberId } from "@/config/members";
 import type { Job, JobWithMyStatus } from "@/types/domain";
 import { DeleteJobDialog } from "./delete-job-dialog";
 import { EditJobDialog } from "./edit-job-dialog";
@@ -102,7 +102,8 @@ export function JobsBrowser({ jobs: initialJobs, currentMemberId, initialQuery =
   const selected = jobs.find((j) => j.jobId === selectedId) ?? null;
   const editing = jobs.find((j) => j.jobId === editingId) ?? null;
   const deleting = jobs.find((j) => j.jobId === deletingId) ?? null;
-  const isMine = (job: Job) => job.addedBy === currentMemberId;
+  // Edit / Delete are shown for the member's own jobs, and for every job to the administrator. Display only: the server re-checks.
+  const isMine = (job: Job) => job.addedBy === currentMemberId || isAdmin(currentMemberId);
 
   function changeFilters(patch: Partial<JobFilters>) {
     setFilters((f) => ({ ...f, ...patch }));

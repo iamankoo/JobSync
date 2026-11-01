@@ -30,6 +30,13 @@ export const MEMBERS: readonly Member[] = [
   { id: "rishii", name: "Rishii", fullName: "Rishi Raj", linkedinUrl: "https://www.linkedin.com/in/rishi-raj-8bb5a8366/", githubUrl: "https://github.com/Rishi-Ra-1j4", photo: "/assets/rishii.jpeg", photoSize: { width: 899, height: 1599 }, photoCrop: { x: 0, y: 349, size: 899 }, accent: "#ff4d5e", accentText: "#ff7a87" },
 ];
 
+/**
+ * The administrator: may edit and delete ANY job and connection (ordinary members only their own). Anni is the admin.
+ * Server code decides this from the member id of the validated session — never from anything the browser sends.
+ */
+export const ADMIN_MEMBER_ID: MemberId = "anni";
+export const isAdmin = (memberId: string | undefined): boolean => memberId === ADMIN_MEMBER_ID;
+
 export function getMember(id: string): Member | undefined {
   return MEMBERS.find((m) => m.id === id);
 }

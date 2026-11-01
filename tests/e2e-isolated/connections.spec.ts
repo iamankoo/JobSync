@@ -257,3 +257,58 @@ test("Gmail drafts are automatic: details show the drafting state (no button); e
   expect(post).toBe(405);
   await other.close();
 });
+
+test("the administrator (Anni) edits and deletes a connection Lukky added; Rishii is offered nothing and is refused by the API", async ({ page, browser }, info) => {
+  const ctxOpts = { baseURL: info.project.use.baseURL, viewport: info.project.use.viewport ?? undefined, extraHTTPHeaders: info.project.use.extraHTTPHeaders };
+  // Lukky adds a connection
+  await signIn(page, "Lukky", "0002");
+  await open(page);
+  await page.getByRole("button", { name: "Add your first connection" }).click();
+  await add(page, { name: "Lukky's contact", company: "Acme Corp", notes: "Role: Data Engineer" });
+  await page.getByRole("dialog").getByRole("button", { name: "Add connection" }).click();
+  await expect(page.getByTestId("connection-row")).toHaveCount(1);
+  const id = await page.evaluate(async () => (await (await fetch("/api/connections")).json()).data[0].connectionId as string);
+
+  // Rishii: sees it, no actions in the UI, and direct API calls are refused
+  const rishiiCtx = await browser.newContext(ctxOpts);
+  const rishii = await rishiiCtx.newPage();
+  await signIn(rishii, "Rishii", "0003");
+  await open(rishii);
+  const rrow = rishii.getByTestId("connection-row");
+  await expect(rrow).toHaveCount(1);
+  await expect(rrow.getByRole("button", { name: /More actions/ })).toHaveCount(0);
+  const refused = await rishii.evaluate(async (cid) => {
+    const put = await fetch(`/api/connections/${cid}`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ company: "Hijacked" }) });
+    const del = await fetch(`/api/connections/${cid}`, { method: "DELETE" });
+    return [put.status, del.status];
+  }, id);
+  expect(refused).toEqual([403, 403]);
+  await rishiiCtx.close();
+
+  // Anni (administrator): Edit and Delete are offered on Lukky's connection
+  const anniCtx = await browser.newContext(ctxOpts);
+  const anni = await anniCtx.newPage();
+  await signIn(anni, "Anni", "0001");
+  await open(anni);
+  const arow = anni.getByTestId("connection-row");
+  await expect(arow).toHaveCount(1);
+  await expect(arow.getByTestId("connection-row-added-by")).toHaveText("Lukky");
+  await anni.getByRole("button", { name: "More actions: Lukky's contact" }).click();
+  await anni.getByRole("menuitem", { name: "Edit connection" }).click();
+  await anni.getByRole("dialog").getByLabel(/^Company/).fill("Corrected Corp");
+  await anni.getByRole("dialog").getByRole("button", { name: "Save changes" }).click();
+  await expect(arow.getByText("Corrected Corp")).toBeVisible();
+  await expect(arow.getByTestId("connection-row-added-by")).toHaveText("Lukky"); // attribution preserved
+  expect((await dataRows(anni.request, "Connections"))[0][1]).toBe("lukky");
+
+  // delete asks first
+  await anni.getByRole("button", { name: "More actions: Lukky's contact" }).click();
+  await anni.getByRole("menuitem", { name: "Delete connection" }).click();
+  await anni.getByRole("dialog").getByRole("button", { name: "Keep" }).click();
+  await expect(arow).toHaveCount(1);
+  await anni.getByRole("button", { name: "More actions: Lukky's contact" }).click();
+  await anni.getByRole("menuitem", { name: "Delete connection" }).click();
+  await anni.getByRole("dialog").getByRole("button", { name: "Remove" }).click();
+  await expect(anni.getByTestId("connection-row")).toHaveCount(0);
+  await anniCtx.close();
+});

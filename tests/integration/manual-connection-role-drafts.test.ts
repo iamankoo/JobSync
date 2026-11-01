@@ -319,3 +319,45 @@ describe("Network Finder no longer discovers connections", () => {
     expect(await runPendingDrafts(deps, { limit: 2 })).toMatchObject({ created: 3 });
   });
 });
+
+describe("administrator edits and deletes keep Gmail drafts intact", () => {
+  it("Anni editing Lukky's connection (company, role description) creates no second connection and no new drafts; the owner and id are unchanged", async () => {
+    const { updateConnection } = await import("@/lib/google-sheets/connections-service");
+    const { existingConnections } = await import("@/lib/network-finder/gateways");
+    const c = await post("lukky", { name: "Priya Nair", company: "Magic Hour AI", email: "priya@magichour.example", notes: "Hiring for Machine Learning Engineer – Video Generation." });
+    await work();
+    expect(google.drafts).toHaveLength(3);
+    const ledgerBefore = JSON.stringify(ledger());
+
+    const edited = await updateConnection("anni", c.connectionId, { company: "Magic Hour", notes: "Role: Data Engineer" });
+    expect(edited).toMatchObject({ connectionId: c.connectionId, memberId: "lukky", company: "Magic Hour" });
+    expect(await existingConnections.list()).toHaveLength(1);
+
+    expect(await work()).toMatchObject({ checked: 0, created: 0 }); // already drafted: an edit never re-drafts
+    expect(google.drafts).toHaveLength(3);
+    expect(JSON.stringify(ledger())).toBe(ledgerBefore);
+  });
+
+  it("an admin edit made BEFORE the first draft is what the draft uses (one set of drafts, from the corrected role)", async () => {
+    const { updateConnection } = await import("@/lib/google-sheets/connections-service");
+    const c = await post("rishii", { name: "Neha Rao", company: "Pipewise", email: "neha@pipewise.example", notes: "met at a fair" });
+    await updateConnection("anni", c.connectionId, { notes: "Role: Data Engineer" });
+    await work();
+    expect(google.drafts).toHaveLength(3);
+    expect(google.drafts.every((d) => d.subject === "Application for Data Engineer — Pipewise")).toBe(true);
+    expect(ledger().filter((r) => r[3] === c.connectionId)).toHaveLength(3);
+  });
+
+  it("deleting a connection leaves the draft ledger (history) alone, creates nothing, and does not disturb other connections' drafts", async () => {
+    const { deleteConnection } = await import("@/lib/google-sheets/connections-service");
+    const gone = await post("lukky", { name: "Gone Person", company: "Learnosphere", email: "gone@learnosphere.example", notes: "Role: Full Stack Developer Intern" });
+    const keep = await post("rishii", { name: "Keep Person", company: "Pipewise", email: "keep@pipewise.example", notes: "Role: Data Engineer" });
+    await work();
+    expect(google.drafts).toHaveLength(6);
+    await deleteConnection("anni", gone.connectionId);
+    expect(ledger().filter((r) => r[3] === gone.connectionId)).toHaveLength(3); // history kept
+    expect(ledger().filter((r) => r[3] === keep.connectionId).map((r) => r[5])).toEqual(["created", "created", "created"]);
+    expect(await work()).toMatchObject({ created: 0 });
+    expect(google.drafts).toHaveLength(6);
+  });
+});

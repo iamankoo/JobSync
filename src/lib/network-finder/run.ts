@@ -13,6 +13,9 @@ import { createCompanyFactsFinder } from "./providers/company-facts";
 import { createArbeitnowSource, createCompanyBoardSource, createRemoteOkSource } from "./providers/job-boards";
 import { createNemotronBrain, createNemotronCompanyFactsExtractor, createNemotronPeopleExtractor, loadNemotronConfig } from "./providers/nemotron";
 import { SEED_BOARDS } from "@/config/job-boards";
+import { notifyMember } from "@/lib/push/notify";
+import { loadVapidConfig } from "@/lib/push/config";
+import { flushJobAlerts, type FlushResult } from "./job-alerts";
 import { createHnHiringSource, createRemoteInTechSource } from "./providers/public-sources";
 import { createWebsiteContactFinder } from "./providers/website-contacts";
 import { runSentTracking, type SentTrackingResult } from "./sent-tracker";
@@ -86,6 +89,13 @@ export function buildRealDeps(config: NetworkFinderConfig = loadNetworkFinderCon
     ...(nemotron ? { brain: createNemotronBrain(nemotron) } : {}),
     jobSources: [boards, createRemoteOkSource(fetcher), createArbeitnowSource(fetcher)],
     seedBoards: SEED_BOARDS,
+    jobAlerts: {
+      send: async (member, payload) => {
+        // Not configured is a failure to retry later, not "nobody to notify".
+        if (!loadVapidConfig()) throw new Error("push not configured");
+        return notifyMember(member, payload);
+      },
+    },
     research: createCompanyResearcher(fetcher, boards, { deadline: () => built.runState?.deadline }),
     queue: stores.queue,
     registry: stores.registry,
@@ -109,6 +119,7 @@ export interface CycleResult {
   pendingDrafts?: { checked: number; created: number; remaining: number };
   dailyJobs?: { internships: string[]; fullTime: string[]; warnings: string[]; report?: Record<string, DailyKindReport> };
   recheck?: { checked: number; jobsSaved: string[]; warnings: string[] };
+  jobAlerts?: FlushResult;
   errors: string[];
 }
 
@@ -156,6 +167,8 @@ export async function runScheduledCycle(deps: PipelineDeps & { stores: ReturnTyp
     // Connection discovery (batch windows) is off by default; this returns at once without reading Sheets.
     result.batch = await step("batch", () => runBatchTick(deps));
     if (hasTime(20_000)) result.dailyJobs = await step("daily-jobs", () => runDailyJobSearch(deps));
+    // New-job notifications: for what this call saved, and any earlier ones still waiting for a retry.
+    if (hasTime(4_000)) result.jobAlerts = await step("job-alerts", () => flushJobAlerts(deps.ledger, deps.jobAlerts?.send, () => hasTime(3_000)));
     if (hasTime(10_000)) result.sentTracking = await step("sent-tracking", () => runSentTracking(existingSentTrackerDeps(), 30));
     if (hasTime(15_000)) result.recheck = await step("recheck", () => recheckCompanyJobs(deps, 2));
     if (result.dailyJobs?.report) console.log(`[daily-jobs] ${JSON.stringify(funnelCounts(result.dailyJobs.report))}`);
@@ -208,6 +221,7 @@ export function summarizeCycle(r: CycleResult) {
     manualDrafts: r.manualDrafts ?? null,
     pendingDrafts: r.pendingDrafts ?? null,
     dailyJobs: r.dailyJobs ? { internships: r.dailyJobs.internships.length, fullTime: r.dailyJobs.fullTime.length, warnings: r.dailyJobs.warnings, funnel: r.dailyJobs.report ? funnelCounts(r.dailyJobs.report) : null } : null,
+    jobAlerts: r.jobAlerts ?? null,
     recheck: r.recheck ? { checked: r.recheck.checked, jobsSaved: r.recheck.jobsSaved.length } : null,
     errors: r.errors,
   };

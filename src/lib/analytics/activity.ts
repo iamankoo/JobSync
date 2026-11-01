@@ -16,6 +16,8 @@ export const MEANINGFUL_ACTIONS: readonly ActivityAction[] = [
   "job_added", "job_applied", "job_unapplied", "application_updated", "follow_up_answered", "job_updated", "job_deleted",
 ];
 export const PRESENCE_ACTIONS: readonly ActivityAction[] = ["login", "visit"];
+/** Admin audit rows (the administrator edited / deleted another member's record): neither work nor presence, never counted in any total. */
+export const AUDIT_ACTIONS: readonly ActivityAction[] = ["admin_edit", "admin_delete"];
 
 export const isMeaningful = (a: ActivityAction) => MEANINGFUL_ACTIONS.includes(a);
 export const isPresence = (a: ActivityAction) => PRESENCE_ACTIONS.includes(a);

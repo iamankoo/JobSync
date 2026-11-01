@@ -52,9 +52,11 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
 }
 
 /** Everything saved for one connection (the list only shows the headline facts). */
-export function ConnectionDetailsDialog({ c, mine, timeZone, busy, onStatus, onEdit, onDelete, onCopied, onClose }: {
+export function ConnectionDetailsDialog({ c, mine, canManage = mine, timeZone, busy, onStatus, onEdit, onDelete, onCopied, onClose }: {
   c: Connection;
   mine: boolean;
+  /** Edit / Delete are offered: the owner, or the administrator. */
+  canManage?: boolean;
   timeZone: string;
   busy: boolean;
   onStatus: (s: ConnectionStatus) => void;
@@ -160,7 +162,7 @@ export function ConnectionDetailsDialog({ c, mine, timeZone, busy, onStatus, onE
           {c.notes ? <p className="mt-1 whitespace-pre-wrap break-words text-sm text-ink/90">{c.notes}</p> : <p className="mt-1 text-sm text-muted">No notes.</p>}
         </div>
 
-        {mine ? (
+        {canManage ? (
           <div className="mt-6 flex flex-wrap justify-end gap-2">
             <Button onClick={onEdit} aria-label={`Edit ${c.name}`}>
               <Pencil size={16} aria-hidden /> Edit

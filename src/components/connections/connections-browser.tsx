@@ -10,7 +10,7 @@ import { Dialog } from "@/components/ui/dialog";
 import { EmptyState } from "@/components/ui/empty-state";
 import { Notice, type NoticeState } from "@/components/ui/notice";
 import { cellClass, HEAD_ROW_CLASS, ROW_CLASS, TABLE_CLASS, TBODY_CLASS, TH_CLASS, THEAD_CLASS } from "@/components/ui/responsive-table";
-import { getMember, type MemberId } from "@/config/members";
+import { getMember, isAdmin, type MemberId } from "@/config/members";
 import { deleteConnectionRequest, updateConnectionRequest } from "@/lib/client/api";
 import { formatDisplayDate } from "@/lib/jobs/query";
 import type { Connection, ConnectionStatus } from "@/types/domain";
@@ -107,6 +107,7 @@ export function ConnectionsBrowser({ connections: initial, me, timeZone }: { con
               <tbody role="rowgroup" className={TBODY_CLASS}>
                 {items.map((c, i) => {
                   const mine = c.memberId === me;
+                  const canManage = mine || isAdmin(me); // the administrator manages every entry; the server re-checks
                   const adder = getMember(c.memberId);
                   return (
                     <tr role="row" key={c.connectionId} className={ROW_CLASS} data-testid="connection-row">
@@ -156,7 +157,7 @@ export function ConnectionsBrowser({ connections: initial, me, timeZone }: { con
                           <Button onClick={() => setViewingId(c.connectionId)} className="h-9 px-3 py-0" aria-label={`View ${c.name}`}>
                             <Eye size={16} aria-hidden /> View
                           </Button>
-                          {mine && (
+                          {canManage && (
                             <ActionMenu
                               label={`More actions: ${c.name}`}
                               items={[
@@ -183,6 +184,7 @@ export function ConnectionsBrowser({ connections: initial, me, timeZone }: { con
         <ConnectionDetailsDialog
           c={viewing}
           mine={viewing.memberId === me}
+          canManage={viewing.memberId === me || isAdmin(me)}
           timeZone={timeZone}
           busy={busyId === viewing.connectionId}
           onStatus={(s) => changeStatus(viewing, s)}

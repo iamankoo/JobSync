@@ -1,5 +1,5 @@
 import "server-only";
-import type { MemberId } from "@/config/members";
+import { isAdmin, type MemberId } from "@/config/members";
 import type { Job, JobWithMyStatus } from "@/types/domain";
 import { normalizeJobUrl } from "@/lib/utils/url";
 import { nowIso } from "@/lib/utils/time";
@@ -67,11 +67,11 @@ export async function createJob(memberId: MemberId, input: CreateJobInput, now: 
   return job;
 }
 
-const NOT_OWNER = "Only the member who added this job can edit or delete it.";
+const NOT_OWNER = "Only the member who added this job (or the administrator) can edit or delete it.";
 
 /**
- * Edits a job. Only the member who added it may do so (checked here, against the stored AddedBy,
- * never against anything the browser sends). JobID, AddedBy and AddedAt are immutable; the other
+ * Edits a job. Only the member who added it, or the administrator, may do so (checked here, against the stored AddedBy
+ * and the session's member id, never against anything the browser sends). JobID, AddedBy and AddedAt are immutable; the other
  * fields are replaced by `input`. The new URL must not duplicate a different job's URL.
  */
 export async function updateJob(memberId: MemberId, jobId: string, input: CreateJobInput, now: Date = new Date()): Promise<Job> {
@@ -82,7 +82,7 @@ export async function updateJob(memberId: MemberId, jobId: string, input: Create
     const { items } = await readJobsLocated({ fresh: true });
     const current = items.find((i) => i.value.jobId === jobId);
     if (!current) throw new DomainError("job_not_found", "That job does not exist.");
-    if (current.value.addedBy !== memberId) throw new DomainError("not_job_owner", NOT_OWNER);
+    if (current.value.addedBy !== memberId && !isAdmin(memberId)) throw new DomainError("not_job_owner", NOT_OWNER);
 
     const clash = items.find((i) => i.value.jobId !== jobId && normalizeJobUrl(i.value.jobUrl) === normalized);
     if (clash) {
@@ -105,28 +105,31 @@ export async function updateJob(memberId: MemberId, jobId: string, input: Create
       jobUrl: input.jobUrl,
       deadline: input.deadline,
       description: input.description,
-      addedBy: current.value.addedBy,
+      addedBy: current.value.addedBy, // the original attribution is never changed by an edit, an administrator's included
       addedAt: current.value.addedAt,
     };
     await updateJobRow(current.row, next);
-    return next;
+    return { next, foreign: current.value.addedBy !== memberId };
   });
 
-  await recordActivity(memberId, "job_updated", jobId, now);
-  return updated;
+  // An administrator editing someone else's job leaves an audit row (actor, record, action, time) instead of counting as their own work.
+  await recordActivity(memberId, updated.foreign ? "admin_edit" : "job_updated", jobId, now);
+  return updated.next;
 }
 
 /**
- * Permanently deletes a job (owner only) and then the application records for it. The job row is
+ * Permanently deletes a job (its owner, or the administrator) and then the application records for it. The job row is
  * removed first: if clean-up of application rows fails afterwards, those rows are harmless orphans
  * that every screen already ignores.
  */
 export async function deleteJob(memberId: MemberId, jobId: string, now: Date = new Date()): Promise<{ jobId: string }> {
+  let foreign = false;
   await withWriteLock(async () => {
     const { items } = await readJobsLocated({ fresh: true });
     const current = items.find((i) => i.value.jobId === jobId);
     if (!current) throw new DomainError("job_not_found", "That job does not exist.");
-    if (current.value.addedBy !== memberId) throw new DomainError("not_job_owner", NOT_OWNER);
+    if (current.value.addedBy !== memberId && !isAdmin(memberId)) throw new DomainError("not_job_owner", NOT_OWNER);
+    foreign = current.value.addedBy !== memberId;
 
     await deleteTabRows("jobs", [current.row]);
 
@@ -141,6 +144,8 @@ export async function deleteJob(memberId: MemberId, jobId: string, now: Date = n
 
   // Keep the history row but drop its reference to the deleted job (no orphaned JobIDs in Activity).
   await scrubDeletedJobReferences([jobId]);
-  await recordActivity(memberId, "job_deleted", undefined, now);
+  // Written AFTER the scrub on purpose: the audit row keeps the deleted record's id.
+  if (foreign) await recordActivity(memberId, "admin_delete", jobId, now);
+  else await recordActivity(memberId, "job_deleted", undefined, now);
   return { jobId };
 }
