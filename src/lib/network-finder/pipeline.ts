@@ -967,8 +967,9 @@ export async function runDailyJobSearch(deps: PipelineDeps): Promise<{ internshi
       else if (evaluation.verdict === "uncertain") report.uncertain += 1;
       if (evaluation.verdict !== "qualifies") for (const reason of evaluation.reasons) report.reasons[reasonKey(reason)] = (report.reasons[reasonKey(reason)] ?? 0) + 1;
       if (evaluation.verdict === "qualifies" && evaluation.region) {
-        // Without an AI judge, a title the rules cannot place ("Renewals Associate") is not a software/data role: it must not take a slot.
-        if (brainOf(deps).id === "rules" && ruleVerdict(job.title).verdict === "unsure") {
+        // A title the rules cannot place ("Renewals Associate") is not a software/data role. Deciding it here, once, keeps it
+        // from taking an allocation slot (and an AI-judge call) on every 5-minute scan.
+        if (ruleVerdict(job.title).verdict === "unsure") {
           report.rejected += 1;
           report.reasons["title is not a recognised software/data role"] = (report.reasons["title is not a recognised software/data role"] ?? 0) + 1;
           continue;

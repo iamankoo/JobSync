@@ -1,9 +1,11 @@
 import { createHash, timingSafeEqual } from "node:crypto";
 import { errorJson, errorResponse } from "@/lib/api/responses";
-import { runScheduledCycle, summarizeCycle } from "@/lib/network-finder/run";
+import { runScheduledCycle, summarizeCycle, withHardDeadline } from "@/lib/network-finder/run";
 
 // One company per call (public pages are read at 1 request/second per site) plus Sheets round-trips.
 export const maxDuration = 60;
+/** Answer before Vercel's 60 s kill; whatever the cycle had not finished is picked up by the next call (all steps are idempotent). */
+const HARD_STOP_MS = 55_000;
 
 const digest = (v: string) => createHash("sha256").update(v).digest();
 
@@ -23,7 +25,8 @@ export async function GET(req: Request) {
   const given = req.headers.get("authorization") ?? "";
   if (!timingSafeEqual(digest(given), digest(`Bearer ${secret}`))) return errorJson(401, "unauthenticated", "Invalid credentials.");
   try {
-    const run = await runScheduledCycle();
+    const run = await withHardDeadline(runScheduledCycle(), HARD_STOP_MS);
+    if (run === "timed-out") return Response.json({ data: { ran: true, timedOut: true } }, { status: 200, headers: { "Cache-Control": "no-store" } });
     if (!run.ran) return errorJson(run.reason === "busy" ? 409 : 503, run.reason ?? "disabled", run.reason === "busy" ? "A run is already in progress." : "The Network Finder is switched off (NETWORK_FINDER_ENABLED).");
     // Counts only (no names / emails in cron-job.org's history). A step that failed is listed in `errors` and simply
     // runs again next call; the status stays 200 so cron-job.org does not switch the job off after a few failures.

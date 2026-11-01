@@ -112,6 +112,22 @@ export interface CycleResult {
   errors: string[];
 }
 
+/**
+ * Resolves with the cycle's result, or with `"timed-out"` once `ms` have passed. The cron endpoint answers 200 before Vercel's
+ * 60 s limit instead of being killed with a 504 (cron-job.org counts 504s as failures); the run lock expires by itself.
+ */
+export async function withHardDeadline<T>(work: Promise<T>, ms: number): Promise<T | "timed-out"> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const limit = new Promise<"timed-out">((resolve) => {
+    timer = setTimeout(() => resolve("timed-out"), ms);
+  });
+  try {
+    return await Promise.race([work, limit]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 /** One scheduled cycle. Each step is independent: one failing does not stop the others. */
 export async function runScheduledCycle(deps: PipelineDeps & { stores: ReturnType<typeof createSheetsStores> } = buildRealDeps(), budgetMs = RUN_BUDGET_MS): Promise<CycleResult> {
   if (!deps.config.enabled) return { ran: false, reason: "disabled", errors: [] };
