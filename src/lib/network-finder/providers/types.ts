@@ -100,6 +100,8 @@ export interface JobSearchQuery {
    * only for listings it accepts, so the run's time goes to jobs that can still qualify.
    */
   accept?: (job: JobCandidate) => boolean;
+  /** Which slice of the boards to read: a counter the caller persists, so a sweep of all boards survives restarts. */
+  cursor?: number;
   /** Counts what the source saw, for the daily funnel report. */
   stats?: SearchStats;
 }

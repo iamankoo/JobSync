@@ -194,7 +194,7 @@ export class MockApollo implements ContactProvider {
 }
 
 export function mockJob(companyName: string, n: number, over: Partial<JobCandidate> = {}): JobCandidate {
-  return { source: "mock-careers", companyName, title: "Software Engineer, New Grad", url: `https://careers.example.test/${encodeURIComponent(companyName)}/${n}`, remote: true, location: "Remote (US)", ...over };
+  return { source: "mock-careers", companyName, title: "Software Engineer, New Grad", url: `https://careers.example.test/${encodeURIComponent(companyName)}/${n}`, remote: true, location: "Remote - Worldwide", postedAt: "2026-10-26T06:00:00Z", ...over };
 }
 
 export class MockJobSource implements JobSource {

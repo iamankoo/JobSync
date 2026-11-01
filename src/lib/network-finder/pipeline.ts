@@ -10,7 +10,8 @@ import { countsByMember, nextAssignee, type Selection, type SelectionStore } fro
 import { distributeDrafts, draftKey, type FanoutDeps, type MemberDraftOutcome } from "./draft-fanout";
 import { allocate, jobLedgerKeys, pickJobForMember, type EvaluatedJob, type Capacity } from "./job-allocation";
 import { asEmailJob, type CompanyResearch, type CompanyResearcher } from "./company-research";
-import { evaluateJob, REGIONS } from "./job-eligibility";
+import { evaluateJob, REGIONS, sourceTier, TIER_RANK, type EvalContext } from "./job-eligibility";
+import { LAST_WINDOW } from "./job-recency";
 import { assembleEmail, buildEmailPlan, cleanParagraphs, composeFallback, jobsForCompany, validateEmail, type EmailJob } from "./email-composer";
 import { inferPattern, predictEmail, type PatternEvidence } from "./email-pattern";
 import { ApolloPoolExhausted, ProviderError } from "./errors";
@@ -841,8 +842,16 @@ export interface DailyKindReport {
   discovered: number;
   parsed: number;
   eligible: number;
+  /** Eligible, but in a recency window that is not open yet for this kind. */
+  deferred: number;
   duplicates: number;
   allocated: number;
+  /** Saved jobs whose listing states a B.Tech / B.E.-compatible degree AND the 2027 batch (the rest say neither is excluded). */
+  educationVerified: number;
+  /** The recency window open to this kind after this scan (1 = newest 0–7 days … 6 = 91–120 days). */
+  window: number;
+  /** Per recency window: eligible jobs seen and jobs saved in this scan. */
+  byWindow: Record<number, { eligible: number; saved: number }>;
   boardsRead: number;
   boardsFailed: number;
   /** Listings on the boards read, before any filtering. */
@@ -868,64 +877,97 @@ const seedCompany = (b: SeedBoard) => ({ key: b.token, name: b.name, careersUrl:
 
 const reasonKey = (r: string) => r.replace(/[₹$€£]?\d[\d,.]*/g, "N").replace(/\(.*?\)/g, "").replace(/\s+/g, " ").trim().slice(0, 60);
 
+// ---- the daily job search: progressive recency windows over the REMAINING quota -------------------------------------
+
+/** Boards in one slice of the sweep (see BOARDS_PER_SEARCH in providers/job-boards.ts). */
+const BOARDS_PER_SLICE = 12;
+
+const funnelKey = (day: string, kind: "internship" | "full_time") => `${day}#funnel-${kind === "internship" ? "internship" : "full-time"}`;
+
 /**
- * The daily job search: for EACH of internships and full-time roles, up to `target` (15) openings = 5 US (remote only)
- * + 5 India + 5 other countries (remote only), and 5 for each member, chosen by that member's VERIFIED skills.
- * Every job must pass the strict eligibility rules (fresher / 2027 batch, no CGPA or backlog bar, minimum pay,
- * not a paid portal); official company boards rank first. A bucket that has too few genuinely qualifying jobs
- * stays short: the quota never lowers the bar. Counted per local day, so repeated calls never exceed the targets.
+ * One kind's state for the day, kept in NF_State (one small row per kind per day, so it resets by itself at midnight local
+ * time and survives restarts): the recency window currently open (`w`), the slices of the board list read since it opened
+ * (`n`), the number of scans, and the cumulative funnel counts.
  */
-/**
- * The day's cumulative funnel for one kind, kept in NF_State (one small row per kind per day) so the real counts at every
- * stage survive Vercel's one-hour log retention: scans, boards read/failed, listed, discovered, parsed, rejected,
- * uncertain, eligible, duplicates, allocated, saved, and the commonest rejection reasons.
- */
-async function recordFunnel(deps: PipelineDeps, day: string, kind: "internship" | "full_time", r: DailyKindReport): Promise<void> {
-  if (!deps.ledger.setNote || !deps.ledger.getNote || (r.discovered === 0 && r.boardsRead === 0 && r.boardsFailed === 0)) return;
-  const key = `${day}#funnel-${kind === "internship" ? "internship" : "full-time"}`;
+interface DayState {
+  scans: number;
+  /** Newest-to-oldest: windows 1..w are open to this kind. */
+  w: number;
+  n: number;
+  raw: Record<string, unknown>;
+}
+
+async function readDayState(deps: PipelineDeps, day: string, kind: "internship" | "full_time"): Promise<DayState> {
+  let raw: Record<string, unknown> = {};
   try {
-    let prev: Record<string, unknown> = {};
-    try {
-      prev = JSON.parse((await deps.ledger.getNote(key)) ?? "{}") as Record<string, unknown>;
-    } catch {
-      prev = {};
-    }
+    raw = JSON.parse((await deps.ledger.getNote?.(funnelKey(day, kind))) ?? "{}") as Record<string, unknown>;
+  } catch {
+    raw = {};
+  }
+  const num = (k: string, d: number) => (typeof raw[k] === "number" ? (raw[k] as number) : d);
+  return { scans: num("scans", 0), w: Math.min(LAST_WINDOW, Math.max(1, num("w", 1))), n: num("n", 0), raw };
+}
+
+/** Adds this scan to the day's cumulative funnel and stores it with the (possibly advanced) window cursor. Never stops the search. */
+async function recordFunnel(deps: PipelineDeps, day: string, kind: "internship" | "full_time", r: DailyKindReport, state: DayState): Promise<void> {
+  if (!deps.ledger.setNote) return;
+  try {
+    const prev = state.raw;
     const n = (k: string) => (typeof prev[k] === "number" ? (prev[k] as number) : 0);
     const reasons = { ...((prev.reasons as Record<string, number> | undefined) ?? {}) };
     for (const [k, v] of Object.entries(r.reasons)) reasons[k] = (reasons[k] ?? 0) + v;
-    const top = Object.fromEntries(Object.entries(reasons).sort((a, b) => b[1] - a[1]).slice(0, 8));
+    const top = Object.fromEntries(Object.entries(reasons).sort((a, b) => b[1] - a[1]).slice(0, 10));
+    const windows = { ...((prev.windows as Record<string, { eligible: number; saved: number }> | undefined) ?? {}) };
+    for (const [w, c] of Object.entries(r.byWindow)) windows[w] = { eligible: (windows[w]?.eligible ?? 0) + c.eligible, saved: (windows[w]?.saved ?? 0) + c.saved };
     await deps.ledger.setNote(
-      key,
+      funnelKey(day, kind),
       JSON.stringify({
-        scans: n("scans") + 1, boardsRead: n("boardsRead") + r.boardsRead, boardsFailed: n("boardsFailed") + r.boardsFailed, listed: n("listed") + r.listed,
+        scans: state.scans, w: state.w, n: state.n, boardsRead: n("boardsRead") + r.boardsRead, boardsFailed: n("boardsFailed") + r.boardsFailed, listed: n("listed") + r.listed,
         discovered: n("discovered") + r.discovered, parsed: n("parsed") + r.parsed, rejected: n("rejected") + r.rejected, uncertain: n("uncertain") + r.uncertain,
-        eligible: n("eligible") + r.eligible, duplicates: n("duplicates") + r.duplicates, allocated: n("allocated") + r.allocated, saved: n("saved") + r.saved.length, reasons: top,
+        eligible: n("eligible") + r.eligible, deferred: n("deferred") + r.deferred, duplicates: n("duplicates") + r.duplicates, allocated: n("allocated") + r.allocated,
+        saved: n("saved") + r.saved.length, educationVerified: n("educationVerified") + r.educationVerified, windows, reasons: top,
       }),
     );
   } catch {
-    // Bookkeeping only: never stops the search.
+    // Bookkeeping only.
   }
 }
 
+/**
+ * The daily job search. For EACH of internships and full-time roles (independent counters, independent window cursors) the
+ * target is 15 = 5 per member, spread 5 India + up to 10 worldwide-remote. Only the REMAINING quota is searched:
+ *  - a kind whose total is reached is not searched at all (the other continues alone);
+ *  - jobs are taken newest first by ORIGINAL posting date, in windows 0–7, 8–15, 16–30, 31–60, 61–90, 91–120 days. Window 1 is
+ *    open from the start of the day; the next window opens only after a complete sweep of the board list leaves this kind's
+ *    quota unmet (state kept in NF_State, so a restart neither repeats nor skips a window);
+ *  - every job must pass the common eligibility rules (2027 B.Tech / B.E., worldwide remote or India, pay, role, not a paid
+ *    portal, posted within 120 days). A bucket with too few genuinely qualifying jobs stays short: the quota never lowers the bar.
+ * Counted per local day, so repeated calls never exceed the targets.
+ */
 export async function runDailyJobSearch(deps: PipelineDeps): Promise<{ internships: string[]; fullTime: string[]; warnings: string[]; report?: Record<string, DailyKindReport> }> {
   const at = now(deps);
   const day = dateInTimezone(at, deps.config.timeZone);
+  const ctx: EvalContext = { nowMs: at.getTime(), timeZone: deps.config.timeZone };
   const result = { internships: [] as string[], fullTime: [] as string[], warnings: [] as string[], report: {} as Record<string, DailyKindReport> };
   const plan = [
     { kind: "internship" as const, target: deps.config.dailyInternships, into: result.internships },
     { kind: "full_time" as const, target: deps.config.dailyFullTime, into: result.fullTime },
   ];
+  const states = { internship: await readDayState(deps, day, "internship"), full_time: await readDayState(deps, day, "full_time") };
+  // Both kinds read the SAME slice of boards in a run (the second kind reuses the first's listings); the slice is a persisted counter.
+  const cursor = Math.max(states.internship.scans, states.full_time.scans);
   for (const step of plan) {
     const keys = jobLedgerKeys(day, step.kind);
     const perBucket = Math.max(1, Math.floor(step.target / 3));
-    if ((await deps.ledger.get(keys.total)) >= step.target) continue;
+    const savedBefore = await deps.ledger.get(keys.total);
+    if (savedBefore >= step.target) continue; // this kind is done for the day: not searched at all
+    const state = states[step.kind];
     const capacity: Capacity = { regionUsed: {}, memberUsed: {}, companiesUsed: new Set<string>() };
     for (const r of REGIONS) capacity.regionUsed[r] = await deps.ledger.get(keys.region(r));
     for (const m of MEMBER_IDS) capacity.memberUsed[m] = await deps.ledger.get(keys.member(m));
-    if (REGIONS.every((r) => (capacity.regionUsed[r] ?? 0) >= perBucket) || MEMBER_IDS.every((m) => (capacity.memberUsed[m] ?? 0) >= perBucket)) continue;
+    if (MEMBER_IDS.every((m) => (capacity.memberUsed[m] ?? 0) >= perBucket)) continue;
     // Supply: the official boards seeded in config/job-boards.ts (independent of people discovery) plus any company the
-    // registry already knows. Every scan reads a different slice, so the whole list is swept within the hour; nothing
-    // here is throttled by a "once per hour" key any more (that key was burned even when the run died before searching).
+    // registry already knows.
     const stats: SearchStats = { boardsRead: 0, boardsFailed: 0, listed: 0 };
     const seeded = (deps.seedBoards ?? []).map(seedCompany);
     const seededKeys = new Set(seeded.map((s) => s.key));
@@ -941,11 +983,12 @@ export async function runDailyJobSearch(deps: PipelineDeps): Promise<{ internshi
           ...(await source.searchJobs({
             keywords: TARGET_ROLES,
             employment: step.kind,
-            limit: 200,
+            limit: step.target - savedBefore,
             companies: known,
             stats,
+            cursor,
             // Details (description, posted pay) are fetched only for listings that can still qualify.
-            accept: (j) => evaluateJob(j, step.kind).verdict !== "reject",
+            accept: (j) => evaluateJob(j, step.kind, ctx).verdict !== "reject",
             ...(deps.runState?.deadline ? { deadline: deps.runState.deadline } : {}),
           })),
         );
@@ -954,34 +997,50 @@ export async function runDailyJobSearch(deps: PipelineDeps): Promise<{ internshi
       }
     }
 
-    const report: DailyKindReport = { saved: [], discovered: found.length, parsed: 0, considered: 0, rejected: 0, uncertain: 0, eligible: 0, duplicates: 0, allocated: 0, boardsRead: stats.boardsRead, boardsFailed: stats.boardsFailed, listed: stats.listed, reasons: {} };
+    const report: DailyKindReport = {
+      saved: [], discovered: found.length, parsed: 0, considered: 0, rejected: 0, uncertain: 0, eligible: 0, deferred: 0, duplicates: 0, allocated: 0, educationVerified: 0,
+      boardsRead: stats.boardsRead, boardsFailed: stats.boardsFailed, listed: stats.listed, window: state.w, byWindow: {}, reasons: {},
+    };
+    const bump = (reason: string) => (report.reasons[reason] = (report.reasons[reason] ?? 0) + 1);
+    const slot = (w: number) => (report.byWindow[w] ??= { eligible: 0, saved: 0 });
+    // The same job from several sources counts once (the official source wins); the Jobs sheet is checked later.
+    const scanIndex = JobIndex.from([]);
     const candidates: EvaluatedJob[] = [];
-    const seen = new Set<string>();
-    for (const job of found) {
-      if (classifyEmployment(job.title, job.employment) !== step.kind || seen.has(job.url)) continue;
-      seen.add(job.url);
+    const ranked = [...found].sort((a, b) => TIER_RANK[sourceTier(b)] - TIER_RANK[sourceTier(a)]);
+    for (const job of ranked) {
+      if (classifyEmployment(job.title, job.employment) !== step.kind) continue;
+      if (scanIndex.duplicateOf(job)) {
+        bump("same job returned by more than one source");
+        continue;
+      }
+      scanIndex.add(job);
       report.parsed += 1;
       report.considered += 1;
-      const evaluation = evaluateJob(job, step.kind);
+      const evaluation = evaluateJob(job, step.kind, ctx);
       if (evaluation.verdict === "reject") report.rejected += 1;
       else if (evaluation.verdict === "uncertain") report.uncertain += 1;
-      if (evaluation.verdict !== "qualifies") for (const reason of evaluation.reasons) report.reasons[reasonKey(reason)] = (report.reasons[reasonKey(reason)] ?? 0) + 1;
-      if (evaluation.verdict === "qualifies" && evaluation.region) {
+      if (evaluation.verdict !== "qualifies") for (const reason of evaluation.reasons) bump(reasonKey(reason));
+      if (evaluation.verdict === "qualifies" && evaluation.region && evaluation.window) {
         // A title the rules cannot place ("Renewals Associate") is not a software/data role. Deciding it here, once, keeps it
         // from taking an allocation slot (and an AI-judge call) on every 5-minute scan.
         if (ruleVerdict(job.title).verdict === "unsure") {
           report.rejected += 1;
-          report.reasons["title is not a recognised software/data role"] = (report.reasons["title is not a recognised software/data role"] ?? 0) + 1;
+          bump("title is not a recognised software/data role");
           continue;
         }
+        slot(evaluation.window).eligible += 1;
         candidates.push({ job, evaluation: { ...evaluation, region: evaluation.region } });
       }
     }
     report.eligible = candidates.length;
 
-    // The Jobs sheet is read only when something qualifies: duplicates and "one opening per company per day" need it, nothing else does.
+    // Only the windows opened so far are searched; an eligible job in an older window waits for its window to open.
+    const open = candidates.filter((c) => (c.evaluation.window ?? LAST_WINDOW + 1) <= state.w);
+    report.deferred = candidates.length - open.length;
+
+    // The Jobs sheet is read only when something is open: duplicates and "one opening per company per day" need it, nothing else does.
     let existing: Job[] = [];
-    if (candidates.length) {
+    if (open.length) {
       existing = await deps.jobs.list();
       const jobType = step.kind === "internship" ? "Internship" : "Full-time";
       const usedCompanies = new Set<string>();
@@ -989,71 +1048,91 @@ export async function runDailyJobSearch(deps: PipelineDeps): Promise<{ internshi
       capacity.companiesUsed = usedCompanies;
     }
     const index = JobIndex.from(existing);
-    const fresh = candidates.filter((c) => !index.duplicateOf(c.job));
-    report.duplicates = candidates.length - fresh.length;
-
+    const fresh = open.filter((c) => !index.duplicateOf(c.job));
+    report.duplicates = open.length - fresh.length;
 
     const brain = brainOf(deps);
     deps.runState ??= {};
-    let pool = fresh;
-    for (let round = 0; round < 3 && pool.length; round++) {
-      const assignments = allocate(pool, capacity, MEMBER_IDS, perBucket, perBucket);
-      if (!assignments.length) break;
-      report.allocated += assignments.length;
-      const failed = new Set<JobCandidate>();
-      for (const a of assignments) {
-        const memberName = getMember(a.memberId)?.name ?? a.memberId;
-        const release = (why: string) => {
-          // Every allocated-but-not-saved job says why (shown in the funnel), so a shortfall is never silent.
-          report.reasons[`released: ${why}`] = (report.reasons[`released: ${why}`] ?? 0) + 1;
-          capacity.regionUsed[a.region] = (capacity.regionUsed[a.region] ?? 1) - 1;
-          capacity.memberUsed[a.memberId] = (capacity.memberUsed[a.memberId] ?? 1) - 1;
-          capacity.companiesUsed = new Set([...capacity.companiesUsed].filter((c) => c !== a.job.companyName.trim().toLowerCase()));
-          failed.add(a.job);
-        };
-        // Titles the rules cannot place are decided by the brain, within a per-run budget (as for every saved job).
-        if (ruleVerdict(a.job.title).verdict === "unsure") {
-          const left = deps.runState.relevanceChecksLeft ?? RELEVANCE_CHECKS_PER_RUN;
-          if (left <= 0) {
-            release("relevance-check budget used up");
-            continue;
+    try {
+      let pool = fresh;
+      for (let round = 0; round < 3 && pool.length; round++) {
+        const assignments = allocate(pool, capacity, MEMBER_IDS, perBucket, perBucket);
+        if (!assignments.length) break;
+        report.allocated += assignments.length;
+        const failed = new Set<JobCandidate>();
+        for (const a of assignments) {
+          const memberName = getMember(a.memberId)?.name ?? a.memberId;
+          const release = (why: string) => {
+            // Every allocated-but-not-saved job says why (shown in the funnel), so a shortfall is never silent.
+            bump(`released: ${why}`);
+            capacity.regionUsed[a.region] = (capacity.regionUsed[a.region] ?? 1) - 1;
+            capacity.memberUsed[a.memberId] = (capacity.memberUsed[a.memberId] ?? 1) - 1;
+            capacity.companiesUsed = new Set([...capacity.companiesUsed].filter((c) => c !== a.job.companyName.trim().toLowerCase()));
+            failed.add(a.job);
+          };
+          // Titles the rules cannot place are decided by the brain, within a per-run budget (as for every saved job).
+          if (ruleVerdict(a.job.title).verdict === "unsure") {
+            const left = deps.runState.relevanceChecksLeft ?? RELEVANCE_CHECKS_PER_RUN;
+            if (left <= 0) {
+              release("relevance-check budget used up");
+              continue;
+            }
+            deps.runState.relevanceChecksLeft = left - 1;
+            if (!(await brain.isRelevantJob(a.job)).relevant) {
+              release("judged not a software/data role");
+              continue;
+            }
           }
-          deps.runState.relevanceChecksLeft = left - 1;
-          if (!(await brain.isRelevantJob(a.job)).relevant) {
-            release("judged not a software/data role");
-            continue;
+          try {
+            const notes = [...a.evaluation.notes, ...(a.fit.matched.length ? [`matches ${memberName} skills: ${a.fit.matched.join(", ")}`] : [`low skill match for ${memberName} (not enough verified skills for this role)`])];
+            const res = await deps.jobs.create(a.memberId, toJobInput(a.job, day, { assignedTo: memberName, notes, workplace: a.evaluation.workplace, pay: payLabel(a.job) }));
+            if (!("created" in res)) {
+              index.add(a.job); // already in Jobs (same link): not picked again this run
+              release("already in Jobs (same link)");
+              continue;
+            }
+            index.add(a.job);
+            capacity.companiesUsed = new Set([...capacity.companiesUsed, a.job.companyName.trim().toLowerCase()]);
+            report.saved.push(a.job.title);
+            if (a.evaluation.educationVerified) report.educationVerified += 1;
+            if (a.evaluation.window) slot(a.evaluation.window).saved += 1;
+            step.into.push(a.job.title);
+            // Counted as each job is saved, so an interrupted run keeps its progress and never repeats it.
+            await deps.ledger.add(keys.total, 1);
+            await deps.ledger.add(keys.region(a.region), 1);
+            await deps.ledger.add(keys.member(a.memberId), 1);
+          } catch (err) {
+            if (err instanceof Error && err.name === "ZodError") {
+              release("failed validation");
+              continue;
+            }
+            throw err;
           }
         }
-        try {
-          const notes = [...a.evaluation.notes, ...(a.fit.matched.length ? [`matches ${memberName} skills: ${a.fit.matched.join(", ")}`] : [`low skill match for ${memberName} (not enough verified skills for this role)`])];
-          const res = await deps.jobs.create(a.memberId, toJobInput(a.job, day, { assignedTo: memberName, notes, workplace: a.evaluation.workplace, pay: payLabel(a.job) }));
-          if (!("created" in res)) {
-            index.add(a.job); // already in Jobs (same link): not picked again this run
-            release("already in Jobs (same link)");
-            continue;
-          }
-          index.add(a.job);
-          capacity.companiesUsed = new Set([...capacity.companiesUsed, a.job.companyName.trim().toLowerCase()]);
-          report.saved.push(a.job.title);
-          step.into.push(a.job.title);
-          await deps.ledger.add(keys.total, 1);
-          await deps.ledger.add(keys.region(a.region), 1);
-          await deps.ledger.add(keys.member(a.memberId), 1);
-        } catch (err) {
-          if (err instanceof Error && err.name === "ZodError") {
-            release("failed validation");
-            continue;
-          }
-          throw err;
-        }
+        if (!failed.size) break;
+        pool = pool.filter((c) => !failed.has(c.job) && !index.duplicateOf(c.job));
       }
-      if (!failed.size) break;
-      pool = pool.filter((c) => !failed.has(c.job) && !index.duplicateOf(c.job));
+    } finally {
+      // Progress is stored even when the run is cut short: the scan count, the window cursor and the funnel.
+      const read = stats.boardsRead + stats.boardsFailed > 0 || report.discovered > 0;
+      if (read) {
+        state.scans += 1;
+        const remainingNow = step.target - savedBefore - report.saved.length;
+        if (remainingNow > 0) {
+          state.n += 1;
+          // A whole sweep of the board list has now been read with this kind's quota still unmet: open the next-older window.
+          if (state.n >= Math.max(1, Math.ceil(known.length / BOARDS_PER_SLICE)) && state.w < LAST_WINDOW) {
+            state.w += 1;
+            state.n = 0;
+          }
+        }
+        report.window = state.w;
+        await recordFunnel(deps, day, step.kind, report, state);
+      }
     }
     result.report[step.kind] = report;
-    await recordFunnel(deps, day, step.kind, report);
     const short = MEMBER_IDS.filter((m) => (capacity.memberUsed[m] ?? 0) < perBucket).map((m) => `${m} ${capacity.memberUsed[m] ?? 0}/${perBucket}`);
-    if (short.length) result.warnings.push(`${step.kind}: ${report.considered} listings, ${report.rejected} rejected, ${report.uncertain} uncertain; below target for ${short.join(", ")}`);
+    if (short.length) result.warnings.push(`${step.kind}: ${report.considered} listings, ${report.rejected} rejected, ${report.uncertain} uncertain; window ${report.window}/${LAST_WINDOW} open; below target for ${short.join(", ")}`);
   }
   return result;
 }

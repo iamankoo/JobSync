@@ -51,6 +51,8 @@ interface GreenhouseJob {
   absolute_url?: string;
   location?: { name?: string };
   updated_at?: string;
+  /** The ORIGINAL posting date (the list carries it; `updated_at` changes on every edit and is not used as a posting date). */
+  first_published?: string;
   /** Only on a single job (not in the board list): HTML-escaped description and the posted pay ranges. */
   content?: string;
   pay_input_ranges?: { min_cents?: number; max_cents?: number; currency_type?: string }[];
@@ -73,7 +75,9 @@ const commitment = (c: string | undefined): Employment | undefined =>
 
 /** Description requests per company when looking for one company's jobs (outreach), and per company when searching. */
 const DETAIL_LIMIT_COMPANY = 3;
-const DETAIL_LIMIT_SEARCH = 6;
+const DETAIL_LIMIT_SEARCH = 10;
+/** Full-time listings worth a description request: the title itself signals an early-career role (the rest are mid-level or above). */
+const EARLY_CAREER_TITLE = /\b(?:intern|internship|new grad|graduate|junior|jr|entry|early career|associate|trainee|apprentice|university|campus|(?:engineer|developer|analyst|scientist)\s*(?:i|1)|sde[- ]?1)\b/i;
 /**
  * Boards read per search call, per applicant-tracking system. The three systems are different hosts, so they are read in
  * parallel (each host still gets at most one request per second); consecutive calls read different slices, so the whole
@@ -158,7 +162,7 @@ export function createCompanyBoardSource(fetcher: PoliteFetcher): JobSource {
         .filter((j) => j.title && j.absolute_url)
         .map((j) => ({
           source: "Greenhouse", sourceId: String(j.id ?? ""), companyName: company.name, companyKey: company.key, title: j.title!.trim(), url: j.absolute_url!,
-          ...(j.location?.name ? { location: j.location.name } : {}), remote: isRemote(`${j.title} ${j.location?.name ?? ""}`), ...(j.updated_at ? { postedAt: j.updated_at } : {}),
+          ...(j.location?.name ? { location: j.location.name } : {}), remote: isRemote(`${j.title} ${j.location?.name ?? ""}`), ...(j.first_published ? { postedAt: j.first_published } : {}),
         }));
       // Descriptions only for the roles that matter (early-career software/data), a few per company.
       let left = detailLimit;
@@ -224,7 +228,8 @@ export function createCompanyBoardSource(fetcher: PoliteFetcher): JobSource {
         const kind = (c.careersUrl && boardFromUrl(c.careersUrl)?.kind) || "other";
         groups.set(kind, [...(groups.get(kind) ?? []), c]);
       }
-      const slot = Math.floor(Date.now() / 300_000);
+      // A persisted scan counter (passed by the caller) makes the sweep resumable; the clock is only the fallback.
+      const slot = query.cursor ?? Math.floor(Date.now() / 300_000);
       const readGroup = async (kind: string, group: QualifiedCompany[]): Promise<JobCandidate[]> => {
         const take = Math.min(BOARDS_PER_SEARCH[kind] ?? 2, group.length);
         const out: JobCandidate[] = [];
@@ -247,7 +252,7 @@ export function createCompanyBoardSource(fetcher: PoliteFetcher): JobSource {
             // Descriptions and posted pay only for the roles that matter and can still qualify (Greenhouse lists carry neither).
             let left = DETAIL_LIMIT_SEARCH;
             for (const j of wanted) {
-              if (listed.board.kind === "greenhouse" && left > 0 && matchRole(j.title).relevant && !j.description && !(query.deadline && Date.now() > query.deadline - SEARCH_MARGIN_MS)) {
+              if (listed.board.kind === "greenhouse" && left > 0 && matchRole(j.title).relevant && (query.employment === "internship" || EARLY_CAREER_TITLE.test(j.title)) && !j.description && !(query.deadline && Date.now() > query.deadline - SEARCH_MARGIN_MS)) {
                 left -= 1;
                 let d = details.get(j.url);
                 if (!d) details.set(j.url, (d = greenhouseDetail(listed.board.token, j)));
