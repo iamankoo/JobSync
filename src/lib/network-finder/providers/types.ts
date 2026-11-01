@@ -100,6 +100,11 @@ export interface JobSearchQuery {
    * only for listings it accepts, so the run's time goes to jobs that can still qualify.
    */
   accept?: (job: JobCandidate) => boolean;
+  /**
+   * True for a listing that, as read, meets every rule. Only these get the one extra request that reads the posted pay
+   * (a Greenhouse list carries descriptions but not the pay ranges), so pay is still checked before anything is saved.
+   */
+  confirm?: (job: JobCandidate) => boolean;
   /** Which slice of the boards to read: a counter the caller persists, so a sweep of all boards survives restarts. */
   cursor?: number;
   /** Counts what the source saw, for the daily funnel report. */

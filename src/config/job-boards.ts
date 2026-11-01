@@ -6,7 +6,9 @@
  * Ashby boards are deliberately NOT listed: api.ashbyhq.com's robots.txt disallows automated access, and the job search honours robots.txt
  * (31 Oct 2026: all 28 Ashby seeds failed for that reason). SmartRecruiters is excluded for the same reason.
  *
- * Every token below answered with a live board with at least 5 open roles when the list was built (31 Oct 2026). A board
+ * Every token below answered with a live board with at least 5 open roles when the list was built (31 Oct 2026; the Lever boards and
+ * the last Greenhouse block were added 1 Nov 2026 after a supply audit: they are the boards with the most roles in India or the most
+ * early-career roles that answered, and every listing still has to pass the same eligibility rules). A board
  * that later disappears simply returns nothing and is skipped. Only the company's own board is ever read (no third-party
  * aggregators, no LinkedIn). To add a company, add its board token here: the daily search picks it up on the next run.
  */
@@ -124,6 +126,26 @@ export const SEED_BOARDS: readonly SeedBoard[] = [
   { name: "Wise", ats: "greenhouse", token: "wise" },
   { name: "Wiz", ats: "greenhouse", token: "wizinc" },
   { name: "Yugabyte", ats: "greenhouse", token: "yugabyte" },
+  { name: "Agoda", ats: "greenhouse", token: "agoda" },
+  { name: "BitGo", ats: "greenhouse", token: "bitgo" },
+  { name: "Commvault", ats: "greenhouse", token: "commvault" },
+  { name: "HighRadius", ats: "greenhouse", token: "highradius" },
+  { name: "JFrog", ats: "greenhouse", token: "jfrog" },
+  { name: "Netskope", ats: "greenhouse", token: "netskope" },
+  { name: "project44", ats: "greenhouse", token: "project44" },
+  { name: "Smartsheet", ats: "greenhouse", token: "smartsheet" },
+  { name: "Toast", ats: "greenhouse", token: "toast" },
+  { name: "ZoomInfo", ats: "greenhouse", token: "zoominfo" },
+  { name: "Zscaler", ats: "greenhouse", token: "zscaler" },
+  { name: "CRED", ats: "lever", token: "cred" },
+  { name: "FamPay", ats: "lever", token: "fampay" },
+  { name: "Meesho", ats: "lever", token: "meesho" },
+  { name: "Mindtickle", ats: "lever", token: "mindtickle" },
+  { name: "Nium", ats: "lever", token: "nium" },
+  { name: "Outreach", ats: "lever", token: "outreach" },
+  { name: "Paytm", ats: "lever", token: "paytm" },
+  { name: "Pocket FM", ats: "lever", token: "pocketfm" },
+  { name: "Zeta", ats: "lever", token: "zeta" },
 ];
 
 export const boardUrl = (b: Pick<SeedBoard, "ats" | "token">) =>
