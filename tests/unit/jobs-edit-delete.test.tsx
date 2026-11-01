@@ -22,16 +22,34 @@ async function openMenu(user: ReturnType<typeof userEvent.setup>, title: string,
   await user.click(screen.getByRole("menuitem", { name: item }));
 }
 
-describe("All Jobs: edit and delete (owner only)", () => {
-  it("offers Edit/Delete only on jobs the signed-in member added", async () => {
-    const user = userEvent.setup();
-    const jobs = [...makeJobs(1), { ...makeJobs(2)[1], addedBy: "lukky" as const }];
-    setup({ jobs });
-    await user.click(screen.getByRole("button", { name: /More actions: Test Role 1/ }));
-    expect(within(screen.getByRole("menu")).getAllByRole("menuitem").map((i) => i.textContent)).toContain("Edit job");
+describe("All Jobs: edit and delete (owner, or the administrator)", () => {
+  const items = async (user: ReturnType<typeof userEvent.setup>, title: string) => {
+    await user.click(screen.getByRole("button", { name: new RegExp(`More actions: ${title}`) }));
+    const out = within(screen.getByRole("menu")).getAllByRole("menuitem").map((i) => i.textContent);
     await user.keyboard("{Escape}");
-    await user.click(screen.getByRole("button", { name: /More actions: Test Role 2/ }));
-    expect(within(screen.getByRole("menu")).getAllByRole("menuitem").map((i) => i.textContent)).toEqual(["View details", "Mark as applied"]);
+    return out;
+  };
+  const mixed = () => [{ ...makeJobs(1)[0], addedBy: "lukky" as const }, { ...makeJobs(2)[1], addedBy: "rishii" as const }];
+
+  it("an ordinary member is offered Edit/Delete only on jobs they added", async () => {
+    const user = userEvent.setup();
+    setup({ jobs: mixed(), currentMemberId: "lukky" });
+    expect(await items(user, "Test Role 1")).toEqual(expect.arrayContaining(["Edit job", "Delete job"]));
+    expect(await items(user, "Test Role 2")).toEqual(["View details", "Mark as applied"]);
+  });
+
+  it("the administrator (Anni) is offered Edit/Delete on EVERY job, including ones Lukky and Rishii added", async () => {
+    const user = userEvent.setup();
+    setup({ jobs: mixed(), currentMemberId: "anni" });
+    expect(await items(user, "Test Role 1")).toEqual(expect.arrayContaining(["Edit job", "Delete job"]));
+    expect(await items(user, "Test Role 2")).toEqual(expect.arrayContaining(["Edit job", "Delete job"]));
+  });
+
+  it("Rishii is offered neither on Anni's or Lukky's jobs", async () => {
+    const user = userEvent.setup();
+    setup({ jobs: [{ ...makeJobs(1)[0], addedBy: "anni" as const }, { ...makeJobs(2)[1], addedBy: "lukky" as const }], currentMemberId: "rishii" });
+    expect(await items(user, "Test Role 1")).toEqual(["View details", "Mark as applied"]);
+    expect(await items(user, "Test Role 2")).toEqual(["View details", "Mark as applied"]);
   });
 
   it("edits a job: pre-filled form, sends editable fields only, and updates the row from the server's response", async () => {

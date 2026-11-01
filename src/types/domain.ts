@@ -31,6 +31,8 @@ export type ApplicationStage = (typeof APPLICATION_STAGES)[number];
 
 export const ACTIVITY_ACTIONS = [
   "job_added", "job_applied", "job_unapplied", "application_updated", "job_updated", "job_deleted", "follow_up_answered",
+  // admin audit trail: the administrator edited / deleted ANOTHER member's job or connection (JobID column holds the record id)
+  "admin_edit", "admin_delete",
   // presence events (not work): a successful sign-in, and a server-validated page visit (max once / 30 min)
   "login", "visit",
 ] as const;

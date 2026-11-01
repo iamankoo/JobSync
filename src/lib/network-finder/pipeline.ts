@@ -12,6 +12,7 @@ import { allocate, jobLedgerKeys, pickJobForMember, type EvaluatedJob, type Capa
 import { asEmailJob, type CompanyResearch, type CompanyResearcher } from "./company-research";
 import { evaluateJob, REGIONS, sourceTier, TIER_RANK, type EvalContext } from "./job-eligibility";
 import { LAST_WINDOW } from "./job-recency";
+import { queueJobAlert, type AlertSender } from "./job-alerts";
 import { assembleEmail, buildEmailPlan, cleanParagraphs, composeFallback, jobsForCompany, validateEmail, type EmailJob } from "./email-composer";
 import { inferPattern, predictEmail, type PatternEvidence } from "./email-pattern";
 import { ApolloPoolExhausted, ProviderError } from "./errors";
@@ -67,6 +68,8 @@ export interface PipelineDeps {
   enrichCompany?: (c: CompanyCandidate) => Promise<CompanyCandidate | null>;
   brain?: Brain;
   jobSources: readonly JobSource[];
+  /** Delivers the "new job found" notifications to the other two members (see job-alerts.ts). Absent in tests that do not need it. */
+  jobAlerts?: { send: AlertSender };
   /** Official ATS boards the daily job search reads (config/job-boards.ts). Independent of company / people discovery. */
   seedBoards?: readonly SeedBoard[];
   /** Reads a company's own website and careers board for the email writer (verified facts and real openings only). */
@@ -1097,6 +1100,8 @@ export async function runDailyJobSearch(deps: PipelineDeps): Promise<{ internshi
             if (a.evaluation.educationVerified) report.educationVerified += 1;
             if (a.evaluation.window) slot(a.evaluation.window).saved += 1;
             step.into.push(a.job.title);
+            // Only now that the row is saved: queue the notification for the other two members (never for a rejected or duplicate job).
+            await queueJobAlert(deps.ledger, { jobId: res.created.jobId, creator: a.memberId, company: res.created.company, role: res.created.jobRole, jobType: res.created.jobType, ...(res.created.workMode ? { workMode: res.created.workMode } : {}) });
             // Counted as each job is saved, so an interrupted run keeps its progress and never repeats it.
             await deps.ledger.add(keys.total, 1);
             await deps.ledger.add(keys.region(a.region), 1);

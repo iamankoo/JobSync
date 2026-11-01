@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildActivityTimeline, describeDay, isMeaningful, isPresence, MEANINGFUL_ACTIONS, PRESENCE_ACTIONS, type ActivityEvent } from "@/lib/analytics/activity";
+import { AUDIT_ACTIONS, buildActivityTimeline, describeDay, isMeaningful, isPresence, MEANINGFUL_ACTIONS, PRESENCE_ACTIONS, type ActivityEvent } from "@/lib/analytics/activity";
 import { classifyDeadline, orderDeadlines } from "@/lib/analytics/deadlines";
 import { ageInDays, isExpired, RETENTION_DAYS, RETENTION_SECONDS, retentionDeadline } from "@/lib/retention/rules";
 import { addDays } from "@/lib/analytics/dates";
@@ -9,9 +9,10 @@ const TODAY = "2026-10-09"; // Friday
 const ev = (date: string, action: ActivityEvent["action"], time = "10:00:00.000Z"): ActivityEvent => ({ date, action, timestamp: `${date}T${time}` });
 
 describe("activity classification", () => {
-  it("every action is either meaningful work or presence, never both", () => {
-    for (const a of ACTIVITY_ACTIONS) expect(isMeaningful(a) !== isPresence(a), a).toBe(true);
-    expect([...MEANINGFUL_ACTIONS, ...PRESENCE_ACTIONS].sort()).toEqual([...ACTIVITY_ACTIONS].sort());
+  it("every action is exactly one of meaningful work, presence, or an admin audit row", () => {
+    for (const a of ACTIVITY_ACTIONS) expect([isMeaningful(a), isPresence(a), AUDIT_ACTIONS.includes(a)].filter(Boolean), a).toHaveLength(1);
+    expect([...MEANINGFUL_ACTIONS, ...PRESENCE_ACTIONS, ...AUDIT_ACTIONS].sort()).toEqual([...ACTIVITY_ACTIONS].sort());
+    expect(AUDIT_ACTIONS).toEqual(["admin_edit", "admin_delete"]);
     expect(PRESENCE_ACTIONS).toEqual(["login", "visit"]);
   });
 });

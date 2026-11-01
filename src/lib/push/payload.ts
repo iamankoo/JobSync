@@ -62,6 +62,22 @@ export function jobAddedPayload(actor: MemberId, job: JobFacts): PushPayload {
   };
 }
 
+/**
+ * A job the daily search found and saved under `creator`. It does not say the member "added" it. Carries the facts a member needs
+ * to decide whether to open it: role, company, job type (and work mode), and a link to the job in All Jobs.
+ */
+export function discoveredJobPayload(creator: MemberId, job: JobFacts & { jobType?: string; workMode?: string }): PushPayload {
+  const m = getMember(creator);
+  const kind = job.jobType === "Internship" ? "internship" : "job";
+  return {
+    title: clean(`New ${kind} found for ${m?.name ?? "the team"}: ${job.jobRole}`, 110),
+    body: clean(`${job.company} · ${[job.jobType, job.workMode].filter(Boolean).join(" · ") || "Job"} — tap to view the job.`, 140),
+    url: jobUrl(job.jobId),
+    tag: `job-added-${job.jobId}`,
+    icon: m?.photo,
+  };
+}
+
 export function jobAppliedPayload(actor: MemberId, job: JobFacts): PushPayload {
   const m = getMember(actor);
   const name = m?.name ?? "A teammate";
