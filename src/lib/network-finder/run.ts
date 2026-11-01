@@ -11,6 +11,7 @@ import { createApolloOrgProvider } from "./providers/apollo-org";
 import { createCompanyResearcher } from "./company-research";
 import { createCompanyFactsFinder } from "./providers/company-facts";
 import { createArbeitnowSource, createCompanyBoardSource, createRemoteOkSource } from "./providers/job-boards";
+import { createHimalayasSource } from "./providers/himalayas";
 import { createNemotronBrain, createNemotronCompanyFactsExtractor, createNemotronPeopleExtractor, loadNemotronConfig } from "./providers/nemotron";
 import { SEED_BOARDS } from "@/config/job-boards";
 import { notifyMember } from "@/lib/push/notify";
@@ -87,7 +88,7 @@ export function buildRealDeps(config: NetworkFinderConfig = loadNetworkFinderCon
     ...(pool ? { pool, contacts: createApolloProvider() } : {}),
     enrichCompany: chainEnrichers(apolloEnrich, facts),
     ...(nemotron ? { brain: createNemotronBrain(nemotron) } : {}),
-    jobSources: [boards, createRemoteOkSource(fetcher), createArbeitnowSource(fetcher)],
+    jobSources: [boards, createRemoteOkSource(fetcher), createArbeitnowSource(fetcher), createHimalayasSource(fetcher)],
     seedBoards: SEED_BOARDS,
     jobAlerts: {
       send: async (member, payload) => {
@@ -185,7 +186,7 @@ export function funnelCounts(report: Record<string, DailyKindReport>) {
   return Object.fromEntries(
     Object.entries(report).map(([kind, r]) => [
       kind,
-      { target: r.target, shortfall: r.shortfall, boardsRead: r.boardsRead, boardsFailed: r.boardsFailed, listed: r.listed, discovered: r.discovered, parsed: r.parsed, rejected: r.rejected, uncertain: r.uncertain, eligible: r.eligible, deferred: r.deferred, duplicates: r.duplicates, allocated: r.allocated, saved: r.saved.length, educationVerified: r.educationVerified, window: r.window, byWindow: r.byWindow },
+      { target: r.target, shortfall: r.shortfall, verified: r.educationVerified, unverified: r.saved.length - r.educationVerified, boardsRead: r.boardsRead, boardsFailed: r.boardsFailed, listed: r.listed, discovered: r.discovered, parsed: r.parsed, rejected: r.rejected, uncertain: r.uncertain, eligible: r.eligible, deferred: r.deferred, duplicates: r.duplicates, allocated: r.allocated, saved: r.saved.length, educationVerified: r.educationVerified, window: r.window, byWindow: r.byWindow },
     ]),
   );
 }

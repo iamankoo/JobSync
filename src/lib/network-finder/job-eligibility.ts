@@ -260,6 +260,22 @@ export interface EvalContext {
   timeZone: string;
 }
 
+/** Words that show a listing is meant for students / freshers / entry-level applicants. */
+const STUDENT_TARGET_RE = /\b(students?|undergrad(?:uate)?s?|freshers?|fresh graduates?|recent graduates?|new grads?|entry[- ]level|early[- ]career|currently (?:enrolled|pursuing)|pursuing (?:a |an |your )?(?:bachelor|degree|b\.?\s?tech|b\.?\s?e\b)|final[- ]year)\b/i;
+const INTERN_WORD_RE = /\bintern(?:ship)?s?\b/i;
+
+/**
+ * The one controlled exception to "an aggregator listing must state the degree" (owner decision, 1 Nov 2026): a Himalayas INTERNSHIP
+ * that calls itself an internship and clearly targets students / freshers / entry-level applicants. It still has to meet every other
+ * rule; it is then saved as "not verified", never as confirmed 2027 B.Tech / B.E. eligible. Full-time listings never use it.
+ */
+function himalayasInternshipException(job: JobCandidate, kind: JobKind, text: string): boolean {
+  if (kind !== "internship" || job.source !== "Himalayas") return false;
+  const explicitInternship = INTERN_WORD_RE.test(job.title) || job.employment === "internship";
+  const targetsStudents = job.entryLevel === true || STUDENT_TARGET_RE.test(text);
+  return explicitInternship && targetsStudents && /^https:\/\//i.test(job.url);
+}
+
 export function evaluateJob(job: JobCandidate, kind: JobKind, ctx?: EvalContext): JobEvaluation {
   const rejects: string[] = [];
   const unknown: string[] = [];
@@ -300,7 +316,11 @@ export function evaluateJob(job: JobCandidate, kind: JobKind, ctx?: EvalContext)
     educationVerified = true;
     notes.push(edu.note);
   } else if (fresherFriendly && tier === "official") notes.push(edu.reason);
+  else if (himalayasInternshipException(job, kind, text)) notes.push(`${edu.reason} — Himalayas internship for students / freshers: education NOT VERIFIED`);
   else unknown.push(edu.reason);
+
+  // A listing the source says has closed is never saved.
+  if (ctx && job.expiresAt && Date.parse(job.expiresAt) < ctx.nowMs) rejects.push("listing has expired");
 
   // Recency: the ORIGINAL posting date. An undated listing is never treated as new.
   let window: number | null = null;

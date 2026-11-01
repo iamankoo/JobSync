@@ -6,6 +6,13 @@
 
 ---
 
+## UPDATE 2026-11-01 (owner decisions: Himalayas internships, Amazon and Workday)
+
+- **Amazon: excluded** (Conditions of Use prohibit automated data gathering). **Workday: on hold** (employer terms not reviewed; "Posted N Days Ago" dates are unusable for the recency windows). Do not access either.
+- **Himalayas internships: controlled exception (internships ONLY).** `providers/himalayas.ts` reads the free public API (one request per scan, India and worldwide internship queries alternating, newest first) and keeps source "Himalayas" plus the listing's own https application link. `evaluateJob` saves such a listing as **NOT VERIFIED** (never as confirmed 2027 B.Tech/B.E.) when the degree/year is not stated AND: it calls itself an internship (title or source type), it clearly targets students/freshers/entry-level (source label "Entry-level" only, or student/fresher wording — a talent pool open to every level does not count), the role is one of the 13 families, location is India or worldwide remote, a stated stipend meets the existing threshold (undisclosed pay stays uncertain on an aggregator), the posting date is present and within the windows, the listing has not expired (`expiresAt`), and there is a genuine https URL. Explicit Master's/PhD, other batches, paid portals, duplicates stay rejected. Full-time listings never use it. Where the degree/year IS stated the normal verified path applies.
+- **Reporting:** the `[daily-jobs]` line carries per kind `target` (15), `verified`, `unverified` and `shortfall` — the unverified internships are not described as verified.
+- Tests: `tests/integration/himalayas-internships.test.ts` (15) plus a pipeline test in `network-finder-daily-jobs.test.ts`.
+
 ## UPDATE 2026-11-01 (source terms and yield research)
 
 - **Amazon (amazon.jobs) — NOT integrated.** robots.txt only disallows `/internal` and `/en/search.json` works technically, but the site's footer links to Amazon's Conditions of Use, which prohibit "any use of data mining, robots, or similar data gathering and extraction tools". The location filter was also ignored in a test query. Terms forbid it.
