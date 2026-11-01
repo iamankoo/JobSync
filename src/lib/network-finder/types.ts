@@ -133,4 +133,8 @@ export interface JobCandidate {
   salary?: { min?: number; max?: number; currency?: string; period?: "year" | "month" | "hour" };
   /** Free text about pay, when the source gives only text (e.g. "₹12-18 LPA"). */
   salaryText?: string;
+  /** When the source says the listing closes / expires (an expired listing is never saved). */
+  expiresAt?: string;
+  /** The source labels the listing for entry-level applicants only (not a talent pool open to every level). */
+  entryLevel?: boolean;
 }

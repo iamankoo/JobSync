@@ -253,6 +253,22 @@ describe("official company URL first; duplicates never saved", () => {
     expect(internship.shortfall).toBeGreaterThan(0);
   });
 
+  it("a Himalayas student internship with no degree stated is saved as NOT verified and counted separately from verified ones", async () => {
+    const { funnelCounts } = await import("@/lib/network-finder/run");
+    const { deps, jobSource } = setup();
+    jobSource.searchResults = [
+      opening("OTHER", "internship"),
+      opening("OTHER", "internship", { source: "Himalayas", entryLevel: true, url: "https://apply.example-portal.net/j/1", companyName: "Portal Co", title: "Data Engineering Intern", description: "An internship for students and freshers. Python, SQL and Airflow.", salary: { max: 90_000, currency: "INR", period: "month" } }),
+    ];
+    const res = await runDailyJobSearch(deps);
+    const r = res.report!.internship;
+    expect(r.saved).toHaveLength(2);
+    expect(r.educationVerified).toBe(1);
+    const counts = funnelCounts(res.report!).internship as { verified: number; unverified: number; shortfall: number };
+    expect([counts.verified, counts.unverified, counts.shortfall]).toEqual([1, 1, 13]);
+    expect(kindRows("Internship").some((row) => /NOT VERIFIED|not stated/i.test(row.join(" ")))).toBe(true);
+  });
+
   it("stops searching for a kind once its quota is full", async () => {
     const { deps, jobSource } = setup();
     jobSource.searchResults = pool("full_time", 8);
