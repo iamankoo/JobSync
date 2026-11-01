@@ -131,3 +131,11 @@ describe("discovery never loses its place or overruns the run", () => {
     expect(source.calls).toHaveLength(1);
   });
 });
+
+describe("hard deadline of the cron endpoint", () => {
+  it("answers before Vercel's 60 s kill when a cycle hangs, and passes a finished cycle through untouched", async () => {
+    const { withHardDeadline } = await import("@/lib/network-finder/run");
+    expect(await withHardDeadline(new Promise<string>(() => undefined), 20)).toBe("timed-out");
+    expect(await withHardDeadline(Promise.resolve("done"), 1000)).toBe("done");
+  });
+});
