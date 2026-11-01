@@ -1002,7 +1002,9 @@ export async function runDailyJobSearch(deps: PipelineDeps): Promise<{ internshi
       const failed = new Set<JobCandidate>();
       for (const a of assignments) {
         const memberName = getMember(a.memberId)?.name ?? a.memberId;
-        const release = () => {
+        const release = (why: string) => {
+          // Every allocated-but-not-saved job says why (shown in the funnel), so a shortfall is never silent.
+          report.reasons[`released: ${why}`] = (report.reasons[`released: ${why}`] ?? 0) + 1;
           capacity.regionUsed[a.region] = (capacity.regionUsed[a.region] ?? 1) - 1;
           capacity.memberUsed[a.memberId] = (capacity.memberUsed[a.memberId] ?? 1) - 1;
           capacity.companiesUsed = new Set([...capacity.companiesUsed].filter((c) => c !== a.job.companyName.trim().toLowerCase()));
@@ -1012,12 +1014,12 @@ export async function runDailyJobSearch(deps: PipelineDeps): Promise<{ internshi
         if (ruleVerdict(a.job.title).verdict === "unsure") {
           const left = deps.runState.relevanceChecksLeft ?? RELEVANCE_CHECKS_PER_RUN;
           if (left <= 0) {
-            release();
+            release("relevance-check budget used up");
             continue;
           }
           deps.runState.relevanceChecksLeft = left - 1;
           if (!(await brain.isRelevantJob(a.job)).relevant) {
-            release();
+            release("judged not a software/data role");
             continue;
           }
         }
@@ -1025,10 +1027,12 @@ export async function runDailyJobSearch(deps: PipelineDeps): Promise<{ internshi
           const notes = [...a.evaluation.notes, ...(a.fit.matched.length ? [`matches ${memberName} skills: ${a.fit.matched.join(", ")}`] : [`low skill match for ${memberName} (not enough verified skills for this role)`])];
           const res = await deps.jobs.create(a.memberId, toJobInput(a.job, day, { assignedTo: memberName, notes, workplace: a.evaluation.workplace, pay: payLabel(a.job) }));
           if (!("created" in res)) {
-            release();
+            index.add(a.job); // already in Jobs (same link): not picked again this run
+            release("already in Jobs (same link)");
             continue;
           }
           index.add(a.job);
+          capacity.companiesUsed = new Set([...capacity.companiesUsed, a.job.companyName.trim().toLowerCase()]);
           report.saved.push(a.job.title);
           step.into.push(a.job.title);
           await deps.ledger.add(keys.total, 1);
@@ -1036,14 +1040,14 @@ export async function runDailyJobSearch(deps: PipelineDeps): Promise<{ internshi
           await deps.ledger.add(keys.member(a.memberId), 1);
         } catch (err) {
           if (err instanceof Error && err.name === "ZodError") {
-            release();
+            release("failed validation");
             continue;
           }
           throw err;
         }
       }
       if (!failed.size) break;
-      pool = pool.filter((c) => !failed.has(c.job));
+      pool = pool.filter((c) => !failed.has(c.job) && !index.duplicateOf(c.job));
     }
     result.report[step.kind] = report;
     await recordFunnel(deps, day, step.kind, report);

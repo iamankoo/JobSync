@@ -368,3 +368,17 @@ describe("board reading across the two kinds in one run", () => {
     expect(web.requests.length).toBe(requests);
   });
 });
+
+describe("allocated but not saved is never silent", () => {
+  it("a job the AI judge rejects is released with a reason in the funnel, and the slot goes to the next job", async () => {
+    const { ruleBrain } = await import("@/lib/network-finder/providers/brain");
+    const { deps, jobSource } = setup();
+    deps.brain = { ...ruleBrain, id: "llm", isRelevantJob: async (j) => ({ relevant: !/Wrangler/.test(j.title), reason: "test" }) };
+    jobSource.searchResults = [opening("US", "full_time", { title: "Code Wrangler, New Grad" }), opening("US", "full_time")];
+    const day = await runDailyJobSearch(deps);
+    const r = day.report!.full_time;
+    expect(r).toMatchObject({ eligible: 2, allocated: 2 });
+    expect(r.saved).toHaveLength(1);
+    expect(r.reasons["released: judged not a software/data role"]).toBe(1);
+  });
+});

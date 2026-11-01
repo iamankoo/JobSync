@@ -20,7 +20,7 @@ import { createSheetsStores } from "./sheets-stores";
 import type { CompanyCandidate } from "./types";
 
 /** The cron function may run 60 s; the run wraps up with this much margin. */
-export const RUN_BUDGET_MS = 50_000;
+export const RUN_BUDGET_MS = 44_000;
 /**
  * How long the run lock holds. A run that Vercel kills at 60 s never reaches its `finally`, so the lock must expire
  * soon after the longest possible run — NOT minutes later (28 Oct: a 5-minute TTL made every killed run block the
@@ -28,7 +28,7 @@ export const RUN_BUDGET_MS = 50_000;
  */
 export const RUN_LOCK_TTL_MS = 75_000;
 /** Latest moment (after the run starts) the lock release may still retry a rate-limited write. */
-const RELEASE_WINDOW_MS = 57_000;
+const RELEASE_WINDOW_MS = 52_000;
 
 type Enricher = (c: CompanyCandidate) => Promise<CompanyCandidate | null>;
 type FactsFinder = Pick<ReturnType<typeof createCompanyFactsFinder>, "find">;
