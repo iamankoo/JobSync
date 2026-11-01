@@ -110,7 +110,7 @@ describe("the complete mocked flow", () => {
     expect(out.jobsSkipped.map((s) => s.name)).toEqual(["Senior Staff Engineer", "Account Executive"]);
     expect(jobs()).toHaveLength(1);
     expect(jobs()[0].slice(1, 5)).toEqual(["Mock Startup 1", "Software Engineer, New Grad", "Full-time", "Remote"]);
-    expect(jobs()[0][7]).toBe("Remote (US)");
+    expect(jobs()[0][7]).toBe("Remote - Worldwide");
     expect(jobs()[0][10]).toContain("Found by Network Finder via mock-careers on 2026-10-27.");
     expect(jobs()[0][11]).toBe("anni");
 
@@ -259,7 +259,7 @@ describe("re-checking known companies and the daily job search", () => {
 
   it("one opening per company, best matches only, never more than a day's quota (full rules: network-finder-daily-jobs.test.ts)", async () => {
     const { deps, jobSource } = setup();
-    const eligible = { description: "New grads welcome. React and Node.js services.", salary: { max: 1_500_000, currency: "INR", period: "year" as const }, workplace: "remote" as const };
+    const eligible = { description: "New grads welcome. B.Tech / B.E. 2027 batch. React and Node.js services.", salary: { max: 1_500_000, currency: "INR", period: "year" as const }, workplace: "remote" as const };
     jobSource.searchResults = [
       ...Array.from({ length: 4 }, (_, i) => mockJob(`FT Co ${i}`, 300 + i, { title: "Junior Backend Engineer", source: "Greenhouse", ...eligible })),
       mockJob("FT Co 0", 350, { title: "Backend Engineer, New Grad", source: "Greenhouse", ...eligible }), // same company again

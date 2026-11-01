@@ -8,7 +8,7 @@ const job = (over: Partial<JobCandidate> = {}): JobCandidate => ({
   companyName: "Acme Robotics",
   title: "Software Engineer, New Grad",
   url: "https://boards.greenhouse.io/acme/jobs/1",
-  location: "Remote - United States",
+  location: "Remote - Worldwide, United States",
   remote: true,
   workplace: "remote",
   description: "New grads welcome. You will build React and Node.js services with PostgreSQL.",
@@ -40,20 +40,25 @@ describe("country, work mode", () => {
     expect(detectWorkplace({ title: "Engineer", workplace: "onsite", remote: true })).toBe("onsite");
   });
 
-  it("US jobs must be REMOTE (full-time)", () => {
+  it("international jobs must be WORLDWIDE remote (full-time)", () => {
     expect(full().verdict).toBe("qualifies");
     expect(full().region).toBe("US");
     for (const workplace of ["hybrid", "onsite"] as const) {
-      const e = full({ workplace, remote: false, location: "New York, NY" });
+      const e = full({ workplace, remote: false });
       expect(e.verdict).toBe("reject");
-      expect(e.reasons.join()).toMatch(/must be remote/);
+      expect(e.reasons.join()).toMatch(/must be worldwide remote/);
     }
+    const ny = full({ workplace: "onsite", remote: false, location: "New York, NY" });
+    expect(ny.verdict).toBe("reject");
+    expect(ny.reasons.join()).toMatch(/not worldwide/);
   });
 
-  it("other-country jobs must be REMOTE; US/other with no stated work mode is only uncertain", () => {
-    expect(full({ location: "Berlin, Germany" }).verdict).toBe("qualifies");
-    expect(full({ location: "Berlin, Germany", workplace: "onsite", remote: false }).verdict).toBe("reject");
-    const unknown = full({ location: "Berlin, Germany", workplace: undefined, remote: false });
+  it("other-country jobs: worldwide remote qualifies; a country-limited or on-site one never does; no stated work mode is only uncertain", () => {
+    expect(full({ location: "Remote - Worldwide, Germany" }).verdict).toBe("qualifies");
+    expect(full({ location: "Remote - Worldwide, Germany" }).region).toBe("OTHER");
+    expect(full({ location: "Berlin, Germany" }).verdict).toBe("reject"); // "remote" in Germany only
+    expect(full({ location: "Remote - Worldwide, Germany", workplace: "onsite", remote: false }).verdict).toBe("reject");
+    const unknown = full({ location: "Worldwide, Germany", workplace: undefined, remote: false });
     expect(unknown.verdict).toBe("uncertain");
     expect(unknown.reasons.join()).toMatch(/remote not stated/);
   });
@@ -64,8 +69,10 @@ describe("country, work mode", () => {
     }
   });
 
-  it("a job whose country is unclear is not treated as qualifying", () => {
-    expect(full({ location: "Worldwide" }).verdict).toBe("uncertain");
+  it("a plain \"Remote\" is not worldwide: it is uncertain until the listing shows applicants in India are eligible", () => {
+    const e = full({ location: "Remote" });
+    expect(e.verdict).toBe("uncertain");
+    expect(e.reasons.join()).toMatch(/does not show applicants in India are eligible/);
   });
 });
 
@@ -192,7 +199,7 @@ describe("paid portals and source quality", () => {
 
 // ---- allocation ---------------------------------------------------------------------------------------------------
 
-const ev = (region: Region, over: Partial<JobEvaluation> = {}): JobEvaluation & { region: Region } => ({ verdict: "qualifies", reasons: [], workplace: "remote", tier: "official", payVerified: true, notes: [], ...over, region });
+const ev = (region: Region, over: Partial<JobEvaluation> = {}): JobEvaluation & { region: Region } => ({ verdict: "qualifies", reasons: [], workplace: "remote", tier: "official", payVerified: true, educationVerified: false, window: null, notes: [], ...over, region });
 let n = 0;
 const cand = (region: Region, title: string, description: string, tier: JobEvaluation["tier"] = "official"): EvaluatedJob => ({
   job: job({ companyName: `Co ${++n}`, title, description, url: `https://boards.greenhouse.io/c${n}/jobs/${n}` }),
@@ -267,7 +274,7 @@ describe("daily split: 5 per country group, 5 per member, quality before quota",
   it("an official company board ranks above an aggregator for the same fit", () => {
     const official = cand("US", "Full Stack Engineer", stack, "official");
     const open = cand("US", "Full Stack Engineer", stack, "open");
-    const out = allocate([open, official], { regionUsed: { US: 4 }, memberUsed: {}, companiesUsed: new Set() });
+    const out = allocate([open, official], { regionUsed: { US: 4, OTHER: 5 }, memberUsed: {}, companiesUsed: new Set() });
     expect(out).toHaveLength(1);
     expect(out[0].job).toBe(official.job);
   });

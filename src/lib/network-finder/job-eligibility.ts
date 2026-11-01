@@ -1,3 +1,5 @@
+import { evaluateEducation } from "./job-education";
+import { MAX_AGE_DAYS, postingAge } from "./job-recency";
 import { ruleVerdict } from "./roles";
 import type { JobCandidate } from "./types";
 
@@ -200,6 +202,39 @@ export function sourceTier(job: Pick<JobCandidate, "source" | "url" | "companyNa
 }
 export const TIER_RANK: Record<SourceTier, number> = { official: 3, linkedin: 2, open: 1 };
 
+// ---- remote: "Remote" is not "worldwide" -----------------------------------------------------------------------------
+
+export type RemoteScope = { scope: "worldwide"; reason: string } | { scope: "restricted"; reason: string } | { scope: "unknown"; reason: string };
+
+/** The listing's own location line says anyone, anywhere. */
+const LOCATION_WORLD_RE = /\b(?:anywhere|worldwide|world-wide|global|globally|work from anywhere|earth)\b/i;
+/** Body text that says the same. Company boilerplate such as "we are a global team" does not count. */
+const WORLD_TEXT_RE = /\b(?:worldwide|world-wide|work from anywhere|anywhere in the world|globally remote|global remote|remote[ -]global|remote[ -]worldwide|worldwide remote|remote[ -]anywhere|open to (?:candidates|applicants|talent) (?:globally|worldwide|from anywhere|in any country)|hiring (?:globally|worldwide)|(?:any|all) (?:location|country|countries)|location[- ]independent)\b/i;
+/** Applicants in India are named as eligible. */
+const INDIA_ELIGIBLE_RE = /\b(?:applicants?|candidates?|talent|people|employees)\s+(?:residing|based|located|living)\s+in\s+india\b|\bindia\b[^.\n]{0,40}\b(?:eligible|welcome|open to|accepted)\b|\b(?:eligible|welcome|open to)\b[^.\n]{0,40}\bindia\b|\bwork(?:ing)? from india\b|\bincluding india\b/i;
+/** A restriction to where the person lives / may legally work. */
+const RESTRICTION_RE = /\b(?:us|u\.s\.|usa|united states|canada|uk|u\.k\.|united kingdom|eu|europe(?:an)?|north america|latam|emea)[- ]only\b|\bonly\b[^.\n]{0,30}\b(?:us|usa|united states|canada|uk|europe)\b|\b(?:must|need to|required to|should)\s+(?:be\s+)?(?:located|based|reside|residing|live|living|work)\s+(?:in|within|from)\s+(?:the\s+)?(?:us|u\.s\.|usa|united states|canada|uk|united kingdom|europe|eu|[a-z ]{3,25}time zones?)|\b(?:authori[sz]ed|eligible|legally)\s+to\s+work\s+in\s+(?:the\s+)?(?:us|u\.s\.|usa|united states|canada|uk|united kingdom|eu)\b|\bwork authori[sz]ation\b|\bresidents?\s+of\s+(?:the\s+)?(?:us|u\.s\.|usa|united states|canada|uk)\b|\bwithin\s+(?:the\s+)?(?:us|u\.s\.|usa|united states|north america|europe|eu|canada)\b|\b(?:us|u\.s\.)\s+(?:based|citizens?|residents?)\b/i;
+
+/**
+ * Can a person living in India actually do this remote job? Needs evidence: a location line / text that says worldwide, or
+ * India named as eligible. A country (or state, or several countries) in the location, or a stated residence / work-authorisation
+ * requirement without India, means NO. Plain "Remote" is not enough, and the company's headquarters is never consulted.
+ */
+export function remoteScope(job: Pick<JobCandidate, "title" | "location" | "description">): RemoteScope {
+  const location = job.location ?? "";
+  const body = `${job.title}\n${job.description ?? ""}`;
+  const locWorld = LOCATION_WORLD_RE.test(location);
+  const locIndia = IN_RE.test(location);
+  const indiaOk = locIndia || INDIA_ELIGIBLE_RE.test(body);
+  if ((US_RE.test(location) || OTHER_RE.test(location)) && !locWorld && !indiaOk) return { scope: "restricted", reason: `remote limited to "${location.trim().slice(0, 60)}", not worldwide` };
+  const restriction = RESTRICTION_RE.exec(body);
+  if (restriction && !indiaOk) return { scope: "restricted", reason: `states a location restriction ("${restriction[0].trim().slice(0, 50)}") and does not name India` };
+  if (locWorld) return { scope: "worldwide", reason: "location says worldwide / anywhere" };
+  if (indiaOk) return { scope: "worldwide", reason: "applicants in India are explicitly eligible" };
+  if (WORLD_TEXT_RE.test(body)) return { scope: "worldwide", reason: "listing says worldwide / work from anywhere" };
+  return { scope: "unknown", reason: "remote location eligibility not established (\"Remote\" alone does not show applicants in India are eligible)" };
+}
+
 // ---- the verdict ---------------------------------------------------------------------------------------------------
 
 export interface JobEvaluation {
@@ -211,17 +246,29 @@ export interface JobEvaluation {
   tier: SourceTier;
   /** True when pay was stated and met the minimum. */
   payVerified: boolean;
+  /** True when the listing states a B.Tech / B.E.-compatible degree AND the 2027 batch. */
+  educationVerified: boolean;
+  /** Recency window 1–6 (0–7 … 91–120 days since the ORIGINAL posting date), or null when not evaluated / undated. */
+  window: number | null;
   /** Short notes saved on the job (what was established and what was not). */
   notes: string[];
 }
 
-export function evaluateJob(job: JobCandidate, kind: JobKind): JobEvaluation {
+/** "Now" and the time zone, so posting age is measured in the app's calendar days. Without it the recency rule is not applied. */
+export interface EvalContext {
+  nowMs: number;
+  timeZone: string;
+}
+
+export function evaluateJob(job: JobCandidate, kind: JobKind, ctx?: EvalContext): JobEvaluation {
   const rejects: string[] = [];
   const unknown: string[] = [];
   const notes: string[] = [];
   const text = `${job.title}\n${job.description ?? ""}`;
   const tier = sourceTier(job);
-  const region = detectRegion(job.location);
+  let region = detectRegion(job.location);
+  // A location that lists India among other places is open in India.
+  if (!region && IN_RE.test(job.location ?? "")) region = "IN";
   const workplace = detectWorkplace(job);
 
   const portal = isPaidPortal(job);
@@ -230,7 +277,7 @@ export function evaluateJob(job: JobCandidate, kind: JobKind): JobEvaluation {
   // The role itself: a software/data role for a fresher.
   const role = ruleVerdict(job.title);
   if (role.verdict === "irrelevant") rejects.push(`role not suitable (${role.reason})`);
-  // "unsure" titles are decided afterwards by the brain (as for every saved job), not here.
+  // "unsure" titles are decided by the caller (rejected up front), not here.
 
   // Eligibility stated in the listing.
   if (CGPA_RE.test(text)) rejects.push("requires a minimum CGPA / percentage");
@@ -245,11 +292,39 @@ export function evaluateJob(job: JobCandidate, kind: JobKind): JobEvaluation {
   if (!fresherFriendly) unknown.push("does not say freshers / the 2027 batch are eligible");
   else if (years.includes(2027)) notes.push("lists the 2027 batch");
 
-  // Country and work mode.
-  if (!region) unknown.push("country not stated clearly");
-  if (region === "US" || region === "OTHER") {
-    if (workplace && workplace !== "remote") rejects.push(`${region === "US" ? "US" : "non-US/India"} jobs must be remote (this is ${workplace})`);
-    else if (!workplace) unknown.push("remote not stated");
+  // Education: 2027 B.Tech / B.E. only. A 2027 year alone is not enough; a missing degree is recorded, never assumed.
+  let educationVerified = false;
+  const edu = evaluateEducation(text, years);
+  if (edu.status === "reject") rejects.push(edu.reason);
+  else if (edu.status === "verified") {
+    educationVerified = true;
+    notes.push(edu.note);
+  } else if (fresherFriendly && tier === "official") notes.push(edu.reason);
+  else unknown.push(edu.reason);
+
+  // Recency: the ORIGINAL posting date. An undated listing is never treated as new.
+  let window: number | null = null;
+  if (ctx) {
+    const age = postingAge(job.postedAt, ctx.nowMs, ctx.timeZone);
+    if (age.status === "too_old") rejects.push(`posted ${age.days} days ago (limit ${MAX_AGE_DAYS})`);
+    else if (age.status === "undated") unknown.push(`${age.reason}, so it is not treated as new`);
+    else {
+      window = age.window;
+      notes.push(`posted ${age.days} day${age.days === 1 ? "" : "s"} ago`);
+    }
+  }
+
+  // Country and work mode. India: remote / hybrid / on-site. Anywhere else: worldwide remote that applicants in India can do.
+  if (region !== "IN") {
+    const scope = remoteScope(job);
+    if (scope.scope === "restricted") rejects.push(scope.reason);
+    else if (scope.scope === "unknown") unknown.push(scope.reason);
+    else if (workplace && workplace !== "remote") rejects.push(`international jobs must be worldwide remote (this is ${workplace})`);
+    else if (!workplace && !job.remote && !/remote|anywhere|distributed/i.test(`${job.location ?? ""} ${text}`)) unknown.push("remote not stated");
+    else {
+      region = US_RE.test(job.location ?? "") ? "US" : "OTHER";
+      notes.push(`worldwide remote: ${scope.reason}`);
+    }
   }
   if (region === "IN" && kind === "internship" && !workplace) notes.push("work mode not stated (treated as on-site)");
 
@@ -274,5 +349,5 @@ export function evaluateJob(job: JobCandidate, kind: JobKind): JobEvaluation {
   if (payVerified) notes.push("pay meets the minimum");
 
   const verdict: Verdict = rejects.length ? "reject" : unknown.length ? "uncertain" : "qualifies";
-  return { verdict, reasons: rejects.length ? rejects : unknown, region, workplace, tier, payVerified, notes };
+  return { verdict, reasons: rejects.length ? rejects : unknown, region, workplace, tier, payVerified, educationVerified, window, notes };
 }

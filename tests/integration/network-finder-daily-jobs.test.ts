@@ -53,7 +53,7 @@ const STACK = "You will work with React, Node.js, JavaScript, Python and MongoDB
 let seq = 0;
 function opening(region: "US" | "IN" | "OTHER", kind: "internship" | "full_time", over: Partial<JobCandidate> = {}): JobCandidate {
   const n = ++seq;
-  const place = region === "US" ? "Remote - United States" : region === "IN" ? "Bengaluru, India" : "Berlin, Germany";
+  const place = region === "US" ? "Remote - Worldwide, United States" : region === "IN" ? "Bengaluru, India" : "Remote - Worldwide, Germany";
   const intern = kind === "internship";
   return {
     source: "Greenhouse",
@@ -63,7 +63,8 @@ function opening(region: "US" | "IN" | "OTHER", kind: "internship" | "full_time"
     location: place,
     remote: region !== "IN",
     workplace: region === "IN" ? "hybrid" : "remote",
-    description: `New grads and freshers welcome. ${STACK}`,
+    postedAt: new Date(NOON_IST - 2 * 86_400_000).toISOString(),
+    description: `New grads and freshers welcome. Open to B.Tech / B.E. students graduating in 2027. ${STACK}`,
     salary: intern ? { max: 80_000, currency: "INR", period: "month" } : { max: 1_800_000, currency: "INR", period: "year" },
     ...(intern ? { employment: "internship" as const } : {}),
     ...over,
@@ -162,7 +163,6 @@ describe("strict filters: nothing unsuitable is saved just to reach the quota", 
     opening("US", kind, { url: "https://jobs.example.com/checkout?job=9" }),
     opening("US", kind, { title: "Senior Full Stack Engineer" }),
     opening("US", kind, { description: `5+ years of professional experience required. ${STACK}` }),
-    opening("US", kind, { location: "Worldwide" }), // country not clear
     opening("US", kind, { source: "Remote OK", url: "https://remoteok.com/remote-jobs/77", salary: undefined, workplace: "remote" }), // pay unknown, not official
   ];
 
@@ -174,7 +174,7 @@ describe("strict filters: nothing unsuitable is saved just to reach the quota", 
     expect(day.internships).toHaveLength(0);
     expect(day.fullTime).toHaveLength(0);
     const r = day.report!.internship;
-    expect(r.considered).toBe(11); // the mock source returns only intern-titled listings for internships
+    expect(r.considered).toBe(10); // the mock source returns only intern-titled listings for internships
     expect(r.rejected + r.uncertain).toBe(r.considered);
     expect(Object.keys(r.reasons).join(" | ")).toMatch(/paid portal/);
     expect(Object.keys(r.reasons).join(" | ")).toMatch(/CGPA/);
@@ -204,7 +204,8 @@ describe("official company URL first; duplicates never saved", () => {
     const { deps, jobSource } = setup();
     const open = Array.from({ length: 5 }, (_, i) => opening("US", "full_time", { companyName: `Agg ${i}`, source: "Remote OK", url: `https://remoteok.com/remote-jobs/${i}`, salary: { max: 90_000, currency: "USD", period: "year" } }));
     const official = opening("US", "full_time", { companyName: "Official Co" });
-    jobSource.searchResults = [...open, official];
+    // IN and OTHER fill the other buckets, so the 15 are taken and the strict 5-per-country cap applies to the US group
+    jobSource.searchResults = [...open, official, ...Array.from({ length: 5 }, () => opening("IN", "full_time")), ...Array.from({ length: 5 }, () => opening("OTHER", "full_time"))];
     await runDailyJobSearch(deps);
     const us = jobs().filter((r) => regionOf(r[7]) === "US");
     expect(us).toHaveLength(5);
@@ -382,5 +383,17 @@ describe("titles the rules cannot place", () => {
     expect(r.reasons["title is not a recognised software/data role"]).toBe(1);
     expect(r.saved).toHaveLength(1);
     expect(judged).toBe(0);
+  });
+});
+
+describe("spill: an empty country group does not leave worldwide-remote jobs unused", () => {
+  it("with only US-group jobs, they may exceed 5 up to the combined worldwide allowance of 10, and never more than 5 per member", async () => {
+    const { deps, jobSource } = setup();
+    jobSource.searchResults = Array.from({ length: 12 }, () => opening("US", "full_time"));
+    await runDailyJobSearch(deps);
+    const rows = kindRows("Full-time");
+    expect(rows).toHaveLength(10); // 5 India would be the rest; none exist, so the worldwide groups stop at their combined 10
+    expect(counts(rows, (r) => regionOf(r[7]))).toEqual({ US: 10 });
+    expect(Object.values(counts(rows, (r) => r[11])).every((n) => n <= 5)).toBe(true);
   });
 });

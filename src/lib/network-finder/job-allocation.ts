@@ -3,6 +3,7 @@ import { MEMBER_EMAIL_PROFILES } from "@/config/member-email-profiles";
 import { MEMBER_IDS, type MemberId } from "@/config/members";
 import { TECH_CATEGORIES, getSkill, type Skill } from "@/config/skills";
 import { matchTemplate, mentions, type EmailJob } from "./email-composer";
+import { LAST_WINDOW } from "./job-recency";
 import { TIER_RANK, type JobEvaluation, type JobKind, type Region } from "./job-eligibility";
 import { matchRole } from "./roles";
 import type { JobCandidate } from "./types";
@@ -76,12 +77,18 @@ const companyKey = (j: JobCandidate) => j.companyName.trim().toLowerCase();
  * skills only RANK the pairs (best fit first) and are never a condition: an empty or partial profile is a low match,
  * not an exclusion. Buckets stay below 5 only when too few jobs pass the common rules.
  */
+/** Newer postings always outrank older ones (window 1 = newest): recency dominates source tier and skill fit. */
+const recencyRank = (window: number | null | undefined) => (window ? (LAST_WINDOW + 1 - window) * 1_000_000 : 0);
+
 export function allocate(candidates: readonly EvaluatedJob[], capacity: Capacity, members: readonly MemberId[] = MEMBER_IDS, perRegion = PER_REGION, perMember = PER_MEMBER): Assignment[] {
   const pairs = candidates.flatMap((c) =>
-    members.map((m) => ({ c, fit: memberFit(m, c.job) })).map((p) => ({ ...p, rank: TIER_RANK[c.evaluation.tier] * 1000 + p.fit.score + (c.evaluation.payVerified ? 25 : 0) })),
+    members.map((m) => ({ c, fit: memberFit(m, c.job) })).map((p) => ({ ...p, rank: recencyRank(c.evaluation.window) + TIER_RANK[c.evaluation.tier] * 1000 + p.fit.score + (c.evaluation.payVerified ? 25 : 0) + (c.evaluation.educationVerified ? 40 : 0) })),
   );
   pairs.sort((a, b) => b.rank - a.rank);
-  const regionLeft = (r: Region) => perRegion - (capacity.regionUsed[r] ?? 0);
+  // Strict pass: at most `perRegion` per country group. Spill pass (only if members still have room and jobs remain): the
+  // two non-India groups share their combined allowance, so an empty US group does not leave worldwide-remote jobs unused.
+  let spill = false;
+  const regionLeft = (r: Region) => (spill && r !== "IN" ? perRegion * 2 - (capacity.regionUsed.US ?? 0) - (capacity.regionUsed.OTHER ?? 0) : perRegion - (capacity.regionUsed[r] ?? 0));
   const memberLeft = (m: MemberId) => perMember - (capacity.memberUsed[m] ?? 0);
   const taken = new Set<JobCandidate>();
   const companies = new Set(capacity.companiesUsed);
@@ -91,8 +98,10 @@ export function allocate(candidates: readonly EvaluatedJob[], capacity: Capacity
   // the member whose verified skills happen to fit best.
   const perMemberPairs = new Map(members.map((m) => [m, pairs.filter((p) => p.fit.memberId === m)]));
   const bestFor = (m: MemberId) => (perMemberPairs.get(m) ?? []).find(({ c }) => !taken.has(c.job) && !companies.has(companyKey(c.job)) && regionLeft(c.evaluation.region) > 0);
-  let progress = true;
-  while (progress) {
+  for (const pass of [false, true]) {
+    spill = pass;
+    let progress = true;
+    while (progress) {
     progress = false;
     // Fewest jobs first; among equals, the member with the best-fitting job available picks first.
     const order = [...members].sort((a, b) => (capacity.memberUsed[a] ?? 0) - (capacity.memberUsed[b] ?? 0) || (bestFor(b)?.rank ?? -1) - (bestFor(a)?.rank ?? -1));
@@ -108,6 +117,7 @@ export function allocate(candidates: readonly EvaluatedJob[], capacity: Capacity
       capacity.memberUsed[fit.memberId] = (capacity.memberUsed[fit.memberId] ?? 0) + 1;
       out.push({ job: c.job, memberId: fit.memberId, region, fit, evaluation: c.evaluation });
       progress = true;
+    }
     }
   }
   return out;
