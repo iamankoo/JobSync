@@ -164,7 +164,7 @@ describe("different companies and roles produce materially different drafts", ()
     expect(bodies[1]).toMatch(/Next\.js|Tailwind|TypeScript/);
     expect(bodies[2]).toMatch(/Express|PostgreSQL|Redis|JWT/);
     // no paragraph is shared between two drafts except the generic closing line
-    const paras = bodies.map((b) => b.split("\n\n").filter((p) => !/^(Dear|Best regards|Thank you)/.test(p) && !/^I would be glad to share my resume/.test(p)));
+    const paras = bodies.map((b) => b.split("\n\n").filter((p) => !/^(Dear|Best regards|Thank you)/.test(p) && !/^I have attached my resume/.test(p)));
     for (let i = 0; i < 3; i++) for (let j = i + 1; j < 3; j++) expect(paras[i].filter((p) => paras[j].includes(p))).toEqual([]);
   });
 
@@ -221,15 +221,15 @@ describe("validation rejects wrong or invented content", () => {
     expect(validateEmail(withAnni, p).join()).toMatch(/another member's identity \(anni\)/);
     const links = body.replace("https://github.com/lukkydiwan", "https://github.com/iamankoo");
     expect(validateEmail(links, p).join()).toMatch(/another member's identity \(anni\)/);
-    const skill = body.replace(/\n\nI would be glad/, " I also use Kubernetes and Terraform every day.\n\nI would be glad");
+    const skill = body.replace(/\n\nI have attached/, " I also use Kubernetes and Terraform every day.\n\nI have attached");
     expect(validateEmail(skill, p).join()).toMatch(/unverified skill/);
   });
 
   it("rejects invented company facts and invented familiarity", () => {
     const { p, body } = good();
-    const funding = body.replace(/\n\nI would be glad/, " I read that Magic Hour raised a Series B at a $1 billion valuation.\n\nI would be glad");
+    const funding = body.replace(/\n\nI have attached/, " I read that Magic Hour raised a Series B at a $1 billion valuation.\n\nI have attached");
     expect(validateEmail(funding, p).join()).toMatch(/unverified company claim/);
-    const familiar = body.replace(/\n\nI would be glad/, " Congratulations on your recent launch, I have been following your product for years.\n\nI would be glad");
+    const familiar = body.replace(/\n\nI have attached/, " Congratulations on your recent launch, I have been following your product for years.\n\nI have attached");
     expect(validateEmail(familiar, p).join()).toMatch(/invented familiarity/);
   });
 

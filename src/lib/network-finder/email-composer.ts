@@ -77,9 +77,9 @@ export interface EmailPlan {
 }
 
 export const MAX_WORDS = 300;
-export const MIN_WORDS = 180;
-export const MIN_WORDS_ONE_HIGHLIGHT = 150;
-export const MIN_WORDS_THIN_PROFILE = 90;
+export const MIN_WORDS = 165;
+export const MIN_WORDS_ONE_HIGHLIGHT = 135;
+export const MIN_WORDS_THIN_PROFILE = 75;
 export const MIN_WORDS_NEUTRAL = 60;
 export const MAX_SKILLS = 8;
 
@@ -308,7 +308,7 @@ export function composeFallback(p: EmailPlan): string[] {
   if (p.mentionRemote) motivation += ` I am based in ${p.location} and comfortable working remotely.`;
   paras.push(motivation);
 
-  paras.push("I would be glad to share my resume and to discuss how my background aligns with your team's needs. Thank you for your time and consideration.");
+  paras.push("I have attached my resume for your reference. Thank you for your time and consideration.");
   return paras;
 }
 
@@ -320,7 +320,7 @@ function composeNeutral(p: EmailPlan): string[] {
       ? `What draws me to ${p.company} is its work. Your website describes it this way: "${p.companyContext.replace(/["“”]/g, "").replace(/[.!?]+$/, "")}."`
       : `I would like to learn more about what ${p.company} is building and where a new engineer could contribute.`,
   );
-  paras.push(`Could you let me know which roles or internships are currently open? I would be glad to send my resume and a focused application for the one that fits.`);
+  paras.push(`Could you let me know which roles or internships are currently open? I have attached my resume for your reference and would be glad to send a focused application for the one that fits.`);
   paras.push("Thank you for your time and consideration.");
   return paras;
 }
