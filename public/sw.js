@@ -1,7 +1,7 @@
 /* JobSync service worker: shows Web Push notifications and opens the right page when one is clicked.
  * It caches nothing and intercepts no requests, so it cannot change how the site loads. */
 
-const SAFE_PATHS = ["/dashboard", "/all-jobs", "/my-applications", "/add-job", "/group-chat", "/connections"];
+const SAFE_PATHS = ["/dashboard", "/all-jobs", "/my-applications", "/add-job", "/group-chat", "/connections", "/gmail"];
 /** Group Chat message notifications (mirrors CHAT_TAG_PREFIX in src/lib/push/payload.ts). */
 const CHAT_TAG_PREFIX = "chat-";
 

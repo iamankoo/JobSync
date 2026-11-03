@@ -552,11 +552,17 @@ test("Gmail Drafts: empty state with 0/0, then my real drafts with Drafted/Sent,
   await expect(page.getByRole("heading", { name: "Drafts are coming soon" })).toBeVisible();
   await expect(page.getByText("Your personalized Network Finder emails will appear here once drafts are created.")).toBeVisible();
   await expect(page.getByTestId("gmail-count-draft")).toContainText("0");
-  await expect(page.getByTestId("gmail-count-sent")).toHaveCount(0); // no Sent counter any more
-  // the Draft count is centred in the page's content area (beside the sidebar on desktop) at every width
-  const card = (await page.getByTestId("gmail-count-draft").boundingBox())!;
-  const area = (await page.getByTestId("gmail-count-draft").locator("xpath=../..").boundingBox())!;
-  expect(Math.abs(card.x + card.width / 2 - (area.x + area.width / 2))).toBeLessThanOrEqual(2);
+  await expect(page.getByTestId("gmail-count-sent")).toContainText("0");
+  // Draft first, Sent directly to its right, same size
+  const dBox = (await page.getByTestId("gmail-count-draft").boundingBox())!;
+  const sBox = (await page.getByTestId("gmail-count-sent").boundingBox())!;
+  expect(sBox.x).toBeGreaterThan(dBox.x + dBox.width - 1);
+  expect(Math.abs(sBox.height - dBox.height)).toBeLessThanOrEqual(1);
+  expect(Math.abs(sBox.width - dBox.width)).toBeLessThanOrEqual(1);
+  // the Draft + Sent pair is centred in the page's content area (beside the sidebar on desktop) at every width
+  const pair = (await page.getByTestId("gmail-counts").boundingBox())!;
+  const area = (await page.getByTestId("gmail-counts").locator("xpath=..").boundingBox())!;
+  expect(Math.abs(pair.x + pair.width / 2 - (area.x + area.width / 2))).toBeLessThanOrEqual(2);
   for (const name of ["Anni", "Lukky", "Rishii"]) await expect(page.getByTestId("gmail-connected-members").getByRole("img", { name: `${name}: Gmail connected` })).toBeVisible();
 
   // Real rows, as Network Finder writes them: Connections + NF_Drafts (Lukky's draft must not appear for Anni).
@@ -571,11 +577,12 @@ test("Gmail Drafts: empty state with 0/0, then my real drafts with Drafted/Sent,
   for (const text of ["Acme Technologies", "Head of Engineering", "john@acme.example", "Drafted"]) await expect(john).toContainText(text);
   await expect(page.getByTestId("gmail-count-draft")).toContainText("3");
 
-  // The sent-draft tracker marks John's draft sent → Sent, counts 2 / 1.
+  // John's draft is sent BY HAND (the sent-draft tracker marks it): the row shows "Sent" and Draft drops to 2, but the Sent COUNTER
+  // counts only JobSync's automated sends (Outreach Send Ledger), so it stays 0.
   await updateRows(request, "NF_Drafts", { DraftKey: "contact:conn_e2ea:anni" }, { Status: "sent" });
   await reload(page);
   await expect(john).toContainText("Sent");
   await expect(page.getByTestId("gmail-count-draft")).toContainText("2");
-  await expect(page.getByTestId("gmail-count-sent")).toHaveCount(0);
+  await expect(page.getByTestId("gmail-count-sent")).toContainText("0");
   expect(await horizontalOverflow(page)).toBeLessThanOrEqual(0);
 });

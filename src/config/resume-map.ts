@@ -1,38 +1,91 @@
 import type { MemberId } from "./members";
 
 /**
- * Which uploaded resume goes on a manual connection's Gmail draft, by the SELECTED Role to Apply.
+ * Which uploaded resume goes on a connection's Gmail draft, for ALL three members.
  *
- * Attachments are enabled ONLY for Aniket for now. A member that is not listed here gets exactly the drafts it got before
- * (no attachment). For a listed member, a role that is not in their table gets NO attachment (never a guess) and the draft
- * is flagged for review. File names are matched exactly (ignoring case) against that member's OWN uploaded PDFs in Profile.
+ * A resume is always the member's OWN upload (every lookup is scoped to the member id), matched by EXACT file name (ignoring
+ * case) against that member's uploads in Profile -> My Resumes. The target role picks a resume KIND; the kind picks the file:
  *
- * To assign another role or member later, add a line here; nothing else changes.
+ *   AI / ML / AI Engineer ............ AIML      Software Engineer / SDE / Backend / Python ... SDE
+ *   Front End / Full Stack / Web ..... WebD      DevOps ................................... DevOps
+ *   Data Engineer / Scientist / Analyst  Data
+ *
+ * If the member has no file for the specialised kind (or that file is ambiguous/unreadable), the SAME member's SDE resume is
+ * used and the draft records why. If even the SDE resume is unavailable, the draft is created WITHOUT an attachment and
+ * flagged for review. Another member's resume is never a candidate. To add a resume later, add its exact name below.
  */
-export const RESUME_BY_ROLE: Partial<Record<MemberId, Readonly<Record<string, string>>>> = {
+export type ResumeKind = "AIML" | "SDE" | "WebD" | "DevOps" | "Data";
+export const RESUME_KINDS: readonly ResumeKind[] = ["AIML", "SDE", "WebD", "DevOps", "Data"];
+
+/** Exact upload names per member and kind (as of the 3 Nov 2026 inventory of Profile -> My Resumes). A missing kind = no such upload. */
+export const MEMBER_RESUME_FILES: Record<MemberId, Partial<Record<ResumeKind, string>>> = {
+  // Aniket Raj. Also uploaded but deliberately NOT mapped (not role resumes): Aniket_Raj_AI_2.pdf (a second AI variant, ambiguous
+  // next to the AIML file), and the company-specific Aniket_Raj_Nokia.pdf, Aniket_Raj_So.pdf, Aniket_Raj_Cognizant_Ace.pdf.
   anni: {
-    "ai/ml engineer": "Aniket-Raj-AIML.pdf",
-    "ai engineer": "Aniket-Raj-AIML.pdf",
-    "applied ai engineer": "Aniket-Raj-AIML.pdf",
-    "backend engineer": "Aniket_Raj_BE.pdf",
-    "backend developer": "Aniket_Raj_BE.pdf",
-    "software engineer": "Aniket_Raj_BE.pdf",
-    "software developer": "Aniket_Raj_BE.pdf",
-    "front end developer": "Aniket_Raj_WebD.pdf",
-    "full stack engineer": "Aniket_Raj_WebD.pdf",
-    "web developer": "Aniket_Raj_WebD.pdf",
-    "data engineer": "Aniket_Raj_Data.pdf",
-    // Deliberately NOT mapped yet (no guessed resume): Data Analyst, Data Scientist, Data Entry, Agentic AI Engineer,
-    // Machine Learning Engineer, Python Developer, App Developer and any custom ("Other") role.
+    AIML: "Aniket-Raj-AIML.pdf",
+    SDE: "Aniket_Raj_SDE.pdf",
+    WebD: "Aniket_Raj_WebD.pdf",
+    DevOps: "Aniket_Raj_DevOps.pdf",
+    Data: "Aniket_Raj_Data.pdf",
+  },
+  // Lakshya Singh: only SDE and AI/ML resumes are uploaded (WebD, DevOps, Data fall back to his SDE resume).
+  lukky: {
+    AIML: "Lakshya_AiMl.pdf",
+    SDE: "Lakshya_SDE.pdf",
+  },
+  // Rishi Raj: only SDE and AI/ML resumes are uploaded (WebD, DevOps, Data fall back to his SDE resume).
+  rishii: {
+    AIML: "Rishi_Raj_AIML.pdf",
+    SDE: "Rishi_Raj_SDE.pdf",
   },
 };
 
-const key = (role: string) => role.toLowerCase().replace(/\s+/g, " ").trim();
+const norm = (role: string) => role.toLowerCase().replace(/\s+/g, " ").trim();
 
-/** `enabled` = this member attaches resumes at all; `fileName` = the one mapped for this role (absent = unmapped). */
-export function resumePlanFor(memberId: MemberId, roleTitle: string): { enabled: boolean; fileName?: string } {
-  const table = RESUME_BY_ROLE[memberId];
-  if (!table) return { enabled: false };
-  const fileName = table[key(roleTitle)];
-  return fileName ? { enabled: true, fileName } : { enabled: true };
+/**
+ * The resume kind for a target role (the Role to Apply, or an approved research category). Anything not clearly a specialised
+ * role (including custom "Other" roles) is SDE, which is also the universal fallback.
+ */
+export function resumeKindForRole(role: string): ResumeKind {
+  const r = norm(role);
+  if (/devops|site reliability|\bsre\b|cloud engineer|platform engineer/.test(r)) return "DevOps";
+  if (/data (engineer|scientist|analyst)|analytics|business intelligence/.test(r)) return "Data";
+  if (/front[ -]?end|full[ -]?stack|web (developer|designer|engineer)|website|\bmern\b|\bmean\b|\bui\b developer/.test(r)) return "WebD";
+  if (/\bai\b|\bml\b|artificial intelligence|machine learning|\bllm\b|deep learning|computer vision|\bnlp\b|ai\/ml|agentic/.test(r)) return "AIML";
+  return "SDE";
+}
+
+export interface ResumeUpload {
+  fileName: string;
+  mimeType: string;
+}
+
+export type ResumeDecision =
+  | { status: "use"; kind: ResumeKind; fileName: string; fallbackFrom?: ResumeKind; reason?: string }
+  | { status: "none"; kind: ResumeKind; reason: string };
+
+/**
+ * Chooses the file to attach from the member's OWN uploads. Pure: no I/O, so the rules are fully testable.
+ * `uploads` must be that member's uploads only (duplicates preserved, so an ambiguous name is detected).
+ */
+export function planResume(memberId: MemberId, role: string, uploads: readonly ResumeUpload[]): ResumeDecision {
+  const kind = resumeKindForRole(role);
+  const files = MEMBER_RESUME_FILES[memberId] ?? {};
+  const matches = (name: string | undefined) => (name ? uploads.filter((u) => u.fileName.toLowerCase() === name.toLowerCase()) : []);
+  /** unique PDF upload with that name? */
+  const check = (k: ResumeKind): { ok: true; fileName: string } | { ok: false; why: string } => {
+    const name = files[k];
+    if (!name) return { ok: false, why: `no ${k} resume is mapped for this member` };
+    const found = matches(name);
+    if (found.length === 0) return { ok: false, why: `${name} is not among the member's uploads` };
+    if (found.length > 1) return { ok: false, why: `several uploads are named ${name} (ambiguous)` };
+    if (found[0].mimeType !== "application/pdf") return { ok: false, why: `${name} is not a PDF` };
+    return { ok: true, fileName: found[0].fileName };
+  };
+  const wanted = check(kind);
+  if (wanted.ok) return { status: "use", kind, fileName: wanted.fileName };
+  if (kind === "SDE") return { status: "none", kind, reason: wanted.why };
+  const sde = check("SDE");
+  if (sde.ok) return { status: "use", kind: "SDE", fileName: sde.fileName, fallbackFrom: kind, reason: `${kind} resume unavailable (${wanted.why}); the member's SDE resume was used` };
+  return { status: "none", kind, reason: `${wanted.why}; SDE fallback also unavailable (${sde.why})` };
 }

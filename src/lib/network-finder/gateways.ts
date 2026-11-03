@@ -2,7 +2,7 @@ import "server-only";
 import { MEMBER_IDS, type MemberId } from "@/config/members";
 import { checkDraftState, createDraftFor, isGmailConnected } from "@/lib/gmail/drafts";
 import { MAX_ATTACHMENT_BYTES, type ResumeLookup } from "@/lib/gmail/attachment";
-import { resumePlanFor } from "@/config/resume-map";
+import { planResume } from "@/config/resume-map";
 import { listResumes, loadResume } from "@/lib/google-sheets/member-files-service";
 import { notifyMember } from "@/lib/push/notify";
 import { nowIso } from "@/lib/utils/time";
@@ -69,24 +69,28 @@ export function existingDraftDeps(): DraftStepDeps {
 }
 
 /**
- * The member's mapped resume for a role, from THEIR OWN uploaded PDFs only (a file of another member can never be returned:
- * every read is scoped to the member id). The file is matched by exact name; zero or several matches, a non-PDF or an
- * unreadable file = no attachment. The bytes are read, never changed.
+ * The member's resume for a role, from THEIR OWN uploaded PDFs only (a file of another member can never be returned: every read
+ * is scoped to the member id). config/resume-map.ts decides the file (specialised resume, else the same member's SDE resume);
+ * the file is matched by exact name, and zero or several matches, a non-PDF or an unreadable file is never attached. The bytes
+ * are read, never changed.
  */
 export const existingResumes: ResumeLookup = async (member, roleTitle) => {
   const memberId = member as MemberId;
-  const plan = resumePlanFor(memberId, roleTitle);
-  if (!plan.enabled) return { status: "not_enabled" };
-  if (!plan.fileName) return { status: "unmapped" };
-  const wanted = plan.fileName.toLowerCase();
-  const mine = ((await listResumes(memberId)) ?? []).filter((r) => r.mimeType === "application/pdf" && r.fileName.toLowerCase() === wanted);
-  if (mine.length === 0) return { status: "missing", fileName: plan.fileName };
-  if (mine.length > 1) return { status: "unreadable", reason: `several uploads are named ${plan.fileName}` };
+  let uploads;
+  try {
+    uploads = (await listResumes(memberId)) ?? [];
+  } catch {
+    return { status: "unreadable", reason: "the member's uploads could not be listed" };
+  }
+  const plan = planResume(memberId, roleTitle, uploads);
+  if (plan.status === "none") return { status: "unmapped", reason: plan.reason };
+  const mine = uploads.filter((r) => r.fileName.toLowerCase() === plan.fileName.toLowerCase());
+  if (mine.length !== 1) return { status: "unreadable", reason: `${plan.fileName} is not a single unambiguous upload` };
   try {
     const { info, bytes } = await loadResume(memberId, mine[0].recordId);
     const head = Buffer.from(bytes).subarray(0, 5).toString("latin1");
     if (head !== "%PDF-" || bytes.length > MAX_ATTACHMENT_BYTES) return { status: "unreadable", reason: "the file is not a valid PDF" };
-    return { status: "attached", attachment: { fileName: info.fileName, mimeType: "application/pdf", bytes: new Uint8Array(bytes) } };
+    return { status: "attached", kind: plan.kind, ...(plan.reason ? { note: plan.reason } : {}), attachment: { fileName: info.fileName, mimeType: "application/pdf", bytes: new Uint8Array(bytes) } };
   } catch {
     return { status: "unreadable", reason: "the file could not be loaded" };
   }

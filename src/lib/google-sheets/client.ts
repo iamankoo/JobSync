@@ -156,7 +156,7 @@ function normaliseValues(values: unknown): string[][] {
   return values.map((row) => (Array.isArray(row) ? row.map((c) => (c == null ? "" : String(c))) : []));
 }
 
-function createGoogleClient(config: SheetsConfig): SheetsClient {
+export function createGoogleClient(config: SheetsConfig): SheetsClient {
   const jwt = new auth.JWT({
     email: config.clientEmail,
     key: config.privateKey,

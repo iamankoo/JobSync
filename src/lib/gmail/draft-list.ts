@@ -28,8 +28,11 @@ export interface DraftList {
  * The SIGNED-IN member's own Network Finder drafts, from the real draft ledger (NF_Drafts) joined with the
  * Connections entry each draft is about. "created" = still a draft in their Gmail; "sent" = the sent-draft tracker
  * saw it sent. Deleted, skipped and failed drafts are not listed. Newest first.
+ *
+ * `alsoSent` = connections the Outreach Send Ledger confirms as sent by JobSync for this member. Such a contact is shown as Sent and is
+ * counted ONCE in `sent` even when it has no draft row, or both ledgers record it (the count is a set union by connection).
  */
-export async function draftListFor(memberId: MemberId): Promise<DraftList> {
+export async function draftListFor(memberId: MemberId, alsoSent: ReadonlySet<string> = new Set()): Promise<DraftList> {
   let ledger: Awaited<ReturnType<typeof readDraftLedger>>;
   try {
     ledger = await readDraftLedger();
@@ -38,7 +41,7 @@ export async function draftListFor(memberId: MemberId): Promise<DraftList> {
     throw err;
   }
   const mine = [...ledger.values()].filter((d) => d.memberId === memberId && d.itemType === "contact" && (d.status === "created" || d.status === "sent"));
-  if (mine.length === 0) return { setUp: true, drafted: 0, sent: 0, items: [] };
+  if (mine.length === 0) return { setUp: true, drafted: 0, sent: alsoSent.size, items: [] };
 
   let byId = new Map<string, { company?: string; name: string; role?: string; email?: string }>();
   try {
@@ -55,10 +58,11 @@ export async function draftListFor(memberId: MemberId): Promise<DraftList> {
         person: c?.name ?? "",
         designation: c?.role ?? "",
         email: c?.email ?? "",
-        status: d.status === "sent" ? ("Sent" as const) : ("Drafted" as const),
+        status: d.status === "sent" || alsoSent.has(d.itemId) ? ("Sent" as const) : ("Drafted" as const),
         createdAt: d.createdAt,
       };
     })
     .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
-  return { setUp: true, drafted: items.filter((i) => i.status === "Drafted").length, sent: items.filter((i) => i.status === "Sent").length, items };
+  const sentIds = new Set<string>([...mine.filter((d) => d.status === "sent").map((d) => d.itemId), ...alsoSent]);
+  return { setUp: true, drafted: items.filter((i) => i.status === "Drafted").length, sent: sentIds.size, items };
 }

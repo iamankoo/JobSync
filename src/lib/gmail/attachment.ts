@@ -10,11 +10,12 @@ export const MAX_ATTACHMENT_BYTES = 5_000_000;
 
 /** What the resume step found for one member + role. */
 export type ResumeResult =
-  | { status: "attached"; attachment: DraftAttachment }
-  /** This member does not attach resumes (unchanged behaviour). */
+  /** `kind` = the resume kind used; `note` = why a fallback (that member's own SDE resume) was used, when it was. */
+  | { status: "attached"; attachment: DraftAttachment; kind?: string; note?: string }
+  /** This member does not attach resumes (kept for callers that opt a member out; nobody is opted out now). */
   | { status: "not_enabled" }
-  /** The member attaches resumes but no file is mapped to this role: nothing is attached, the draft is flagged. */
-  | { status: "unmapped" }
+  /** Neither the specialised resume nor the member's own SDE fallback is usable: no attachment, the draft is flagged. */
+  | { status: "unmapped"; reason?: string }
   /** The mapped file is not among the member's uploads. */
   | { status: "missing"; fileName: string }
   | { status: "unreadable"; reason: string };

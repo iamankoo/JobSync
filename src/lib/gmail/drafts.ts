@@ -11,8 +11,9 @@ import { readGmailAccounts, updateGmailStatus } from "./store";
 
 /**
  * Gmail access for ONE member at a time, using only that member's stored authorisation.
- * Calls made: drafts.create (new draft), drafts.get and threads.get (read-only checks). JobSync never calls
- * any send, delete, trash, modify or label endpoint — it cannot send or change anyone's mail.
+ * Calls made HERE: drafts.create (new draft), drafts.get and threads.get (read-only checks). This module never calls
+ * any send, delete, trash, modify or label endpoint. The one place that can send is ./send.ts (drafts.send), and it is only
+ * reachable through the outreach send workflow behind the compile-time SENDING_ENABLED gate (default false).
  */
 export const GMAIL_API = "https://gmail.googleapis.com/gmail/v1/users/me";
 export const DRAFTS_ENDPOINT = `${GMAIL_API}/drafts`;
@@ -57,10 +58,10 @@ export function buildRawMessage(msg: DraftMessage): string {
   return Buffer.from(`${headers.join(CRLF)}${CRLF}${CRLF}${parts.join(CRLF)}`, "utf8").toString("base64url");
 }
 
-type Access = { ok: true; token: string; scopes: string[] } | { ok: false; status: "not_authorized" | "reauth_required" | "failed"; reason?: string };
+export type Access = { ok: true; token: string; scopes: string[] } | { ok: false; status: "not_authorized" | "reauth_required" | "failed"; reason?: string };
 
 /** A fresh access token for `memberId` from THEIR stored refresh token (no other member's row is used). */
-async function accessFor(memberId: MemberId, fetchFn: FetchLike): Promise<Access> {
+export async function accessFor(memberId: MemberId, fetchFn: FetchLike): Promise<Access> {
   const cfg = loadGmailConfig();
   if (!cfg.ok) return { ok: false, status: "not_authorized" };
   const account = (await readGmailAccounts({ fresh: true })).find((a) => a.memberId === memberId);

@@ -62,7 +62,7 @@ export class FakeSheets implements SheetsClient {
   }
 
   private tabOf(range: string): string[][] {
-    const name = range.split("!")[0];
+    const name = range.split("!")[0].replace(/^'(.*)'$/, "$1");
     const t = this.tabs.get(name);
     if (!t) throw mapGoogleError(Object.assign(new Error("Unable to parse range"), { code: 400, response: { status: 400 } }));
     return t;
