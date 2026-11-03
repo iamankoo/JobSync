@@ -78,10 +78,11 @@ export interface EmailPlan {
   minWords: number;
 }
 
-export const MAX_WORDS = 300;
-export const MIN_WORDS = 165;
-export const MIN_WORDS_ONE_HIGHLIGHT = 135;
-export const MIN_WORDS_THIN_PROFILE = 75;
+// Short, personal emails: about 100-140 words (a little slack on the hard limit).
+export const MAX_WORDS = 150;
+export const MIN_WORDS = 100;
+export const MIN_WORDS_ONE_HIGHLIGHT = 85;
+export const MIN_WORDS_THIN_PROFILE = 50;
 export const MIN_WORDS_NEUTRAL = 60;
 export const MAX_SKILLS = 8;
 
@@ -267,52 +268,75 @@ export function buildEmailPlan(input: EmailInput): EmailPlan {
 
 // ---- deterministic fallback (no AI) --------------------------------------------------------------------------------
 
-const roleText = (p: EmailPlan) => {
-  if (p.neutral) return "opportunities";
-  if (!p.jobTitle) return `${p.roleLabel} opportunities`;
-  const title = cleanTitle(p.jobTitle);
-  // "…Internship" / "…Intern" already says what it is; other titles get "position" or "internship".
-  return /\bintern(ship)?\b/i.test(title) ? `the ${title}` : `the ${title} ${p.internship ? "internship" : "position"}`;
-};
+const article = (title: string) => (/^(?:[aeiou]|ai\b|ml\b|sql\b|sre\b|hr\b)/i.test(title) ? "an" : "a");
 
-/** A complete, honest email body (paragraphs only, no greeting/sign-off) from the plan's verified facts. */
-export function composeFallback(p: EmailPlan): string[] {
-  const paras: string[] = [];
-  if (p.neutral) return composeNeutral(p);
-  let opening = p.neutral
-    ? `I am writing to ask about engineering opportunities at ${p.company}.`
-    : `I am writing to express my interest in ${roleText(p)}${p.roleFocus ? `, with a focus on ${p.roleFocus},` : ""} at ${p.company}.`;
-  if (p.education) opening += ` I am a ${p.education}${p.areas.length ? `, with hands-on experience in ${listJoin(p.areas)}.` : "."}`;
-  else if (p.areas.length) opening += ` I have hands-on experience in ${listJoin(p.areas)}.`;
-  paras.push(opening);
+/** One highlight as a first-person sentence ("As a Web Developer Intern at X, I built …"). */
+function highlightSentence(h: Highlight, index: number): string {
+  if (h.kind === "experience") return index === 0 ? `As ${article(h.title)} ${h.title}, I ${h.didWhat}.` : `As ${article(h.title)} ${h.title}, I also ${h.didWhat}.`;
+  return index === 0 ? `I have worked on ${h.title}, where I ${h.didWhat}.` : `I also worked on ${h.title}, where I ${h.didWhat}.`;
+}
 
-  if (p.skills.length) {
-    let tech = `My technical background includes ${listJoin(p.skills)}.`;
-    const [h1, h2] = p.highlights;
-    if (h1) tech += ` ${h1.kind === "experience" ? `As ${h1.title}, I` : `I have worked on ${h1.title}, where I`} ${h1.didWhat}.`;
-    if (h2) tech += ` ${h2.kind === "experience" ? `As ${h2.title}, I also` : `I also built ${h2.title}, where I`} ${h2.didWhat}.`;
-    if (p.capabilities.length === 2) tech += ` These experiences have strengthened my ability to ${p.capabilities[0]} and ${p.capabilities[1]}.`;
-    paras.push(tech);
+/** The second highlight in one short sentence (used when the full version would not fit the length). */
+function shortHighlightSentence(h: Highlight): string {
+  return h.kind === "experience" ? `I also worked as ${article(h.title)} ${h.title}.` : `I also built ${h.title}.`;
+}
+
+/** One sentence tying the member to the company's VERIFIED work (a single detail, not a research summary). */
+function companySentence(p: EmailPlan): string {
+  const ctx = p.companyContext?.replace(/["“”]/g, "").replace(/[.!?]+$/, "").trim();
+  if (!ctx) return `I'm particularly interested in ${p.motivation}.`;
+  const m = new RegExp(`^${escapeRe(p.company)}\\s+(is|are|provides|builds|offers|helps|develops|creates|makes|delivers)\\s+(.+)$`, "i").exec(ctx);
+  if (m) {
+    const verb = m[1].toLowerCase();
+    return verb === "is" || verb === "are" ? `I'm particularly interested in ${p.company}'s work as ${m[2]}.` : `I'm particularly interested in ${p.company}'s work, since it ${verb} ${m[2]}.`;
   }
+  return `What draws me to ${p.company} is its work: ${ctx}.`;
+}
 
-  const fit: string[] = [];
-  if (p.valueProposition) fit.push(p.valueProposition);
-  // The job's own requirements, named only where the member really has the skill.
-  if (p.roleFocus) fit.push(`The ${p.roleFocus} side of the ${cleanTitle(p.jobTitle ?? p.roleLabel)} role is what interests me most.`);
-  if (p.jobTitle && p.skillsInJob.length >= 1) fit.push(`The ${cleanTitle(p.jobTitle)} role's emphasis on ${listJoin(p.skillsInJob.slice(0, 3))} matches the work I have been doing.`);
-  else if (p.skillsInJob.length >= 2) fit.push(`The role's focus on ${listJoin(p.skillsInJob.slice(0, 2))} matches the work I have been doing.`);
-  else if (!p.valueProposition) fit.push(`I am keen to build on my experience in this area and to learn from an experienced team.`);
-  paras.push(fit.join(" "));
+/** Target length of the whole body (without greeting and signature), closing included. */
+export const TARGET_MAX_WORDS = 140;
 
-  // Company-specific reason: the company's own words when known, otherwise a neutral sentence (never invented).
-  let motivation = p.companyContext
-    ? `What draws me to ${p.company} is its work. Your website describes it this way: "${p.companyContext.replace(/["“”]/g, "").replace(/[.!?]+$/, "")}." I would welcome the opportunity to contribute to ${p.contributeTo} while continuing to grow as an engineer.`
-    : `What particularly interests me about ${p.company} is ${p.motivation}. I would welcome the opportunity to contribute to ${p.contributeTo} while continuing to grow as an engineer.`;
-  if (p.mentionRemote) motivation += ` I am based in ${p.location} and comfortable working remotely.`;
-  paras.push(motivation);
-
-  paras.push("I have attached my resume for your reference. Thank you for your time and consideration.");
-  return paras;
+/**
+ * A complete, honest, SHORT email body (paragraphs only, no greeting/sign-off) from the plan's verified facts:
+ * a brief hello, who the member is and the role, 1–2 relevant highlights, one company-specific sentence, a polite
+ * request, and the fixed closing. No technology lists, no repeated research. Optional parts are dropped, richest
+ * first, until the body fits TARGET_MAX_WORDS.
+ */
+export function composeFallback(p: EmailPlan): string[] {
+  if (p.neutral) return composeNeutral(p);
+  const focus = p.roleFocus ? `, with a focus on ${p.roleFocus},` : "";
+  const role = p.jobTitle ? cleanTitle(p.jobTitle) : "";
+  const target = role
+    ? /\bintern(ship)?\b/i.test(role)
+      ? `the ${role}${focus}`
+      : `the ${role}${focus} ${p.internship ? "internship" : "opportunity"}`
+    : `${p.roleLabel} opportunities`;
+  const intro = `I'm ${p.member.fullName}${p.education ? `, a ${p.education}` : ""}, and I'm interested in ${target} at ${p.company}.`;
+  const fit = p.skillsInJob.length >= 2 ? `The role's focus on ${listJoin(p.skillsInJob.slice(0, 2))} matches the work I have been doing.` : "";
+  const asks = [
+    `I'd appreciate the chance to discuss how my background could contribute to ${p.contributeTo}, and would be grateful for your consideration or a referral.`,
+    "I would be grateful for your consideration or a referral.",
+  ];
+  const company = companySentence(p);
+  const total = (paras: string[]) => wordCount(paras.join(" ")) + wordCount(CLOSING);
+  let best: string[] = [];
+  const [h1, h2] = p.highlights;
+  const works: string[][] = [];
+  if (h1 && h2) works.push([highlightSentence(h1, 0), highlightSentence(h2, 1)], [highlightSentence(h1, 0), shortHighlightSentence(h2)]);
+  if (h1) works.push([highlightSentence(h1, 0)]);
+  works.push([]);
+  for (const work of works) {
+    for (const withFit of fit ? [true, false] : [false]) {
+      for (const ask of asks) {
+        const paras = ["I hope you're doing well.", intro];
+        if (work.length) paras.push(work.join(" "));
+        paras.push([withFit ? fit : "", company].filter(Boolean).join(" "), ask);
+        best = paras; // ends as the shortest version, used only if nothing fits
+        if (total(paras) <= TARGET_MAX_WORDS) return [...paras, CLOSING];
+      }
+    }
+  }
+  return [...best, CLOSING];
 }
 
 /** An honest enquiry when the role is unknown: no role, skills or projects are claimed. */
@@ -367,7 +391,7 @@ const INVENTED_FAMILIARITY = /\b(congratulations|congrats|i (have been|am|was) (
 /** Role names the email states ("…the Frontend Engineer position / role / internship"). */
 export function namedRoles(content: string): string[] {
   const out: string[] = [];
-  for (const m of content.matchAll(/\b(?:the|a|an)\s+((?:[A-Z][A-Za-z0-9+#./&-]*)(?:\s+(?:[A-Z][A-Za-z0-9+#./&-]*|and|of|&|\/)){0,5})\s+(?:position|role|internship|opening|vacancy)\b/g)) out.push(m[1].trim());
+  for (const m of content.matchAll(/\b(?:the|a|an)\s+((?:[A-Z][A-Za-z0-9+#./&-]*)(?:\s+(?:[A-Z][A-Za-z0-9+#./&-]*|and|of|&|\/)){0,5})\s+(?:position|role|internship|opening|vacancy|opportunity)\b/g)) out.push(m[1].trim());
   return out;
 }
 const roleKey = (s: string) => s.toLowerCase().replace(/\bintern(ship)?\b/g, "").replace(/[^a-z0-9]/g, "");
@@ -402,6 +426,8 @@ export function validateEmail(body: string, p: EmailPlan): string[] {
   if (words < p.minWords) problems.push(`too short (${words} words)`);
   if (/\{\{|\}\}|\[[A-Z][A-Za-z ]+\]/.test(body)) problems.push("unresolved placeholder");
   if (/…|\.\.\./.test(content)) problems.push("ellipsis / truncation");
+  // No unfinished sentences: every paragraph ends with sentence punctuation.
+  for (const para of paragraphsText.split(/\n\s*\n/).map((x) => x.trim()).filter(Boolean)) if (!/[.!?]["”)]?$/.test(para)) problems.push("paragraph does not end cleanly");
   if (!/[.!?]["”)]?\s*$/.test(content.trim())) problems.push("does not end cleanly");
   if (!content.startsWith(p.greeting)) problems.push("greeting missing");
   if (!mentions(content, p.company)) problems.push("company not mentioned");

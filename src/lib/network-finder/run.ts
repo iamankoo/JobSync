@@ -3,7 +3,7 @@ import { setSheetsRetryDeadline } from "@/lib/google-sheets/client";
 import { ApolloPool, enabledApolloAccounts } from "./apollo-pool";
 import { loadNetworkFinderConfig, type NetworkFinderConfig } from "./config";
 import { ApolloPoolExhausted, ProviderError } from "./errors";
-import { existingConnections, existingDraftDeps, existingJobs, existingSentTrackerDeps, teamNotifier } from "./gateways";
+import { existingConnections, existingDraftDeps, existingJobs, existingResumes, existingSentTrackerDeps, teamNotifier } from "./gateways";
 import { PoliteFetcher } from "./http/polite-fetch";
 import { recheckCompanyJobs, runBatchTick, runDailyJobSearch, runPendingDrafts, type DailyKindReport, type PipelineDeps, type TickResult } from "./pipeline";
 import { createApolloProvider } from "./providers/apollo";
@@ -107,6 +107,7 @@ export function buildRealDeps(config: NetworkFinderConfig = loadNetworkFinderCon
     ledger: stores.ledger,
     selections: stores.selections,
     drafts: existingDraftDeps(),
+    resumes: existingResumes,
     notifier: teamNotifier,
     connections: existingConnections,
     jobs: existingJobs,

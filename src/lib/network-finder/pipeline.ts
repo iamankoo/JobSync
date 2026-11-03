@@ -20,6 +20,7 @@ import { ApolloPoolExhausted, ProviderError } from "./errors";
 import type { ConnectionsGateway, JobsGateway } from "./gateways";
 import { toConnectionInput, toJobInput } from "./mapping";
 import { roleForManual, type RoleReading } from "./connection-role";
+import type { DraftAttachment, ResumeLookup } from "@/lib/gmail/attachment";
 import { ruleBrain, type Brain } from "./providers/brain";
 import type { CompanySource, ContactFinder, ContactProvider, JobSource, SearchStats } from "./providers/types";
 import { planBatch, qualifyCompany } from "./qualify";
@@ -73,6 +74,11 @@ export interface PipelineDeps {
   jobAlerts?: { send: AlertSender };
   /** Official ATS boards the daily job search reads (config/job-boards.ts). Independent of company / people discovery. */
   seedBoards?: readonly SeedBoard[];
+  /**
+   * Finds the member's mapped resume for a role (config/resume-map.ts). Only used for MANUAL connections, and only for members
+   * with attachments enabled. Absent = no draft ever carries an attachment.
+   */
+  resumes?: ResumeLookup;
   /** Reads a company's own website and careers board for the email writer (verified facts and real openings only). */
   research?: CompanyResearcher;
   queue: WorkQueue<CompanyTask>;
@@ -440,7 +446,7 @@ export function matchingBoardJob(title: string, jobs: readonly JobCandidate[]): 
  * body within it → validation (falls back to the deterministic template fill if anything is off) → the member's
  * signature with their LinkedIn/GitHub. Never sends. Already-created/sent drafts are skipped (ledger).
  */
-export async function draftForContact(deps: Pick<PipelineDeps, "config" | "brain" | "drafts"> & Partial<Pick<PipelineDeps, "jobs" | "research">>, t: DraftTarget): Promise<MemberDraftOutcome[]> {
+export async function draftForContact(deps: Pick<PipelineDeps, "config" | "brain" | "drafts"> & Partial<Pick<PipelineDeps, "jobs" | "research" | "resumes">>, t: DraftTarget): Promise<MemberDraftOutcome[]> {
   const brain = brainOf(deps);
   // The company's real openings already in Jobs. Each member gets the opening that fits THEIR verified skills.
   const known: EmailJob[] = [];
@@ -517,8 +523,18 @@ export async function draftForContact(deps: Pick<PipelineDeps, "config" | "brain
           body = null; // writer unavailable or invalid → the deterministic template fill below
         }
         body ??= assembleEmail(plan, composeFallback(plan));
+        // The member's mapped resume (manual connections only). Never a guess: unmapped / missing / unreadable = no attachment + a review flag.
+        let attachment: DraftAttachment | undefined;
+        if (reading && job && deps.resumes) {
+          const found = await deps.resumes(memberId, job.title).catch((): import("@/lib/gmail/attachment").ResumeResult => ({ status: "unreadable", reason: "lookup failed" }));
+          const flag = (text: string) => (review = [review, `review: ${text}; no attachment`].filter(Boolean).join("; "));
+          if (found.status === "attached") attachment = found.attachment;
+          else if (found.status === "unmapped") flag("no resume is mapped to this role yet");
+          else if (found.status === "missing") flag(`resume ${found.fileName} was not found in the member's uploads`);
+          else if (found.status === "unreadable") flag(`the mapped resume could not be read (${found.reason})`);
+        }
         const signature = deps.config.signatures?.[memberId];
-        return { subject: plan.subject, body: signature ? `${body}\n\n-- \n${signature}` : body, ...(review ? { review } : {}) };
+        return { subject: plan.subject, body: signature ? `${body}\n\n-- \n${signature}` : body, ...(review ? { review } : {}), ...(attachment ? { attachment } : {}) };
       },
     },
   );

@@ -1,4 +1,5 @@
 import { getMember, MEMBER_IDS, type MemberId } from "@/config/members";
+import type { DraftAttachment } from "@/lib/gmail/attachment";
 import type { DraftContent } from "./providers/brain";
 
 /**
@@ -28,7 +29,7 @@ export interface MemberDraftOutcome {
 export interface FanoutDeps {
   members?: readonly MemberId[];
   /** The member's own Gmail only (see lib/gmail/drafts.ts). */
-  createDraft(memberId: MemberId, msg: { to?: string; subject: string; body: string }): Promise<{ status: "created"; draftId: string; threadId?: string } | { status: "not_authorized" } | { status: "reauth_required" } | { status: "failed"; reason: string }>;
+  createDraft(memberId: MemberId, msg: { to?: string; subject: string; body: string; attachment?: DraftAttachment }): Promise<{ status: "created"; draftId: string; threadId?: string; attachment?: "verified" | "unverified" } | { status: "not_authorized" } | { status: "reauth_required" } | { status: "failed"; reason: string }>;
   isConnected(memberId: MemberId): Promise<boolean>;
   /** Draft text for this member (Nemotron, written as that member). `memberName` is their full name (config/members.ts). */
   compose(memberId: MemberId, memberName: string): Promise<DraftContent>;
@@ -59,9 +60,13 @@ export async function distributeDrafts(item: FanoutItem, deps: FanoutDeps): Prom
       }
       // Written and signed with the member's full name; the draft is still created in THEIR OWN Gmail only.
       const content = await deps.compose(memberId, getMember(memberId)?.fullName ?? memberId);
-      const res = await deps.createDraft(memberId, { ...(item.to ? { to: item.to } : {}), subject: content.subject, body: content.body });
+      const res = await deps.createDraft(memberId, { ...(item.to ? { to: item.to } : {}), subject: content.subject, body: content.body, ...(content.attachment ? { attachment: content.attachment } : {}) });
       if (res.status === "created") {
-        await deps.ledger.record({ draftKey: key, memberId, itemType: item.type, itemId: item.id, gmailDraftId: res.draftId, ...(res.threadId ? { threadId: res.threadId } : {}), status: "created", detail: content.review ?? "" });
+        // The attachment counts as done only when the saved draft was read back with the file in it; otherwise the draft
+        // (which exists, and is never rewritten) is flagged for the member.
+        const attachNote = content.attachment ? (res.attachment === "verified" ? `attached: ${content.attachment.fileName}` : "review: resume attachment could not be verified in the saved draft") : "";
+        const detail = [content.review, attachNote].filter(Boolean).join("; ");
+        await deps.ledger.record({ draftKey: key, memberId, itemType: item.type, itemId: item.id, gmailDraftId: res.draftId, ...(res.threadId ? { threadId: res.threadId } : {}), status: "created", detail });
         outcomes.push({ memberId, result: "created" });
       } else if (res.status === "failed") {
         await deps.ledger.record({ draftKey: key, memberId, itemType: item.type, itemId: item.id, gmailDraftId: "", status: "failed", detail: res.reason });

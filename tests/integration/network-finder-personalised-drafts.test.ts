@@ -80,7 +80,7 @@ describe("a manually added connection at Magic Hour AI: the company and its real
     }
     // Lukky (Python, LLM integration, RAG) is pointed at the ML role; Anni (React, Next.js, TypeScript) at either, never at sales
     expect(lukky.subject).toContain("Machine Learning Engineer");
-    expect(lukky.body).toMatch(/LLM|Python/);
+    expect(lukky.body).toMatch(/RAG|Retrieval|AI features/);
     // Rishii has no verified skills: a real role, but no skill or project claims
     expect(rishii.body).not.toMatch(/React|Node\.js|Python|MongoDB|TypeScript|LLM/);
   });
@@ -152,7 +152,7 @@ describe("different companies and roles produce materially different drafts", ()
       expect(d.subject).toBe(`Application for ${c.role} — ${c.name}`);
       expect(d.body).toContain(c.name);
       expect(d.body).toContain(c.role);
-      expect(d.body).toContain(c.about.replace(/\.$/, ""));
+      expect(d.body).toContain(c.about.replace(/\.$/, "").slice(-20));
       for (const other of companies.filter((o) => o.name !== c.name)) {
         expect(d.body).not.toContain(other.name);
         expect(d.body).not.toContain(other.role);
@@ -163,8 +163,8 @@ describe("different companies and roles produce materially different drafts", ()
     expect(bodies[0]).toMatch(/LLM|RAG|Python/);
     expect(bodies[1]).toMatch(/Next\.js|Tailwind|TypeScript/);
     expect(bodies[2]).toMatch(/Express|PostgreSQL|Redis|JWT/);
-    // no paragraph is shared between two drafts except the generic closing line
-    const paras = bodies.map((b) => b.split("\n\n").filter((p) => !/^(Dear|Best regards|Thank you)/.test(p) && !/^I have attached my resume/.test(p)));
+    // no paragraph is shared between two drafts except the fixed lines (hello, the polite request, the closing)
+    const paras = bodies.map((b) => b.split("\n\n").filter((p) => !/^(Dear|Best regards|Thank you|I hope you're doing well)/.test(p) && !/^I have attached my resume/.test(p) && !/^(I'd appreciate the chance|I would be grateful)/.test(p)));
     for (let i = 0; i < 3; i++) for (let j = i + 1; j < 3; j++) expect(paras[i].filter((p) => paras[j].includes(p))).toEqual([]);
   });
 
@@ -200,7 +200,7 @@ describe("validation rejects wrong or invented content", () => {
 
   it("rejects the wrong role", () => {
     const { p, body } = good();
-    const wrong = body.replace(/the Frontend Engineer position/, "the Software Engineer position");
+    const wrong = body.replace(/the Frontend Engineer opportunity/, "the Software Engineer opportunity");
     expect(wrong).not.toBe(body);
     expect(validateEmail(wrong, p).join()).toMatch(/wrong role: Software Engineer|role title missing/);
   });

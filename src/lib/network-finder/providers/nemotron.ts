@@ -191,18 +191,17 @@ async function writePlannedDraft(ask: ReturnType<typeof makeAsk>, plan: EmailPla
   };
   const out = await ask(
     [
-      `Write the BODY of a job application email from member.fullName (first person) for the role at the company in the DATA.`,
-      `Name the exact role from the DATA field role, word for word, and no other role title. Use 4 or 5 short paragraphs, ${plan.minWords}–${MAX_WORDS} words in total. Structure: (1) interest in the exact role at the company + member.education if given;`,
-      `(2) background using ONLY skillsToMention and projectsOrExperience (mention at most 8 skills, 1–2 projects, say what the member did);`,
-      `(3) why it fits the role (roleValueSentence if given; skillsAlsoInJobPosting if any, tied to what jobDescriptionExcerpt asks for, in the member's own words, not copied); (4) why this company: if companyContext is given, say specifically what draws the member to that work, using ONLY that sentence and, where they relate to the role, the researchFacts sentences (quote nothing else about the company); otherwise neutralCompanyReason;`,
-      `(5) stop after the company paragraph: do NOT mention the resume and do NOT thank them (a fixed closing about the attached resume is added separately).`,
+      `Write the BODY of a SHORT, personal job-enquiry email from member.fullName (first person) to a person at the company, for the role in the DATA. It must read like a real candidate writing to a human, not like a company research report.`,
+      `Length: about 100 to 130 words in total (hard limit ${MAX_WORDS}). Name the exact role from the DATA field role, word for word, and no other role title. Use exactly these parts, in order, as 4 short paragraphs:`,
+      `(1) "I hope you're doing well." (2) one sentence: who the member is (member.education if given) and that they are interested in the role at the company; (3) two or three concise sentences on the MOST relevant verified experience or project from projectsOrExperience (say what the member did; do not list technologies; never repeat the same experience); (4) ONE specific sentence connecting the member's interest to ONE verified detail of the company's work, taken only from companyContext (or a researchFacts sentence that relates to the role), in the member's own words and without repeating the research; if neither is given, use neutralCompanyReason; then one polite sentence asking for consideration or a referral.`,
+      `Do NOT mention the resume and do NOT thank them (a fixed closing is added separately). No long technology lists (at most 3 technology names in total), no generic filler, no sentence that does not end properly.`,
       `STRICT RULES: claim NO skill, project, employer, metric or experience that is not in the DATA. Invent NOTHING about the company (no products, mission, funding, stack, achievements).`,
       `Do not copy the job description. No greeting line, no sign-off, no name at the end (they are added separately). No placeholders. No ellipses.`,
       `Avoid buzzwords and these phrases: perfect fit, ideal candidate, thrilled, exciting opportunity, innovative company, cutting-edge, leverage.`,
       `Return {"paragraphs":["...","..."]}.`,
     ].join(" "),
     facts,
-    1100,
+    700,
   );
   const paragraphs = Array.isArray(out.paragraphs) ? out.paragraphs.filter((x): x is string => typeof x === "string").map((x) => x.trim()).filter(Boolean) : [];
   if (paragraphs.length < 3) throw new ProviderError("nemotron", "invalid_response", "draft missing paragraphs");

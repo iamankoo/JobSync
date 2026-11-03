@@ -150,10 +150,23 @@ export function discoverPages(html: string, base: string): { kind: Exclude<Resea
 
 const oneLine = (s: string, max: number) => decodeEntitiesForResearch(s).slice(0, max);
 
+/**
+ * A page's own description cut to whole sentences: when it is longer than `max`, only the sentences that fit are kept (and
+ * nothing at all if even the first does not fit). Never a fragment that stops mid-sentence.
+ */
+export function wholeSentences(s: string, max: number): string {
+  const text = decodeEntitiesForResearch(s);
+  if (text.length <= max) return text;
+  const head = text.slice(0, max);
+  const end = Math.max(head.lastIndexOf(". "), head.lastIndexOf("! "), head.lastIndexOf("? "));
+  return end >= 20 ? head.slice(0, end + 1) : "";
+}
+
 function pageOf(kind: ResearchPageKind, url: string, html: string): ResearchPage | undefined {
   const { title, description } = extractPageSummary(html);
   if (!title && !description) return undefined;
-  return { kind, url, title: oneLine(title, 140), ...(description ? { summary: oneLine(description, 300) } : {}) };
+  const summary = description ? wholeSentences(description, 300) : "";
+  return { kind, url, title: oneLine(title, 140), ...(summary ? { summary } : {}) };
 }
 
 const dedupe = (xs: string[]) => [...new Set(xs.filter(Boolean))];
@@ -220,7 +233,8 @@ export function createCompanyResearcher(fetcher: PoliteFetcher, boards: JobSourc
     const home = pageOf("home", site, html);
     if (home) pages.push(home);
     const description = extractPageSummary(html).description;
-    if (description) result.description = decodeEntitiesForResearch(description).slice(0, 300);
+    const whole = description ? wholeSentences(description, 300) : "";
+    if (whole) result.description = whole;
     // A supplied Company URL is the starting point: the official pages it links to are read too (robots.txt, pacing and
     // the access rules of PoliteFetcher apply to each; a page that is missing or refused is simply left out).
     if (supplied) {

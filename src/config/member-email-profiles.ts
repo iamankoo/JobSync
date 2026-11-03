@@ -33,7 +33,7 @@ export interface MemberEmailProfile {
 
 export const MEMBER_EMAIL_PROFILES: Record<MemberId, MemberEmailProfile> = {
   anni: {
-    education: "final-year B.Tech Computer Science (AI & Data Science) student at IIIT Manipur, graduating in 2027, and a full-stack developer with three internships",
+    education: "final-year B.Tech student in Computer Science (AI & Data Science) at IIIT Manipur",
     skills: [
       "javascript", "typescript", "python", "sql", "cpp",
       "react", "nextjs", "redux", "html", "css", "tailwind", "bootstrap", "responsive", "component-architecture", "reusable-components", "frontend-performance", "ui-development", "state-management", "web-push",

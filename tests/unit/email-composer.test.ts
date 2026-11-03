@@ -108,7 +108,11 @@ describe("personalisation", () => {
   it("job-description skills the member has are preferred and named as the role's focus", () => {
     const p = plan("anni", "Software Engineer", { job: { title: "Software Engineer", description: "Our stack is Redis, PostgreSQL and Docker." } });
     expect(p.skillsInJob).toEqual(expect.arrayContaining(["Redis", "PostgreSQL"]));
-    expect(fallbackBody(p)).toMatch(/Software Engineer role's emphasis on (Redis|PostgreSQL|Docker)/);
+    // Optional sentences are dropped, richest first, to stay inside the length target.
+    expect(wordCount(fallbackBody(p))).toBeLessThanOrEqual(150);
+    // With room to spare, the role's own requirements the member really has are named.
+    const l = plan("lukky", "Software Engineer", { job: { title: "Software Engineer", description: "Our stack is React and MongoDB." } });
+    expect(fallbackBody(l)).toMatch(/The role's focus on .*(React|MongoDB)/);
   });
 
   it("chooses 1–2 genuinely relevant highlights for the role", () => {
@@ -130,7 +134,8 @@ describe("personalisation", () => {
   it("uses verified company context only when given; otherwise a neutral sentence (no invented facts)", () => {
     const p = plan("anni", "Software Engineer", { company: { name: "Acme Labs", description: "Acme Labs builds scheduling tools for clinics." } });
     expect(p.companyContext).toBe("Acme Labs builds scheduling tools for clinics.");
-    expect(fallbackBody(plan("anni", "Software Engineer"))).toContain("What particularly interests me about Acme Labs is the opportunity to grow");
+    const neutral = plan("anni", "Software Engineer");
+    expect(fallbackBody(neutral)).toContain(`I'm particularly interested in ${neutral.motivation}.`);
   });
 
   it("finds the company's best open job in Jobs (name variants, relevant + newest first)", () => {

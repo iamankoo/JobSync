@@ -174,7 +174,8 @@ describe("role-specific drafts for manually added connections", () => {
         // the person's designation is not mistaken for the role
         expect(d.body).not.toContain("Engineering Manager");
         // company-specific content: the company's own words
-        expect(d.body).toContain(SITES[c.company].description.split(".")[0].slice(0, 30));
+        // (one verified detail, phrased naturally: the distinctive end of the company's own sentence)
+        expect(d.body).toContain(SITES[c.company].description.split(".")[0].slice(-25));
         // this member's own name and links, and nobody else's
         expect(d.body.endsWith(`Best regards,\n${FULL[m]}\nLinkedIn: ${LINKS[m][0]}\nGitHub: ${LINKS[m][1]}`)).toBe(true);
         for (const o of MEMBERS.filter((x) => x !== m)) {
