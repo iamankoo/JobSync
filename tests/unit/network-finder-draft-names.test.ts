@@ -83,8 +83,9 @@ describe("draft text and sign-off", () => {
     for (const m of ["anni", "lukky", "rishii"] as const) {
       const body = b.sent.find((s) => s.memberId === m)!.body;
       expect(body).not.toContain("Warm regards");
-      expect(body.split(FULL[m]).length - 1).toBe(1);
-      expect(body).toContain("I am writing to express my interest");
+      expect(body.split("Best regards,").length - 1).toBe(1); // one sign-off
+      expect(body.split(FULL[m]).length - 1).toBe(2); // "I'm <name>" in the introduction + the signature, nothing more
+      expect(body).toContain("interested in");
     }
     // Invents a skill the member does not have → rejected → template fill without it.
     const invents: Brain = { ...base, writeDraft: async () => ({ subject: "x", body: Array(6).fill("I have years of experience with Kubernetes, Golang and Rust in production systems at large companies across many teams.").join("\n\n") }) };

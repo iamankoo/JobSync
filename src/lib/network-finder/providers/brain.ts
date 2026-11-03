@@ -33,6 +33,8 @@ export interface DraftContent {
   body: string;
   /** Set when the draft was written but a person should look at it (e.g. the role could not be read from the description). */
   review?: string;
+  /** A file to attach to the Gmail draft (the member's mapped resume), when one was found. */
+  attachment?: import("@/lib/gmail/attachment").DraftAttachment;
 }
 
 export interface Brain {
