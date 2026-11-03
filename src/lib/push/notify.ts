@@ -1,7 +1,7 @@
 import "server-only";
 import webpush from "web-push";
 import { after } from "next/server";
-import type { MemberId } from "@/config/members";
+import { MEMBER_IDS, type MemberId } from "@/config/members";
 import type { PushSubscriptionRecord } from "@/types/domain";
 import { listSubscriptionsFor, removeSubscriptionsById } from "@/lib/google-sheets/push-service";
 import { loadVapidConfig } from "./config";
@@ -121,6 +121,36 @@ export async function notifyOthers(actor: MemberId, payload: PushPayload, eventK
   } catch (err) {
     console.error("[push] notification failed", err instanceof Error ? err.name : typeof err);
     return none;
+  }
+}
+
+export type EveryoneStatus = "delivered" | "duplicate" | "not_configured" | "unreadable";
+
+/**
+ * Sends `payload` to every registered device of ALL members (system events with no human actor, e.g. JobSync's automation). Same
+ * rules as every other notification: only devices a member has opted in on (their saved subscriptions) receive it, one browser
+ * registered for several members still gets it once, an event key already handled is skipped, devices the push service reports as
+ * gone are removed, and nothing else is changed. Never throws; "unreadable" means the subscription list could not be read, so the
+ * caller may try again (nothing was sent).
+ */
+export async function notifyEveryone(payload: PushPayload, eventKey: string): Promise<{ status: EveryoneStatus; outcome: NotifyOutcome }> {
+  const none: NotifyOutcome = { attempted: 0, delivered: 0, removed: 0, failed: 0 };
+  try {
+    if (!loadVapidConfig()) return { status: "not_configured", outcome: none };
+    if (!claim(eventKey)) return { status: "duplicate", outcome: none };
+    try {
+      const all = await listSubscriptionsFor(MEMBER_IDS);
+      const subs = [...new Map(all.map((s) => [s.endpoint, s])).values()];
+      const outcome = await deliver(subs, payload);
+      console.info(`[push] ${eventKey.split(":")[0]} (system): devices per member ${JSON.stringify(Object.fromEntries(MEMBER_IDS.map((m) => [m, all.filter((s) => s.memberId === m).length])))}, delivered ${outcome.delivered}/${outcome.attempted}`);
+      return { status: "delivered", outcome };
+    } catch (err) {
+      seen().delete(eventKey); // nothing was sent: let a retry try again
+      throw err;
+    }
+  } catch (err) {
+    console.error("[push] notification failed", err instanceof Error ? err.name : typeof err);
+    return { status: "unreadable", outcome: none };
   }
 }
 

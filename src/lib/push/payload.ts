@@ -26,7 +26,7 @@ export function recipientsFor(actor: MemberId): MemberId[] {
 }
 
 /** Pages a notification may open. Everything else falls back to the dashboard. */
-const SAFE_PATHS = new Set(["/dashboard", "/all-jobs", "/my-applications", "/add-job", "/group-chat", "/connections"]);
+const SAFE_PATHS = new Set(["/dashboard", "/all-jobs", "/my-applications", "/add-job", "/group-chat", "/connections", "/gmail"]);
 
 /** Same-origin, allow-listed destination for a job. The JobID must be a well-formed ID. */
 export function jobUrl(jobId: string): string {
@@ -148,5 +148,25 @@ export function callStartedPayload(actor: MemberId, callId: string, media: "audi
     url: "/group-chat",
     tag: `call-${callId}`,
     icon: m?.photo,
+  };
+}
+
+/** One notification per block of `blockSize` Connections that JobSync's automation successfully created, e.g. "10 connections added". */
+export function connectionsAddedPayload(blockSize: number, total: number): PushPayload {
+  return {
+    title: `${blockSize} connections added`,
+    body: clean(`JobSync has added ${total} connections so far — tap to view in Connections.`, 140),
+    url: "/connections",
+    tag: `jobsync-connections-added-${total}`,
+  };
+}
+
+/** One notification per block of `blockSize` confirmed automated sends, e.g. "10 emails sent". `total` = sends so far. */
+export function emailsSentPayload(blockSize: number, total: number): PushPayload {
+  return {
+    title: `${blockSize} emails sent`,
+    body: clean(`JobSync has sent ${total} outreach emails so far — tap to view.`, 140),
+    url: "/gmail",
+    tag: `jobsync-emails-sent-${total}`,
   };
 }

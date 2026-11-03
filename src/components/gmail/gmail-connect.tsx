@@ -1,7 +1,7 @@
 "use client";
 
-import { useState } from "react";
-import { Mail } from "lucide-react";
+import { useEffect, useState } from "react";
+import { Mail, Send } from "lucide-react";
 import { Avatar } from "@/components/ui/avatar";
 import { CompanyMark } from "@/components/ui/company-mark";
 import { EmptyState } from "@/components/ui/empty-state";
@@ -10,6 +10,44 @@ import { cellClass, HEAD_ROW_CLASS, ROW_CLASS, TABLE_CLASS, TBODY_CLASS, THEAD_C
 import { getMember } from "@/config/members";
 import type { DraftList, DraftListItem, DraftListStatus } from "@/lib/gmail/draft-list";
 import type { GmailOverview } from "@/lib/gmail/overview";
+import { apiRequest } from "@/lib/client/api";
+import type { MemberCounters } from "@/lib/gmail/sent-counter";
+
+/** How often the counters re-check the server while the tab is visible (the whole page also refreshes every 30 s). */
+export const COUNTER_POLL_MS = 15_000;
+
+/**
+ * Live Draft / Sent counts. Starts from the server-rendered values, asks /api/gmail/counters as soon as the page mounts, then every 15 s while visible and whenever the tab regains focus. A newer server render replaces the state.
+ */
+function useLiveCounters(initial: MemberCounters): MemberCounters {
+  const [counts, setCounts] = useState(initial);
+  // A newer server render (page refresh / the 30 s auto-refresh) replaces the live state: adjust state while rendering, the React-recommended way.
+  const [seen, setSeen] = useState(initial);
+  if (seen.drafted !== initial.drafted || seen.sent !== initial.sent) {
+    setSeen({ drafted: initial.drafted, sent: initial.sent });
+    setCounts({ drafted: initial.drafted, sent: initial.sent });
+  }
+  useEffect(() => {
+    let alive = true;
+    const load = async () => {
+      if (document.visibilityState !== "visible") return;
+      const r = await apiRequest<MemberCounters>("/api/gmail/counters");
+      if (alive && r.ok) setCounts({ drafted: r.data.drafted, sent: r.data.sent });
+    };
+    const first = window.setTimeout(load, 0); // right after mount: also reconciles with Gmail
+    const id = window.setInterval(load, COUNTER_POLL_MS);
+    document.addEventListener("visibilitychange", load);
+    window.addEventListener("focus", load);
+    return () => {
+      alive = false;
+      window.clearTimeout(first);
+      window.clearInterval(id);
+      document.removeEventListener("visibilitychange", load);
+      window.removeEventListener("focus", load);
+    };
+  }, []);
+  return counts;
+}
 
 const ERRORS: Record<string, string> = {
   denied: "Google access was not granted. Nothing was connected.",
@@ -99,8 +137,8 @@ function DraftsTable({ items }: { items: DraftListItem[] }) {
 }
 
 /**
- * Gmail Drafts page: the title, the member's own Draft / Sent counts, who is connected, and the member's own
- * Network Finder drafts (from the real draft ledger; a draft becomes "Sent" once the sent-draft tracker sees it sent).
+ * Gmail Drafts page: the title, the member's own Draft and Sent counts (Draft first, Sent to its right; live), who is connected, and the
+ * member's own Network Finder drafts. The Sent COUNT is only e-mails JobSync's automated workflow sent (confirmed in the send ledger).
  * Each member connects, reconnects or disconnects their own Gmail from Profile → Gmail; Google sends them back here,
  * so the outcome of a connect is shown as a notice.
  */
@@ -108,13 +146,15 @@ export function GmailConnect({ members, drafts, justConnected, error }: { member
   const [notice, setNotice] = useState<NoticeState | null>(
     justConnected ? { kind: "success", text: "Gmail connected. Network Finder can now save drafts in your Gmail (it never sends)." } : error ? { kind: "error", text: ERRORS[error] ?? "Gmail could not be connected." } : null,
   );
+  const counts = useLiveCounters({ drafted: drafts.drafted, sent: drafts.sent });
   return (
     <div className="space-y-4">
-      {/* Title left, the Draft count always centred (at every width), connected members right. */}
+      {/* Title left, the Draft and Sent counts (Draft first, Sent directly to its right) centred at every width, connected members right. */}
       <div className="grid items-center gap-x-6 gap-y-3 sm:grid-cols-[1fr_auto_1fr]">
         <h1 className="text-xl font-semibold">Gmail drafts</h1>
-        <div className="flex justify-center" aria-label="Draft count" role="group">
-          <SummaryCard label="Draft" value={drafts.drafted} icon={Mail} tone="text-amber-300" />
+        <div className="flex flex-wrap items-center justify-center gap-3" aria-label="Draft and sent counts" role="group" data-testid="gmail-counts">
+          <SummaryCard label="Draft" value={counts.drafted} icon={Mail} tone="text-amber-300" />
+          <SummaryCard label="Sent" value={counts.sent} icon={Send} tone="text-emerald-300" />
         </div>
         <div className="sm:justify-self-end">
           <ConnectedMembers members={members} />

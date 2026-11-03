@@ -62,6 +62,7 @@ describe("click destinations", () => {
     expect(safeUrl("/api/auth/logout", origin)).toBe("/dashboard");
     expect(safeUrl("/connections", origin)).toBe("/connections");
     expect(safeUrl("/group-chat", origin)).toBe("/group-chat");
+    expect(safeUrl("/gmail", origin)).toBe("/gmail");
   });
 });
 

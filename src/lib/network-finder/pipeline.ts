@@ -1,4 +1,5 @@
 import { getMember, MEMBER_IDS, type MemberId } from "@/config/members";
+import { isFallbackCompany } from "@/config/outreach-wording";
 import type { Connection, Job } from "@/types/domain";
 import { boardUrl, type SeedBoard } from "@/config/job-boards";
 import { sweepScans } from "./providers/job-boards";
@@ -459,8 +460,11 @@ export async function draftForContact(deps: Pick<PipelineDeps, "config" | "brain
   }
   // The company's own website and careers board, read at most once per contact and only when something is missing.
   let researched: Promise<CompanyResearch | undefined> | undefined;
+  // No company identity ("your company" fallback) and no website: there is nothing to research, and the fallback must never be
+  // searched for as if it were a company name.
+  const unknownCompany = isFallbackCompany(t.company.name) && !t.company.website;
   const research = () =>
-    (researched ??= deps.research
+    (researched ??= deps.research && !unknownCompany
       ? deps.research({ name: t.company.name, ...(t.company.website ? { website: t.company.website } : {}), ...(t.email ? { email: t.email } : {}) }).catch(() => undefined)
       : Promise.resolve(undefined));
   return distributeDrafts(
@@ -495,7 +499,8 @@ export async function draftForContact(deps: Pick<PipelineDeps, "config" | "brain
         const description = t.company.description ?? r?.description;
         // Honest research report: a draft written without verified company facts is flagged for the member, and the pages
         // the facts came from are recorded with the draft (ledger detail).
-        if (reading && (!r || r.status === "unavailable" || !(r.description || r.pages?.length))) review = [review, "review: company research unavailable; no company facts were used"].filter(Boolean).join("; ");
+        if (reading && unknownCompany) review = [review, "note: company name unknown; generic company wording was used"].filter(Boolean).join("; ");
+        else if (reading && !t.company.description && (!r || r.status === "unavailable" || !(r.description || r.pages?.length))) review = [review, "review: company research unavailable; no company facts were used"].filter(Boolean).join("; ");
         else if (reading && r?.pages?.length) review = [review, `sources: ${r.pages.map((p) => p.url).join(" ")}`.slice(0, 450)].filter(Boolean).join("; ");
         const facts = r?.facts;
         const neutral = Boolean(reading) && !job;
@@ -525,16 +530,19 @@ export async function draftForContact(deps: Pick<PipelineDeps, "config" | "brain
         body ??= assembleEmail(plan, composeFallback(plan));
         // The member's mapped resume (manual connections only). Never a guess: unmapped / missing / unreadable = no attachment + a review flag.
         let attachment: DraftAttachment | undefined;
+        let resumeNote: string | undefined;
         if (reading && job && deps.resumes) {
           const found = await deps.resumes(memberId, job.title).catch((): import("@/lib/gmail/attachment").ResumeResult => ({ status: "unreadable", reason: "lookup failed" }));
           const flag = (text: string) => (review = [review, `review: ${text}; no attachment`].filter(Boolean).join("; "));
-          if (found.status === "attached") attachment = found.attachment;
-          else if (found.status === "unmapped") flag("no resume is mapped to this role yet");
+          if (found.status === "attached") {
+            attachment = found.attachment;
+            if (found.note) resumeNote = `resume: ${found.note}`;
+          } else if (found.status === "unmapped") flag(found.reason ? `no usable resume (${found.reason})` : "no resume is mapped to this role yet");
           else if (found.status === "missing") flag(`resume ${found.fileName} was not found in the member's uploads`);
           else if (found.status === "unreadable") flag(`the mapped resume could not be read (${found.reason})`);
         }
         const signature = deps.config.signatures?.[memberId];
-        return { subject: plan.subject, body: signature ? `${body}\n\n-- \n${signature}` : body, ...(review ? { review } : {}), ...(attachment ? { attachment } : {}) };
+        return { subject: plan.subject, body: signature ? `${body}\n\n-- \n${signature}` : body, ...(review ? { review } : {}), ...(resumeNote ? { note: resumeNote } : {}), ...(attachment ? { attachment } : {}) };
       },
     },
   );
@@ -804,7 +812,9 @@ export async function runPendingDrafts(deps: PipelineDeps, options: { days?: num
     const rec = (s && registry.find((r) => r.key === s.companyKey)) || registry.find((r) => r.name.trim().toLowerCase() === (c.company ?? "").trim().toLowerCase());
     // A Company URL the member typed is the research starting point, ahead of any discovered website.
     const website = c.companyUrl || rec?.website;
-    return { name: rec?.name || c.company?.trim() || "your team", ...(website ? { website } : {}) };
+    // An imported Outreach Database contact carries the company's own published description (Part 1 research) in its notes.
+    const description = /^Company description \(from the company's website\): (.+)$/m.exec(c.notes ?? "")?.[1]?.trim();
+    return { name: rec?.name || c.company?.trim() || "your company", ...(website ? { website } : {}), ...(description ? { description: description.slice(0, 400) } : {}) };
   };
   // Every member's mailbox (the fan-out skips members without Gmail); the snapshot keeps ledger reads to one per run.
   const runDeps: PipelineDeps = {

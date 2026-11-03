@@ -65,7 +65,7 @@ export async function distributeDrafts(item: FanoutItem, deps: FanoutDeps): Prom
         // The attachment counts as done only when the saved draft was read back with the file in it; otherwise the draft
         // (which exists, and is never rewritten) is flagged for the member.
         const attachNote = content.attachment ? (res.attachment === "verified" ? `attached: ${content.attachment.fileName}` : "review: resume attachment could not be verified in the saved draft") : "";
-        const detail = [content.review, attachNote].filter(Boolean).join("; ");
+        const detail = [content.review, content.note, attachNote].filter(Boolean).join("; ");
         await deps.ledger.record({ draftKey: key, memberId, itemType: item.type, itemId: item.id, gmailDraftId: res.draftId, ...(res.threadId ? { threadId: res.threadId } : {}), status: "created", detail });
         outcomes.push({ memberId, result: "created" });
       } else if (res.status === "failed") {

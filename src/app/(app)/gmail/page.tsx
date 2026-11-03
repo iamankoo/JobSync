@@ -1,7 +1,7 @@
 import { ErrorState } from "@/components/ui/empty-state";
 import { GmailConnect } from "@/components/gmail/gmail-connect";
 import { MEMBER_IDS } from "@/config/members";
-import { draftListFor } from "@/lib/gmail/draft-list";
+import { draftsWithSent } from "@/lib/gmail/sent-counter";
 import { gmailOverview } from "@/lib/gmail/overview";
 import { loadForMember } from "@/lib/pages/load";
 
@@ -15,7 +15,7 @@ export const metadata = { title: "Gmail drafts · JobSync" };
 export default async function GmailPage({ searchParams }: { searchParams: Promise<{ connected?: string; error?: string }> }) {
   const { connected, error } = await searchParams;
   const { result } = await loadForMember(async (m) => {
-    const [overview, drafts] = await Promise.all([gmailOverview(m, MEMBER_IDS), draftListFor(m)]);
+    const [overview, drafts] = await Promise.all([gmailOverview(m, MEMBER_IDS), draftsWithSent(m)]);
     return { members: overview.members, drafts };
   });
   if (!result.ok) {
