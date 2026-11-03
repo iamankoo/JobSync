@@ -83,7 +83,19 @@ export function ConnectionDetailsDialog({ c, mine, canManage = mine, timeZone, b
 
         <dl className="mt-5 grid grid-cols-1 gap-4 sm:grid-cols-2">
           <Field label="Company">{c.company ?? "—"}</Field>
-          <Field label="Role / title">{c.role ?? "—"}</Field>
+          <Field label="Designation">{c.role ?? "—"}</Field>
+          <Field label="Role to apply">
+            {c.applyRole ? <span data-testid="connection-apply-role">{c.applyRole}{c.roleCategory ? <span className="text-muted"> ({c.roleCategory})</span> : null}</span> : "—"}
+          </Field>
+          <Field label="Company URL">
+            {c.companyUrl ? (
+              <a href={c.companyUrl} target="_blank" rel="noopener noreferrer" className="break-all text-electric-soft hover:underline" data-testid="connection-company-url">
+                {hostOf(c.companyUrl)}
+              </a>
+            ) : (
+              "—"
+            )}
+          </Field>
           <Field label="Email">
             {c.email ? (
               <a href={`mailto:${c.email}`} className="break-all text-electric-soft hover:underline" data-testid="connection-email">
@@ -114,9 +126,10 @@ export function ConnectionDetailsDialog({ c, mine, canManage = mine, timeZone, b
           </Field>
         </dl>
 
+        {c.message && (
         <div className="mt-5 rounded-lg border border-line bg-navy-950/60 p-3">
           <div className="mb-1.5 flex items-center justify-between gap-2">
-            <h3 className="text-xs font-semibold uppercase tracking-wide text-muted">Message to send</h3>
+            <h3 className="text-xs font-semibold uppercase tracking-wide text-muted">Earlier message</h3>
             {c.message && (
               <button type="button" onClick={copy} className="inline-flex items-center gap-1.5 rounded-md border border-line px-2 py-1 text-xs font-medium text-ink hover:border-electric-soft">
                 {copied ? <Check size={14} aria-hidden className="text-emerald-300" /> : <Copy size={14} aria-hidden />}
@@ -128,15 +141,15 @@ export function ConnectionDetailsDialog({ c, mine, canManage = mine, timeZone, b
             <p className="whitespace-pre-wrap break-words text-sm leading-relaxed" data-testid="connection-message">
               {c.message}
             </p>
-          ) : (
-            <p className="text-sm text-muted">No message written yet.{mine ? " Use Edit to add one." : ""}</p>
-          )}
+          ) : null}
         </div>
+        )}
 
         <GmailDraftStatus connectionId={c.connectionId} />
 
+        {(c.profileUrl || c.otherUrl) && (
         <div className="mt-5">
-          <h3 className="text-xs font-semibold uppercase tracking-wide text-muted">Profile &amp; links</h3>
+          <h3 className="text-xs font-semibold uppercase tracking-wide text-muted">Earlier profile &amp; links</h3>
           {c.profileUrl || c.otherUrl ? (
             <div className="mt-2 flex flex-wrap gap-2">
               {c.profileUrl && (
@@ -156,11 +169,14 @@ export function ConnectionDetailsDialog({ c, mine, canManage = mine, timeZone, b
             <p className="mt-1 text-sm text-muted">No links saved.</p>
           )}
         </div>
+        )}
 
+        {c.notes && (
         <div className="mt-5">
-          <h3 className="text-xs font-semibold uppercase tracking-wide text-muted">Notes</h3>
-          {c.notes ? <p className="mt-1 whitespace-pre-wrap break-words text-sm text-ink/90">{c.notes}</p> : <p className="mt-1 text-sm text-muted">No notes.</p>}
+          <h3 className="text-xs font-semibold uppercase tracking-wide text-muted">Earlier notes</h3>
+          <p className="mt-1 whitespace-pre-wrap break-words text-sm text-ink/90">{c.notes}</p>
         </div>
+        )}
 
         {canManage ? (
           <div className="mt-6 flex flex-wrap justify-end gap-2">

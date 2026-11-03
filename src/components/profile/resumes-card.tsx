@@ -1,13 +1,14 @@
 "use client";
 
 import { useRef, useState } from "react";
-import { Download, ExternalLink, FileText, Plus, Trash2 } from "lucide-react";
+import { Check, Download, ExternalLink, FileText, Pencil, Plus, Trash2, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Notice, type NoticeState } from "@/components/ui/notice";
 import { apiRequest } from "@/lib/client/api";
 import { formatBytes } from "@/lib/chat/files";
 import type { ResumeInfo } from "@/lib/google-sheets/member-files-service";
 import { MAX_RESUMES, PROFILE_MAX_BYTES, RESUME_ACCEPT, RESUME_TYPES } from "@/lib/profile/uploads";
+import { normalizePdfName, sameFileName } from "@/lib/profile/rename";
 import { uploadFile } from "./upload";
 
 /** ONE card with all of the signed-in member's resumes: upload (+), open, download, delete. Limit enforced on the server too. */
@@ -16,6 +17,9 @@ export function ResumesCard({ initial, timeZone = "UTC" }: { initial: ResumeInfo
   const [resumes, setResumes] = useState<ResumeInfo[]>(initial ?? []);
   const [busy, setBusy] = useState(false);
   const [confirmId, setConfirmId] = useState<string | null>(null);
+  const [renameId, setRenameId] = useState<string | null>(null);
+  const [draftName, setDraftName] = useState("");
+  const [renameError, setRenameError] = useState<string | null>(null);
   const [notice, setNotice] = useState<NoticeState | null>(null);
   const enabled = initial !== null;
   const full = resumes.length >= MAX_RESUMES;
@@ -32,6 +36,28 @@ export function ResumesCard({ initial, timeZone = "UTC" }: { initial: ResumeInfo
       setResumes((r) => [res.data, ...r]);
       setNotice({ kind: "success", text: `Uploaded ${res.data.fileName}.` });
     } else setNotice({ kind: "error", text: res.message });
+  }
+
+  function startRename(r: ResumeInfo) {
+    setConfirmId(null);
+    setRenameError(null);
+    setDraftName(r.fileName.replace(/.pdf$/i, ""));
+    setRenameId(r.recordId);
+  }
+
+  async function saveRename(r: ResumeInfo) {
+    const checked = normalizePdfName(draftName);
+    if (!checked.ok) return setRenameError(checked.message);
+    if (checked.fileName === r.fileName) return setRenameId(null);
+    if (resumes.some((x) => x.recordId !== r.recordId && sameFileName(x.fileName, checked.fileName))) return setRenameError("You already have a resume with that name. Choose another.");
+    setBusy(true);
+    const res = await apiRequest<ResumeInfo>(`/api/profile/resumes/${encodeURIComponent(r.recordId)}`, { method: "PATCH", body: JSON.stringify({ fileName: draftName }) });
+    setBusy(false);
+    if (res.ok) {
+      setResumes((list) => list.map((x) => (x.recordId === r.recordId ? res.data : x)));
+      setRenameId(null);
+      setNotice({ kind: "success", text: `Renamed to ${res.data.fileName}.` });
+    } else setRenameError(res.message);
   }
 
   async function remove(r: ResumeInfo) {
@@ -84,7 +110,41 @@ export function ResumesCard({ initial, timeZone = "UTC" }: { initial: ResumeInfo
               <li key={r.recordId} className="flex flex-wrap items-center gap-3 px-3 py-2.5">
                 <FileText size={20} aria-hidden className="shrink-0 text-electric-soft" />
                 <div className="min-w-0 flex-1">
-                  <p className="truncate text-sm font-medium" title={r.fileName}>{r.fileName}</p>
+                  {renameId === r.recordId ? (
+                    <form
+                      onSubmit={(e) => {
+                        e.preventDefault();
+                        void saveRename(r);
+                      }}
+                      className="flex items-center gap-1.5"
+                      aria-label={`Rename ${r.fileName}`}
+                    >
+                      <input
+                        autoFocus
+                        value={draftName}
+                        onChange={(e) => setDraftName(e.target.value)}
+                        onKeyDown={(e) => e.key === "Escape" && setRenameId(null)}
+                        aria-label="New file name"
+                        aria-invalid={renameError ? true : undefined}
+                        maxLength={100}
+                        disabled={busy}
+                        className="h-9 min-w-0 flex-1 rounded-lg border border-line bg-navy-950/60 px-2.5 text-sm text-ink outline-none focus-visible:border-electric-soft"
+                      />
+                      <span aria-hidden className="text-sm text-muted">.pdf</span>
+                      <button type="submit" disabled={busy} aria-label="Save new name" title="Save" className="rounded-lg p-2 text-muted hover:bg-navy-800 hover:text-emerald-300"><Check size={18} aria-hidden /></button>
+                      <button type="button" onClick={() => setRenameId(null)} disabled={busy} aria-label="Cancel renaming" title="Cancel" className="rounded-lg p-2 text-muted hover:bg-navy-800 hover:text-ink"><X size={18} aria-hidden /></button>
+                    </form>
+                  ) : (
+                    <p className="flex min-w-0 items-center gap-1.5 text-sm font-medium">
+                      <span className="truncate" title={r.fileName}>{r.fileName}</span>
+                      {r.mimeType === "application/pdf" && (
+                        <button type="button" onClick={() => startRename(r)} disabled={busy} aria-label={`Rename ${r.fileName}`} title="Rename" className="shrink-0 rounded-md p-1 text-muted hover:bg-navy-800 hover:text-ink">
+                          <Pencil size={14} aria-hidden />
+                        </button>
+                      )}
+                    </p>
+                  )}
+                  {renameId === r.recordId && renameError && <p role="alert" className="mt-1 text-xs text-red-300">{renameError}</p>}
                   <p className="text-xs text-muted">
                     {RESUME_TYPES[r.mimeType] ?? "File"} · {formatBytes(r.sizeBytes)} · Uploaded {new Date(r.uploadedAt).toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric", timeZone })}
                   </p>

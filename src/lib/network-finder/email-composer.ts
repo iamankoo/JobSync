@@ -26,7 +26,7 @@ export interface EmailJob {
 
 export interface EmailInput {
   memberId: MemberId;
-  company: { name: string; website?: string; description?: string };
+  company: { name: string; website?: string; description?: string; /** Verbatim sentences from the company's own pages (see company-research.ts). */ facts?: readonly string[] };
   person?: { name: string; title?: string };
   recipientEmail?: string;
   job?: EmailJob;
@@ -44,6 +44,8 @@ export interface EmailPlan {
   templateVersion: number;
   company: string;
   companyContext?: string;
+  /** Further verbatim sentences from the company's own pages, each from a source the research recorded. */
+  companyFacts?: string[];
   /** The exact job title when known; otherwise null (the email then speaks of the role family). */
   jobTitle: string | null;
   /** What the role works on (after the title), when the description names it. */
@@ -240,7 +242,8 @@ export function buildEmailPlan(input: EmailInput): EmailPlan {
     templateVersion: tpl.version,
     ...base,
     roleFocus: input.job?.focus?.trim() || null,
-    companyContext: companyContextOf(input.company.description),
+    companyContext: companyContextOf(input.company.description) ?? input.company.facts?.map(companyContextOf).find(Boolean),
+    ...(input.company.facts?.length ? { companyFacts: input.company.facts.slice(0, 3) } : {}),
     jobDescriptionExcerpt: input.job?.description ? input.job.description.replace(/\s+/g, " ").trim().slice(0, 900) : undefined,
     recipientFirstName: firstName,
     greeting: `Dear ${firstName ?? "Hiring Team"},`,

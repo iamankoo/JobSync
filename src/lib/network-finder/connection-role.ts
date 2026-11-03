@@ -150,3 +150,14 @@ export function roleForConnection(c: { notes?: string; message?: string }): Role
   if (fromNotes.status !== "missing") return fromNotes;
   return extractRole(c.message);
 }
+
+/**
+ * The role a MANUAL connection is about. The member's Role to Apply (applyRole) is authoritative: it is used exactly as
+ * saved and the free-text description is NOT consulted. Only historical records without one fall back to reading
+ * their Notes / message (roleForConnection).
+ */
+export function roleForManual(c: { applyRole?: string; notes?: string; message?: string }): RoleReading {
+  const chosen = c.applyRole?.trim();
+  if (chosen) return { status: "found", role: { title: chosen, internship: /\bintern(ship)?s?\b/i.test(chosen) } };
+  return roleForConnection(c);
+}

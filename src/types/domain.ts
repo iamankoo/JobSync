@@ -151,6 +151,12 @@ export interface Connection {
   role?: string;
   /** Contact email address. */
   email?: string;
+  /** The company's website (http/https). Optional; research starts from it when present. */
+  companyUrl?: string;
+  /** Role to Apply: category (SDE, AI/ML, Web D, Data, Other). Absent on historical records. */
+  roleCategory?: string;
+  /** Role to Apply: the final specific/custom role. The authoritative role for research and drafts. Absent on historical records. */
+  applyRole?: string;
   /** LinkedIn / profile URL (http/https only). */
   profileUrl?: string;
   /** Any other useful profile or contact URL (http/https only). */

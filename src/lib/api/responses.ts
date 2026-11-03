@@ -56,6 +56,8 @@ const DOMAIN_STATUS: Record<DomainErrorCode, number> = {
   not_call_starter: 403,
   member_file_not_found: 404,
   resume_limit: 409,
+  resume_name_taken: 409,
+  resume_not_pdf: 400,
   member_files_unavailable: 503,
 };
 

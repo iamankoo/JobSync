@@ -1,7 +1,8 @@
 import { protectedRoute } from "@/lib/api/protected-route";
 import { disposition } from "@/lib/api/profile-upload";
-import { ok } from "@/lib/api/responses";
-import { deleteResume, loadResume } from "@/lib/google-sheets/member-files-service";
+import { ok, readJsonBody } from "@/lib/api/responses";
+import { z } from "zod";
+import { deleteResume, loadResume, renameResume } from "@/lib/google-sheets/member-files-service";
 import { requireProfileUnlock } from "@/lib/profile/lock-service";
 import { jobIdSchema } from "@/lib/validation/applications";
 
@@ -24,6 +25,17 @@ export const GET = protectedRoute<{ recordId: string }>(async ({ req, memberId, 
     },
   });
 });
+
+/** Renames one of the caller's own PDFs (metadata only: the file, its id and its storage reference are untouched). */
+export const PATCH = protectedRoute<{ recordId: string }>(
+  async ({ req, memberId, params }) => {
+    await requireProfileUnlock(req, memberId);
+    const id = jobIdSchema.parse(params.recordId);
+    const { fileName } = z.strictObject({ fileName: z.string().max(200) }).parse(await readJsonBody(req));
+    return ok(await renameResume(memberId, id, fileName));
+  },
+  { mutates: true },
+);
 
 export const DELETE = protectedRoute<{ recordId: string }>(
   async ({ req, memberId, params }) => {

@@ -1,6 +1,7 @@
 import "server-only";
 import { MEMBER_IDS, type MemberId } from "@/config/members";
 import { MAX_LIBRARY_PHOTOS, MAX_RESUMES } from "@/lib/profile/uploads";
+import { normalizePdfName, sameFileName } from "@/lib/profile/rename";
 import { getSheetsClient } from "./client";
 import { deleteStoredFile, loadChatFile, storeChatFile } from "./chat-files-service";
 import { DomainError, SheetsError } from "./errors";
@@ -126,6 +127,30 @@ export async function loadResume(memberId: MemberId, recordId: string): Promise<
   return { info: toResumeInfo(rec), bytes: await loadStored(rec) };
 }
 export const deleteResume = (memberId: MemberId, recordId: string) => deleteOwn(memberId, recordId, "resume");
+
+/**
+ * Renames one of the caller's OWN uploaded PDFs: metadata only. Only the FileName cell of the MemberFiles row changes; the
+ * record id, FileID (storage reference), size, type, owner and upload time stay, the bytes are never read or written, and
+ * the name must be valid and not used by another of the member's resumes. Another member's record answers like a missing one.
+ */
+export async function renameResume(memberId: MemberId, recordId: string, rawName: string): Promise<ResumeInfo> {
+  const checked = normalizePdfName(rawName);
+  if (!checked.ok) throw new DomainError("validation_failed", checked.message, { fields: { fileName: checked.message } });
+  return withWriteLock(async () => {
+    const rec = await findOwn(memberId, recordId, "resume", true);
+    if (rec.mimeType !== "application/pdf") throw new DomainError("resume_not_pdf", "Only PDF files can be renamed.");
+    if (rec.fileName === checked.fileName) return toResumeInfo(rec);
+    const clash = (await readAll(true)).some((f) => f.memberId === memberId && f.kind === "resume" && f.recordId !== rec.recordId && sameFileName(f.fileName, checked.fileName));
+    if (clash) throw new DomainError("resume_name_taken", "You already have a resume with that name. Choose another.", { fields: { fileName: "Name already used" } });
+    const next: MemberFile = { ...rec, fileName: checked.fileName };
+    try {
+      await getSheetsClient().updateValues(rowRange("memberFiles", rec.row), [serialize(next)]);
+    } finally {
+      invalidateTableCache();
+    }
+    return toResumeInfo(next);
+  });
+}
 
 // ---- Photos library (private; NEVER the avatar) --------------------------------------------------------------
 
