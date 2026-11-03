@@ -19,7 +19,7 @@ import { dateInTimezone } from "@/lib/utils/time";
 import type { Connection } from "@/types/domain";
 import { importEligibility, firstInDuplicateGroups, parseMasterRows } from "./contacts";
 import { checkAttachment, checkDraft } from "./draft-check";
-import { isExcluded } from "./exclusions";
+import { isExcluded, matchesAllowlist } from "./exclusions";
 import { limitReason, usageToday, type SendLimits } from "./limits";
 import { MAX_SEND_ATTEMPTS, claimSend, normalKey, releaseStaleClaims, rowsFor, withHistory } from "./send-ledger";
 import type { OutreachSheet } from "./sheet";
@@ -60,6 +60,8 @@ export interface SendDeps {
   now: () => Date;
   timezone: string;
   deadline?: number;
+  /** When non-empty, ONLY these recipients may ever be sent to (see config OUTREACH_SEND_ONLY_TO). */
+  allowlist?: readonly string[];
 }
 
 export interface SendRunResult {
@@ -103,6 +105,7 @@ async function evaluate(deps: SendDeps, rec: TrackingRecord, env: { connections:
   if (!email.valid) return { kind: "block", check: "valid_email", reason: `invalid recipient address (${email.reason})` };
   const key = normalKey(email.email);
 
+  if (!matchesAllowlist(email.email, deps.allowlist ?? [])) return { kind: "block", check: "not_excluded", reason: "recipient is not on the send allowlist (controlled-test safeguard)" };
   const excluded = isExcluded(email.email, env.exclusions);
   if (excluded) return { kind: "block", check: "not_excluded", reason: `opted out / excluded (${excluded})` };
 

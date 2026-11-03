@@ -1,7 +1,9 @@
 # Outreach: Outreach Database -> Connections -> drafts -> (gated) sending
 
-**Status: built and tested locally. Everything is OFF by default, and sending is compile-time disabled.** Nothing in this
-repository can send an email today; see "Production activation" for the deliberate, reviewed steps that would change that.
+**Status: deployed. Nothing runs unless the outreach cron is explicitly enabled.** The code-level sending switch
+(`SENDING_ENABLED` in `src/lib/outreach/types.ts`) is open, but the cron endpoint answers 503 until `OUTREACH_ENABLED=true`,
+`OUTREACH_CRON_SECRET` and `OUTREACH_SPREADSHEET_ID` are set, and every send must still pass all 14 checks, the limits and (when set)
+the recipient allowlist. Setting `SENDING_ENABLED` back to `false` and deploying disables all sending at once.
 
 ## 1. Workflow
 
@@ -180,6 +182,10 @@ summaries, jobs, applications, chat, calls and the scheduled messages behave exa
 | `OUTREACH_SEND_PER_MEMBER_DAILY` | 10 | 50 | messages per member per IST day |
 | `OUTREACH_SEND_GLOBAL_DAILY` | 25 | 100 (and <= 3 x per-member) | messages across all members per IST day |
 | `OUTREACH_SEND_PER_RUN` | 3 | 10 | messages per cron execution |
+| `OUTREACH_MASTER_TAB` | `Master Contacts` | plain tab name | the tab contacts are read from (a separate tab lets a controlled test use its own contacts) |
+| `OUTREACH_OWNER` | unset (round-robin) | a member id | every imported Connection is owned by this member, so it is sent from that member's Gmail |
+| `OUTREACH_SEND_ONLY_TO` | unset (no allowlist) | - | comma-separated recipients that are the ONLY ones ever sent to; exact addresses or `local+jobsync*@domain` (hard safety net for tests) |
+| `OUTREACH_MANUAL_SINCE` | unset | ISO time | Connections members added by hand before this instant are ignored by the pipeline (so existing Connections are never auto-sent) |
 
 Values above a ceiling, negative, fractional or non-numeric are ignored (the default applies); `0` pauses sending. Unlimited sending is
 not expressible. The import limit says nothing about sending: importing/drafting is reversible, sending is not. Usage counts
@@ -197,15 +203,19 @@ Logs: one `[outreach]` line per call with counts and statuses only (no names, ad
 | Member Gmail "needs re-authorisation" | the member reconnects Gmail at /gmail; held contacts resume automatically |
 | Opt-out request | add the address or domain to `Outreach Exclusions` (takes effect on the next run) |
 
-## 10. Production activation (NOT done - requires explicit approval)
-1. Review and merge this branch; deploy. Nothing changes: `SENDING_ENABLED` is `false` in `src/lib/outreach/types.ts`.
-2. Create the cron-job.org job for `/api/cron/outreach`; set `OUTREACH_SPREADSHEET_ID`, `OUTREACH_CRON_SECRET`, `OUTREACH_ENABLED=true`.
-   Watch imports and drafts for a few days (drafting is safe: drafts only).
-3. Decide the metadata permission (`GMAIL_TRACK_SENT=true`) and have all three members reconnect Gmail, so uncertain sends can be reconciled.
-4. Make the **code change** that sets `SENDING_ENABLED = true` in a reviewed commit (deliberately not an environment variable). Start with
-   `OUTREACH_SEND_PER_MEMBER_DAILY=2`, `OUTREACH_SEND_PER_RUN=1`, send to a handful of known addresses first, verify the Sent folder and
-   the ledger, then raise the limits gradually.
-5. Keep `Outreach Exclusions` current and monitor `SendsNeedingReview` and `FailedSends` daily.
+## 10. Activation procedure
+1. Deploy (done). Nothing changes while `OUTREACH_ENABLED` is unset.
+2. **Controlled test first, on labelled contacts only:** put ~10 labelled contacts in a separate tab of the Outreach Database and set
+   `OUTREACH_MASTER_TAB` to it, `OUTREACH_OWNER` to the member whose Gmail should send, `OUTREACH_SEND_ONLY_TO` to the test inbox
+   (e.g. `me+jobsync*@gmail.com`), `OUTREACH_MANUAL_SINCE` to now, `OUTREACH_SEND_PER_RUN=10`, then `OUTREACH_ENABLED=true`,
+   `OUTREACH_CRON_SECRET`, `OUTREACH_SPREADSHEET_ID`. Call `GET /api/cron/outreach` (Bearer secret) until the 10 contacts are imported,
+   drafted and sent; verify the Connections, drafts, attachments, delivered messages, Sent counter and both milestone notifications.
+3. **Clean up** (`tests/live/outreach-test-tool.live.test.ts`, action `cleanup`): deletes the test Connections, Gmail drafts, tracking and
+   ledger rows, milestone state and counters, and the test tab. Sent test messages stay in the Sent folder/inbox (delete by hand).
+4. **Real activation:** remove `OUTREACH_MASTER_TAB`, `OUTREACH_OWNER` and `OUTREACH_SEND_ONLY_TO`; keep `OUTREACH_MANUAL_SINCE`; set
+   `OUTREACH_DAILY_LIMIT=200` (max imports per day) and the conservative sending limits (defaults 10/member/day, 25/day, 3/run); create
+   the cron-job.org job (every 5-10 minutes, Bearer secret). Watch `SendsNeedingReview`, `FailedSends` and bounces daily; raise limits
+   gradually. To stop immediately: unset `OUTREACH_ENABLED` (or set `OUTREACH_SEND_PER_RUN=0`).
 
 ## 11. Operational risks
 - Two members could still send their own (non-owner) drafts by hand for the same contact; automation cannot edit or remove their drafts.

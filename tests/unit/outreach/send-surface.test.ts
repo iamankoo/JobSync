@@ -21,8 +21,8 @@ const rel = (f: string) => path.relative(root, f).split(path.sep).join("/");
 const using = (re: RegExp) => files.filter((f) => re.test(fs.readFileSync(f, "utf8"))).map(rel).sort();
 
 describe("the sending surface", () => {
-  it("the compile-time gate is closed", () => {
-    expect(SENDING_ENABLED).toBe(false);
+  it("the sending switch is a compile-time constant (not configuration)", () => {
+    expect(SENDING_ENABLED).toBe(true);
   });
 
   it("sendDraftFor / the drafts.send endpoint exist only in gmail/send.ts and the gated wiring in outreach/run.ts", () => {
@@ -33,7 +33,7 @@ describe("the sending surface", () => {
     const run = fs.readFileSync(path.join(root, "lib/outreach/run.ts"), "utf8");
     expect(run).toContain("const gate: boolean = SENDING_ENABLED;");
     expect(run).toContain("...(gate ? { send: () => runSendStep(buildRealSendDeps");
-    expect(fs.readFileSync(path.join(root, "lib/outreach/types.ts"), "utf8")).toContain("export const SENDING_ENABLED = false as const;");
+    expect(fs.readFileSync(path.join(root, "lib/outreach/types.ts"), "utf8")).toContain("export const SENDING_ENABLED = true as const;");
     expect(using(/process\.env\.[A-Z_]*SEND(ING)?_ENABLED/)).toEqual([]);
   });
 

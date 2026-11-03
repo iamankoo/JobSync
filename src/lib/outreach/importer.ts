@@ -34,6 +34,8 @@ export interface ImportDeps {
   /** Epoch ms after which no new contact is started (the function time limit). */
   deadline?: number;
   members?: readonly MemberId[];
+  /** Every imported Connection is owned by this member instead of round-robin (e.g. a controlled test sent from one Gmail account). */
+  ownerOverride?: MemberId | null;
 }
 
 export interface ImportResult {
@@ -152,7 +154,7 @@ export async function runOutreachImport(deps: ImportDeps): Promise<ImportResult>
     let rec = item.rec;
     try {
       if (!rec) {
-        const owner = members[records.filter((r) => r.source === "outreach-database").length % members.length];
+        const owner = deps.ownerOverride ?? members[records.filter((r) => r.source === "outreach-database").length % members.length];
         rec = await deps.sheet.appendTracking(
           {
             row: 0, contactId: contact.contactId, email: contact.personEmail, source: "outreach-database", importStatus: "importing", connectionId: "", ownerMemberId: owner, importDay: day,

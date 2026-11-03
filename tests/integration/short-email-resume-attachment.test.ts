@@ -776,12 +776,12 @@ describe("send workflow with the real Gmail adapters (mock Gmail server)", () =>
     expect(google.sentLog.every((s) => s.mailbox !== "lukky")).toBe(true);
   });
 
-  it("the shipped gate sends nothing even with all mocks wired", async () => {
+  it("a closed gate sends nothing even with all mocks wired", async () => {
     const r = await runSendStep(sendDeps({ gate: false }));
     expect(r.status).toBe("disabled");
     expect(sendPosts()).toHaveLength(0);
-    // and the cycle itself, with the default gate, never calls the send step
-    const out = await runOutreachCycle(cycle({ send: async () => { throw new Error("must not be called"); } }));
+    // and the cycle itself, handed a closed gate, never calls the send step
+    const out = await runOutreachCycle(cycle({ gate: false, send: async () => { throw new Error("must not be called"); } }));
     expect(out.send?.status).toBe("disabled");
     expect(out.errors).toEqual([]);
   });

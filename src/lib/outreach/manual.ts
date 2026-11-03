@@ -21,11 +21,14 @@ export interface ManualDeps {
   connections: { listFresh(): Promise<Connection[]> };
   now: () => Date;
   windowDays?: number;
+  /** ISO time: Connections created before it are never picked up (empty = only the age window applies). */
+  since?: string;
 }
 
 export async function registerManualConnections(deps: ManualDeps): Promise<{ registered: number; alreadyTracked: number; skipped: number }> {
   const at = deps.now();
-  const cutoff = new Date(at.getTime() - (deps.windowDays ?? MANUAL_WINDOW_DAYS) * 86_400_000).toISOString();
+  const ageCutoff = new Date(at.getTime() - (deps.windowDays ?? MANUAL_WINDOW_DAYS) * 86_400_000).toISOString();
+  const cutoff = deps.since && deps.since > ageCutoff ? deps.since : ageCutoff;
   const { records, nextRow } = await deps.sheet.readTracking();
   const byConn = new Set(records.map((r) => r.connectionId).filter(Boolean));
   const byEmail = new Set(records.map((r) => normalizeEmail(r.email).email));

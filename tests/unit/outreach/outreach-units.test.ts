@@ -235,8 +235,9 @@ describe("send eligibility and duplicate-send protection (mocks only)", () => {
   const facts = (over: Partial<DraftFacts> = {}): DraftFacts => ({ member: "anni", to: "jane@acme.example.com", body: "Dear Jane,\n\nHello.", attachments: ["Aniket_Raj_SDE.pdf"], status: "created", reviewFlags: [], ...over });
   const sentSet = new Set<string>();
 
-  it("sending is hard-disabled in Part 2", () => {
-    expect(SENDING_ENABLED).toBe(false);
+  it("the code-level sending switch is a compile-time constant (now open); the outreach cron's own switch stays off by default", () => {
+    expect(SENDING_ENABLED).toBe(true);
+    expect(loadOutreachConfig({} as NodeJS.ProcessEnv).enabled).toBe(false); // nothing runs unless OUTREACH_ENABLED=true
   });
 
   it("everything lines up -> eligible", () => {
@@ -265,7 +266,7 @@ describe("send eligibility and duplicate-send protection (mocks only)", () => {
 
   it("while disabled, attemptSend never touches the mailer, even for an eligible draft", async () => {
     const m = mailer();
-    expect(await attemptSend({ eligible: true, reasons: [] }, m, "anni", "d1")).toEqual({ status: "disabled" });
+    expect(await attemptSend({ eligible: true, reasons: [] }, m, "anni", "d1", false)).toEqual({ status: "disabled" });
     expect(m.sendDraft).not.toHaveBeenCalled();
   });
 
