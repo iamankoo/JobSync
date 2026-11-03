@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { Mail, Send } from "lucide-react";
+import { Mail } from "lucide-react";
 import { Avatar } from "@/components/ui/avatar";
 import { CompanyMark } from "@/components/ui/company-mark";
 import { EmptyState } from "@/components/ui/empty-state";
@@ -50,7 +50,7 @@ function ConnectedMembers({ members }: { members: GmailOverview["members"] }) {
 /** Draft / Sent counts of the member's own Network Finder drafts. */
 function SummaryCard({ label, value, icon: Icon, tone }: { label: string; value: number; icon: typeof Mail; tone: string }) {
   return (
-    <div className="flex min-w-[8.5rem] flex-1 items-center gap-3 rounded-xl border border-line bg-navy-900/70 px-4 py-2.5 sm:flex-none" data-testid={`gmail-count-${label.toLowerCase()}`}>
+    <div className="flex min-w-[8.5rem] items-center gap-3 rounded-xl border border-line bg-navy-900/70 px-4 py-2.5" data-testid={`gmail-count-${label.toLowerCase()}`}>
       <Icon size={20} aria-hidden className={tone} />
       <span className="text-sm text-muted">{label}</span>
       <span className="ml-auto text-xl font-bold tabular-nums" aria-label={`${value} ${label.toLowerCase()}`}>{value}</span>
@@ -110,13 +110,13 @@ export function GmailConnect({ members, drafts, justConnected, error }: { member
   );
   return (
     <div className="space-y-4">
-      <div className="flex flex-wrap items-center gap-x-6 gap-y-3">
+      {/* Title left, the Draft count always centred (at every width), connected members right. */}
+      <div className="grid items-center gap-x-6 gap-y-3 sm:grid-cols-[1fr_auto_1fr]">
         <h1 className="text-xl font-semibold">Gmail drafts</h1>
-        <div className="flex w-full flex-wrap gap-3 sm:w-auto" aria-label="Draft and sent counts" role="group">
+        <div className="flex justify-center" aria-label="Draft count" role="group">
           <SummaryCard label="Draft" value={drafts.drafted} icon={Mail} tone="text-amber-300" />
-          <SummaryCard label="Sent" value={drafts.sent} icon={Send} tone="text-emerald-300" />
         </div>
-        <div className="ml-auto">
+        <div className="sm:justify-self-end">
           <ConnectedMembers members={members} />
         </div>
       </div>

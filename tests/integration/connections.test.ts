@@ -20,7 +20,7 @@ const req = (method: string, data?: unknown, headers: Record<string, string> = {
   });
 const ctx = (connectionId: string) => ({ params: Promise.resolve({ connectionId }) });
 const person = (over: Record<string, unknown> = {}) => ({
-  name: "Priya Sharma", company: "Acme Corp", role: "Engineering Manager", profileUrl: "https://www.linkedin.com/in/priya-test",
+  name: "Priya Sharma", company: "Acme Corp", role: "Engineering Manager", email: "priya@acme.example", roleCategory: "SDE", applyRole: "Software Engineer", profileUrl: "https://www.linkedin.com/in/priya-test",
   message: "Hi Priya,\nI'd love to connect.", notes: "Met at a meetup", ...over,
 });
 
@@ -129,8 +129,9 @@ describe("Connections API", () => {
     expect(sheets.dataRows("Connections")[0][12]).toBe("p.sharma@new.example");
     expect((await updateRoute(req("PUT", { status: "Messaged" }), ctx(connectionId))).status).toBe(200);
     expect(sheets.dataRows("Connections")[0][12]).toBe("p.sharma@new.example"); // untouched by a status change
-    expect((await updateRoute(req("PUT", { email: "" }), ctx(connectionId))).status).toBe(200);
-    expect(((await list("anni"))[0] as unknown as { email?: string }).email).toBeUndefined();
+    // The person's email is required now: it cannot be cleared, and the stored value stays.
+    expect((await updateRoute(req("PUT", { email: "" }), ctx(connectionId))).status).toBe(400);
+    expect(sheets.dataRows("Connections")[0][12]).toBe("p.sharma@new.example");
   });
 
   it("rejects an invalid email and saves nothing", async () => {

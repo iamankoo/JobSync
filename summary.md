@@ -487,7 +487,7 @@ Internal short names stay **Anni, Lukky, Rishii** in the app; drafts use full na
 |---|---|---|---|
 | Anni | Aniket Raj | https://www.linkedin.com/in/raj-aniket/ | https://github.com/iamankoo |
 | Lukky | Lakshya Singh | https://www.linkedin.com/in/lakshya-singh-243510302/ | https://github.com/lukkydiwan |
-| Rishii | Rishi Raj | https://www.linkedin.com/in/rishi-raj-8bb5a8366/ | https://github.com/Rishi-Ra-1j4 |
+| Rishii | Rishi Raj | https://www.linkedin.com/in/rishi-raj-8bb5a8366/ | https://github.com/Rishi-Ra-1j |
 
 (Lukky's LinkedIn was originally supplied without ".com"; corrected to the URL above.) Anni uses he/him.
 

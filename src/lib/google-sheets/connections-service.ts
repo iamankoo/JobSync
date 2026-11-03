@@ -47,6 +47,9 @@ export async function createConnection(memberId: MemberId, input: CreateConnecti
     company: input.company,
     role: input.role,
     email: input.email,
+    companyUrl: input.companyUrl,
+    roleCategory: input.roleCategory,
+    applyRole: input.applyRole,
     profileUrl: input.profileUrl,
     otherUrl: input.otherUrl,
     message: input.message,
@@ -75,7 +78,7 @@ export async function updateConnection(memberId: MemberId, connectionId: string,
     if (hit.value.memberId !== memberId && !isAdmin(memberId)) throw new DomainError("not_connection_owner", NOT_OWNER);
     const next: Connection = { ...hit.value, updatedAt: nowIso(now) };
     // Only the fields present in the request change; an empty optional value clears it.
-    for (const key of ["name", "company", "role", "email", "profileUrl", "otherUrl", "message", "notes", "status"] as const) {
+    for (const key of ["name", "company", "role", "email", "companyUrl", "roleCategory", "applyRole", "profileUrl", "otherUrl", "message", "notes", "status"] as const) {
       if (key in input) (next as unknown as Record<string, unknown>)[key] = input[key];
     }
     await updateConnectionRow(hit.row, next);

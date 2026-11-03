@@ -10,7 +10,8 @@ import { NextRequest } from "next/server";
 vi.mock("@/lib/auth/session", async (orig) => ({ ...(await orig<typeof import("@/lib/auth/session")>()), getSession: vi.fn() }));
 
 import { getSession } from "@/lib/auth/session";
-import { POST as addConnection } from "@/app/api/connections/route";
+import { createConnection } from "@/lib/google-sheets/connections-service";
+import { createConnectionSchema } from "@/lib/validation/connections";
 import { PUT as editConnection } from "@/app/api/connections/[connectionId]/route";
 import { GET as draftStatus } from "@/app/api/connections/[connectionId]/draft/route";
 import { GET as connect } from "@/app/api/gmail/connect/route";
@@ -26,7 +27,7 @@ import { existingConnections, existingDraftDeps, existingJobs } from "@/lib/netw
 import { runPendingDrafts, type PipelineDeps } from "@/lib/network-finder/pipeline";
 import { runScheduledCycle } from "@/lib/network-finder/run";
 import { createSheetsStores } from "@/lib/network-finder/sheets-stores";
-import type { Connection } from "@/types/domain";
+
 import { FakeSheets } from "../helpers/fake-sheets";
 
 let sheets: FakeSheets;
@@ -35,7 +36,7 @@ const FULL: Record<MemberId, string> = { anni: "Aniket Raj", lukky: "Lakshya Sin
 const LINKS: Record<MemberId, { linkedin: string; github: string }> = {
   anni: { linkedin: "https://www.linkedin.com/in/raj-aniket/", github: "https://github.com/iamankoo" },
   lukky: { linkedin: "https://www.linkedin.com/in/lakshya-singh-243510302/", github: "https://github.com/lukkydiwan" },
-  rishii: { linkedin: "https://www.linkedin.com/in/rishi-raj-8bb5a8366/", github: "https://github.com/Rishi-Ra-1j4" },
+  rishii: { linkedin: "https://www.linkedin.com/in/rishi-raj-8bb5a8366/", github: "https://github.com/Rishi-Ra-1j" },
 };
 const as = (m: MemberId | null) => vi.mocked(getSession).mockResolvedValue(m ? { memberId: m, expiresAt: 9_999_999_999 } : null);
 const idToken = (email: string) => `h.${Buffer.from(JSON.stringify({ email, email_verified: true })).toString("base64url")}.s`;
@@ -79,11 +80,10 @@ async function connectGmail(m: MemberId) {
   const state = new URL(start.headers.get("location")!).searchParams.get("state")!;
   await callback(new NextRequest(`http://localhost:3000/api/gmail/callback?code=code-for-${m}&state=${encodeURIComponent(state)}`, { headers: { cookie: `jobsync_gmail_oauth=${nonce}` } }));
 }
+/** A HISTORICAL record (no Role to Apply): the permissive service path, as Network Finder and old rows produce them. */
 const post = async (m: MemberId, body: Record<string, unknown>) => {
   as(m);
-  const res = await addConnection(new Request("http://localhost/api/connections", { method: "POST", headers: { host: "localhost", origin: "http://localhost", "content-type": "application/json" }, body: JSON.stringify(body) }));
-  expect(res.status).toBe(201);
-  return (await res.json()).data as Connection;
+  return createConnection(m, createConnectionSchema.parse(body));
 };
 const ledger = () => sheets.dataRows("NF_Drafts");
 const recordsFor = (id: string) => ledger().filter((r) => r[3] === id).map((r) => [r[1], r[5]]).sort();

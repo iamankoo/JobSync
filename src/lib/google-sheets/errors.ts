@@ -50,6 +50,8 @@ export type DomainErrorCode =
   | "not_call_starter"
   | "member_file_not_found"
   | "resume_limit"
+  | "resume_name_taken"
+  | "resume_not_pdf"
   | "member_files_unavailable";
 
 export class DomainError extends Error {

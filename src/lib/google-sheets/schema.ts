@@ -46,8 +46,9 @@ export const TABS = {
   connections: {
     name: "Connections",
     headers: ["ConnectionID", "MemberID", "Name", "Company", "Role", "ProfileUrl", "OtherUrl", "Message", "Notes", "Status", "CreatedAt", "UpdatedAt"],
-    // Optional trailing column (column M): a sheet without the header keeps working; emails are still stored there.
-    optionalHeaders: ["Email"],
+    // Optional trailing columns (M..P): a sheet without the headers keeps working; the values are still stored there.
+    // Role (E) stays the person's designation; Message/Notes/ProfileUrl/OtherUrl are historical and are never deleted.
+    optionalHeaders: ["Email", "CompanyUrl", "RoleCategory", "ApplyRole"],
     optional: true,
   },
   // Group chat (all three members). Optional tabs: without them the chat page says it is not set up.

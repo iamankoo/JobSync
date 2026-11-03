@@ -97,7 +97,7 @@ export function ConnectionsBrowser({ connections: initial, me, timeZone }: { con
                   <th role="columnheader" scope="col" className={TH_CLASS}>#</th>
                   <th role="columnheader" scope="col" className={TH_CLASS}>Name</th>
                   <th role="columnheader" scope="col" className={TH_CLASS}>Company</th>
-                  <th role="columnheader" scope="col" className={TH_CLASS}>Role / Title</th>
+                  <th role="columnheader" scope="col" className={TH_CLASS}>Designation</th>
                   <th role="columnheader" scope="col" className={TH_CLASS}>Email</th>
                   <th role="columnheader" scope="col" className={TH_CLASS}>Added by</th>
                   <th role="columnheader" scope="col" className={TH_CLASS}>Added on</th>
@@ -127,7 +127,7 @@ export function ConnectionsBrowser({ connections: initial, me, timeZone }: { con
                           <span className="text-muted">—</span>
                         )}
                       </td>
-                      <td role="cell" data-label="Role / Title" className={cellClass("")}>
+                      <td role="cell" data-label="Designation" className={cellClass("")}>
                         {c.role ? <span className="min-w-0 break-words max-xl:text-right">{c.role}</span> : <span className="text-muted">—</span>}
                       </td>
                       <td role="cell" data-label="Email" className={cellClass("")}>

@@ -97,7 +97,11 @@ export function buildRealDeps(config: NetworkFinderConfig = loadNetworkFinderCon
         return notifyMember(member, payload);
       },
     },
-    research: createCompanyResearcher(fetcher, boards, { deadline: () => built.runState?.deadline }),
+    research: createCompanyResearcher(fetcher, boards, {
+      deadline: () => built.runState?.deadline,
+      // Verified research is kept in the existing NF_State notes and reused for the three drafts and for later runs.
+      ...(stores.ledger.getNote && stores.ledger.setNote ? { store: { get: (k: string) => stores.ledger.getNote!(k), set: (k: string, v: string) => stores.ledger.setNote!(k, v) } } : {}),
+    }),
     queue: stores.queue,
     registry: stores.registry,
     ledger: stores.ledger,

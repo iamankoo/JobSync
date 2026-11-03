@@ -146,6 +146,68 @@ test("resumes: upload (+), count, open/download, delete, own only", async ({ pag
   expect((await dataRows(request, "MemberFiles")).filter((r) => r[1] === "rishii")).toHaveLength(1);
 });
 
+test("resumes: rename a PDF (pencil) keeps the file, id and bytes; invalid and duplicate names are refused", async ({ page, request }) => {
+  await signIn(page, "Rishii", "0003");
+  await openProfile(page);
+  const card = page.getByRole("region", { name: "My Resumes" });
+  await page.locator("#resume-input").setInputFiles({ name: "Rishii CV.pdf", mimeType: "application/pdf", buffer: pdf("one") });
+  await expect(card.getByText("Rishii CV.pdf", { exact: true })).toBeVisible();
+  await page.locator("#resume-input").setInputFiles({ name: "Second.pdf", mimeType: "application/pdf", buffer: pdf("two") });
+  await expect(card.getByTestId("resume-count")).toHaveText("2 / 10 resumes");
+  const before = (await dataRows(request, "MemberFiles")).find((r) => r[4] === "Rishii CV.pdf")!;
+
+  // the pencil sits beside each PDF filename
+  await card.getByRole("button", { name: "Rename Rishii CV.pdf" }).click();
+  const input = card.getByLabel("New file name");
+  await expect(input).toHaveValue("Rishii CV");
+  // refused: empty, invalid characters, a name already used
+  await input.fill("   ");
+  await card.getByRole("button", { name: "Save new name" }).click();
+  await expect(card.getByRole("alert")).toContainText("Enter a file name.");
+  await input.fill("bad/name");
+  await card.getByRole("button", { name: "Save new name" }).click();
+  await expect(card.getByRole("alert")).toContainText("cannot contain");
+  await input.fill("second");
+  await card.getByRole("button", { name: "Save new name" }).click();
+  await expect(card.getByRole("alert")).toContainText("already have a resume with that name");
+  expect((await dataRows(request, "MemberFiles")).filter((r) => r[1] === "rishii").map((r) => r[4]).sort()).toEqual(["Rishii CV.pdf", "Second.pdf"]);
+
+  // accepted: whitespace trimmed, .pdf kept automatically
+  await input.fill("  Rishi SDE Resume  ");
+  await card.getByRole("button", { name: "Save new name" }).click();
+  await expect(card.getByText("Rishi SDE Resume.pdf", { exact: true })).toBeVisible();
+  await expect(card.getByText("Rishii CV.pdf", { exact: true })).toHaveCount(0);
+  await reloadUnlocked(page);
+  await expect(card.getByText("Rishi SDE Resume.pdf", { exact: true })).toBeVisible();
+
+  // metadata only: same record, same storage reference, size and type
+  const after = (await dataRows(request, "MemberFiles")).find((r) => r[4] === "Rishi SDE Resume.pdf")!;
+  expect(after.filter((_, i) => i !== 4)).toEqual(before.filter((_, i) => i !== 4));
+
+  // open and download still work with the new name and the same bytes
+  const open = await card.getByRole("link", { name: "Open Rishi SDE Resume.pdf" }).getAttribute("href");
+  const view = await page.request.get(open!);
+  expect(view.status()).toBe(200);
+  expect(view.headers()["content-type"]).toBe("application/pdf");
+  expect(view.headers()["content-disposition"]).toContain("Rishi SDE Resume.pdf");
+  expect((await view.body()).equals(pdf("one"))).toBe(true);
+  const dl = await page.request.get(`${open}?download=1`);
+  expect(dl.headers()["content-disposition"]).toMatch(/^attachment;/);
+
+  // another member cannot rename it
+  const anni = await page.context().browser()!.newContext({ baseURL: "http://localhost:3102", extraHTTPHeaders: { "x-test-key": "e2e-isolated-seed-key" } });
+  const anniPage = await anni.newPage();
+  await signIn(anniPage, "Anni", "0001");
+  const denied = await anniPage.request.patch(open!, { data: { fileName: "Hijack" } });
+  expect([403, 404]).toContain(denied.status());
+  await anni.close();
+
+  // delete still works
+  await card.getByRole("button", { name: "Delete Rishi SDE Resume.pdf" }).click();
+  await card.getByRole("group", { name: "Confirm deleting Rishi SDE Resume.pdf" }).getByRole("button", { name: "Delete" }).click();
+  await expect(card.getByText("Rishi SDE Resume.pdf", { exact: true })).toHaveCount(0);
+});
+
 test("resume limit: the + button is disabled at 10", async ({ page, request }) => {
   const rows = Array.from({ length: 10 }, (_, i) => [`res_e2e${i}`, "lukky", "resume", `file_e2e${i}`, `cv-${i}.pdf`, "application/pdf", "100", new Date(Date.now() - i * 60_000).toISOString()]);
   await appendRows(request, "MemberFiles", rows);
@@ -490,7 +552,11 @@ test("Gmail Drafts: empty state with 0/0, then my real drafts with Drafted/Sent,
   await expect(page.getByRole("heading", { name: "Drafts are coming soon" })).toBeVisible();
   await expect(page.getByText("Your personalized Network Finder emails will appear here once drafts are created.")).toBeVisible();
   await expect(page.getByTestId("gmail-count-draft")).toContainText("0");
-  await expect(page.getByTestId("gmail-count-sent")).toContainText("0");
+  await expect(page.getByTestId("gmail-count-sent")).toHaveCount(0); // no Sent counter any more
+  // the Draft count is centred in the page's content area (beside the sidebar on desktop) at every width
+  const card = (await page.getByTestId("gmail-count-draft").boundingBox())!;
+  const area = (await page.getByTestId("gmail-count-draft").locator("xpath=../..").boundingBox())!;
+  expect(Math.abs(card.x + card.width / 2 - (area.x + area.width / 2))).toBeLessThanOrEqual(2);
   for (const name of ["Anni", "Lukky", "Rishii"]) await expect(page.getByTestId("gmail-connected-members").getByRole("img", { name: `${name}: Gmail connected` })).toBeVisible();
 
   // Real rows, as Network Finder writes them: Connections + NF_Drafts (Lukky's draft must not appear for Anni).
@@ -504,13 +570,12 @@ test("Gmail Drafts: empty state with 0/0, then my real drafts with Drafted/Sent,
   const john = page.getByTestId("gmail-draft-row").filter({ hasText: "John Smith" });
   for (const text of ["Acme Technologies", "Head of Engineering", "john@acme.example", "Drafted"]) await expect(john).toContainText(text);
   await expect(page.getByTestId("gmail-count-draft")).toContainText("3");
-  await expect(page.getByTestId("gmail-count-sent")).toContainText("0");
 
   // The sent-draft tracker marks John's draft sent → Sent, counts 2 / 1.
   await updateRows(request, "NF_Drafts", { DraftKey: "contact:conn_e2ea:anni" }, { Status: "sent" });
   await reload(page);
   await expect(john).toContainText("Sent");
   await expect(page.getByTestId("gmail-count-draft")).toContainText("2");
-  await expect(page.getByTestId("gmail-count-sent")).toContainText("1");
+  await expect(page.getByTestId("gmail-count-sent")).toHaveCount(0);
   expect(await horizontalOverflow(page)).toBeLessThanOrEqual(0);
 });

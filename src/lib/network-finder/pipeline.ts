@@ -19,7 +19,7 @@ import { inferPattern, predictEmail, type PatternEvidence } from "./email-patter
 import { ApolloPoolExhausted, ProviderError } from "./errors";
 import type { ConnectionsGateway, JobsGateway } from "./gateways";
 import { toConnectionInput, toJobInput } from "./mapping";
-import { roleForConnection, type RoleReading } from "./connection-role";
+import { roleForManual, type RoleReading } from "./connection-role";
 import { ruleBrain, type Brain } from "./providers/brain";
 import type { CompanySource, ContactFinder, ContactProvider, JobSource, SearchStats } from "./providers/types";
 import { planBatch, qualifyCompany } from "./qualify";
@@ -413,7 +413,7 @@ export interface DraftTarget {
    * Present for a MANUALLY added connection: its description (Notes, then the suggested message) is the primary source of
    * the role. The draft then names that role, researches the company, and never falls back to a default role.
    */
-  manual?: { notes?: string; message?: string };
+  manual?: { notes?: string; message?: string; applyRole?: string };
 }
 
 const GENERIC_TITLE_WORDS = new Set(["engineer", "developer", "intern", "internship", "software", "engineering", "associate", "junior", "senior"]);
@@ -445,7 +445,7 @@ export async function draftForContact(deps: Pick<PipelineDeps, "config" | "brain
   // The company's real openings already in Jobs. Each member gets the opening that fits THEIR verified skills.
   const known: EmailJob[] = [];
   // A manual connection names its own role: the Jobs sheet is not consulted (and not read) for it.
-  const reading: RoleReading | undefined = t.manual ? roleForConnection(t.manual) : undefined;
+  const reading: RoleReading | undefined = t.manual ? roleForManual(t.manual) : undefined;
   try {
     if (deps.jobs && !reading) known.push(...jobsForCompany(await deps.jobs.list(), t.company.name));
   } catch {
@@ -474,7 +474,8 @@ export async function draftForContact(deps: Pick<PipelineDeps, "config" | "brain
           r = await research();
           if (reading.status === "found") {
             const board = matchingBoardJob(reading.role.title, r?.jobs ?? []);
-            const description = [t.manual?.notes?.trim(), board?.description].filter(Boolean).join("\n").slice(0, 4000);
+            // The chosen Role to Apply is the role; old free-text notes only describe historical records that have none.
+            const description = [t.manual?.applyRole ? undefined : t.manual?.notes?.trim(), board?.description].filter(Boolean).join("\n").slice(0, 4000);
             job = { title: reading.role.title, ...(reading.role.focus ? { focus: reading.role.focus } : {}), internship: reading.role.internship, ...(description ? { description } : {}) };
           } else {
             review = reading.status === "ambiguous" ? `review: several roles in the description (${reading.roles.join(" / ")}); neutral enquiry drafted` : "review: no role found in the description; neutral enquiry drafted";
@@ -486,10 +487,15 @@ export async function draftForContact(deps: Pick<PipelineDeps, "config" | "brain
         }
         const website = t.company.website ?? r?.website;
         const description = t.company.description ?? r?.description;
+        // Honest research report: a draft written without verified company facts is flagged for the member, and the pages
+        // the facts came from are recorded with the draft (ledger detail).
+        if (reading && (!r || r.status === "unavailable" || !(r.description || r.pages?.length))) review = [review, "review: company research unavailable; no company facts were used"].filter(Boolean).join("; ");
+        else if (reading && r?.pages?.length) review = [review, `sources: ${r.pages.map((p) => p.url).join(" ")}`.slice(0, 450)].filter(Boolean).join("; ");
+        const facts = r?.facts;
         const neutral = Boolean(reading) && !job;
         const plan = buildEmailPlan({
           memberId,
-          company: { name: t.company.name, ...(website ? { website } : {}), ...(description ? { description } : {}) },
+          company: { name: t.company.name, ...(website ? { website } : {}), ...(description ? { description } : {}), ...(facts?.length ? { facts } : {}) },
           person: { name: t.name, title: t.title },
           ...(t.email ? { recipientEmail: t.email } : {}),
           ...(job ? { job } : {}),
@@ -780,7 +786,9 @@ export async function runPendingDrafts(deps: PipelineDeps, options: { days?: num
   const companyOf = (c: Connection) => {
     const s = selectedIds.get(c.connectionId);
     const rec = (s && registry.find((r) => r.key === s.companyKey)) || registry.find((r) => r.name.trim().toLowerCase() === (c.company ?? "").trim().toLowerCase());
-    return { name: rec?.name || c.company?.trim() || "your team", ...(rec?.website ? { website: rec.website } : {}) };
+    // A Company URL the member typed is the research starting point, ahead of any discovered website.
+    const website = c.companyUrl || rec?.website;
+    return { name: rec?.name || c.company?.trim() || "your team", ...(website ? { website } : {}) };
   };
   // Every member's mailbox (the fan-out skips members without Gmail); the snapshot keeps ledger reads to one per run.
   const runDeps: PipelineDeps = {
@@ -810,7 +818,7 @@ export async function runPendingDrafts(deps: PipelineDeps, options: { days?: num
           title: c.role ?? "",
           ...(c.email ? { email: c.email } : {}),
           company: companyOf(c),
-          ...(isNetworkFinderEntry(c) ? {} : { manual: { ...(c.notes ? { notes: c.notes } : {}), ...(c.message ? { message: c.message } : {}) } }),
+          ...(isNetworkFinderEntry(c) ? {} : { manual: { ...(c.notes ? { notes: c.notes } : {}), ...(c.message ? { message: c.message } : {}), ...(c.applyRole ? { applyRole: c.applyRole } : {}) } }),
         });
     result.checked += 1;
     result.remaining -= 1;

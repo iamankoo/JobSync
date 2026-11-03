@@ -46,3 +46,24 @@ export function normalizeJobUrl(input: string): string | null {
   const query = params.length ? `?${new URLSearchParams(params).toString()}` : "";
   return `${host}${port}${path}${query}`;
 }
+
+/** A well-formed public DNS name: never an IP literal, `localhost` or an internal suffix (a supplied address must not point a fetch inward). */
+export function isPublicHostname(host: string): boolean {
+  const h = host.toLowerCase();
+  if (!/^[a-z0-9-]+(\.[a-z0-9-]+)+$/.test(h) || h.length > 253) return false;
+  if (/^[0-9.]+$/.test(h)) return false;
+  return !/\.(local|localhost|internal|intranet|lan|home|corp|test|invalid|example)$/.test(h);
+}
+
+/**
+ * Company website as typed by a member -> a canonical http(s) URL (https added when the scheme is missing, fragment dropped).
+ * Returns null when it is not a public website address. Never invents a URL: empty input is the caller's "absent".
+ */
+export function normalizeCompanyUrl(input: string): string | null {
+  const t = input.trim();
+  if (!t) return null;
+  const url = parseHttpUrl(/^[a-z][a-z0-9+.-]*:\/\//i.test(t) ? t : `https://${t}`);
+  if (!url || !isPublicHostname(url.hostname)) return null;
+  url.hash = "";
+  return url.toString();
+}

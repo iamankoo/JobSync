@@ -4,6 +4,7 @@ vi.mock("@/lib/auth/session", () => ({ getSession: vi.fn() }));
 
 import { getSession } from "@/lib/auth/session";
 import { POST as postConnection } from "@/app/api/connections/route";
+import { createConnection } from "@/lib/google-sheets/connections-service";
 import { DELETE as deleteConnection, PUT as putConnection } from "@/app/api/connections/[connectionId]/route";
 import { POST as postMessage } from "@/app/api/chat/messages/route";
 import { POST as postRead } from "@/app/api/chat/read/route";
@@ -37,7 +38,7 @@ async function subscribeAll() {
 }
 const addConnection = (m: MemberId, body: Record<string, unknown>) => {
   as(m);
-  return postConnection(req("/api/connections", "POST", body));
+  return postConnection(req("/api/connections", "POST", { company: "Acme Corp", email: "contact@acme.example", roleCategory: "SDE", applyRole: "Software Engineer", ...body }));
 };
 const say = (m: MemberId, text: string) => {
   as(m);
@@ -87,7 +88,9 @@ describe("new connection notifications", () => {
   }
 
   it("works for a person with no company or role", async () => {
-    await addConnection("anni", { name: "Rahul" });
+    // Only a historical / automated record can lack a company now (the Add form requires one).
+    as("anni");
+    await createConnection("anni", { name: "Rahul", status: "Not Connected" });
     expect(sent[0].payload.body).toBe("tap to view in Connections.");
   });
 

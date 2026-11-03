@@ -36,7 +36,7 @@ async function addJob(m: MemberId, n: number) {
 }
 async function addConn(m: MemberId, name: string) {
   as(m);
-  const res = await createConnRoute(json("POST", { name, company: "Acme", role: "Recruiter", email: `${name.toLowerCase().replace(/\W/g, "")}@acme.example`, notes: "Role: Backend Engineer" }));
+  const res = await createConnRoute(json("POST", { name, company: "Acme", role: "Recruiter", roleCategory: "SDE", applyRole: "Backend Engineer", email: `${name.toLowerCase().replace(/\W/g, "")}@acme.example`, notes: "Role: Backend Engineer" }));
   expect(res.status).toBe(201);
   return (await res.json()).data as { connectionId: string };
 }

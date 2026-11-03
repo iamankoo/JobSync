@@ -22,7 +22,7 @@ describe("member identity (central config)", () => {
   const expected = {
     anni: ["Anni", "Aniket Raj", "https://www.linkedin.com/in/raj-aniket/", "https://github.com/iamankoo"],
     lukky: ["Lukky", "Lakshya Singh", "https://www.linkedin.com/in/lakshya-singh-243510302/", "https://github.com/lukkydiwan"],
-    rishii: ["Rishii", "Rishi Raj", "https://www.linkedin.com/in/rishi-raj-8bb5a8366/", "https://github.com/Rishi-Ra-1j4"],
+    rishii: ["Rishii", "Rishi Raj", "https://www.linkedin.com/in/rishi-raj-8bb5a8366/", "https://github.com/Rishi-Ra-1j"],
   };
   it.each(IDS)("%s → full name + own LinkedIn + own GitHub in the signature", (id) => {
     const m = MEMBERS.find((x) => x.id === id)!;
