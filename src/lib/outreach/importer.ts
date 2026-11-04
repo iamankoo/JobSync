@@ -1,5 +1,7 @@
 /**
- * Daily import of Outreach Database contacts into the existing Connections, ONE AT A TIME, with a write-ahead claim.
+ * Import of Outreach Database contacts into the existing (shared) Connections, ONE AT A TIME, with a write-ahead claim. The limit is
+ * GLOBAL (all members together) over a ROLLING 24 hours, never a calendar day. Each Connection is one shared record; the per-member
+ * e-mails are created by the drafting worker, not here.
  *
  * For each contact: (1) a tracking row "importing" is written and read back; (2) Connections is re-read and, only if the
  * e-mail is still absent, the Connection is created through the existing service; (3) the tracking row becomes "added" with
@@ -36,6 +38,8 @@ export interface ImportDeps {
   members?: readonly MemberId[];
   /** Every imported Connection is owned by this member instead of round-robin (e.g. a controlled test sent from one Gmail account). */
   ownerOverride?: MemberId | null;
+  /** An unfinished claim is only taken over by another call once it has not been touched for this long (a worker is still on it before). Default 0. */
+  staleClaimMs?: number;
 }
 
 export interface ImportResult {
@@ -124,10 +128,13 @@ export async function runOutreachImport(deps: ImportDeps): Promise<ImportResult>
     } else if (r.attempts >= MAX_IMPORT_ATTEMPTS) {
       await commit(deps.sheet, r, { importStatus: "import_failed", updatedAt: stamp });
       res.failed += 1;
-    } else if (r.source === "outreach-database") retry.push(r);
+    } else if (r.source === "outreach-database" && at.getTime() - Date.parse(r.updatedAt || r.claimedAt) >= (deps.staleClaimMs ?? 0)) retry.push(r);
   }
 
-  const countedToday = () => records.filter((r) => r.source === "outreach-database" && r.importDay === day && (r.importStatus === "added" || r.importStatus === "importing") && r.lastError !== "linked-existing").length;
+  // Rolling 24 hours from the FIRST claim of each contact (a retry never moves it). Contacts linked to an already existing Connection do not count.
+  const windowStart = at.getTime() - 24 * 60 * 60_000;
+  const inWindow = (rows: readonly TrackingRecord[]) => rows.filter((r) => r.source === "outreach-database" && Date.parse(r.claimedAt) > windowStart && (r.importStatus === "added" || r.importStatus === "importing") && r.lastError !== "linked-existing");
+  const countedToday = () => inWindow(records).length;
   const quota = () => Math.max(0, deps.dailyLimit - countedToday());
 
   // 2. The queue: eligible, untracked, not already in Connections (manual or earlier), best-identified first.
@@ -177,6 +184,25 @@ export async function runOutreachImport(deps: ImportDeps): Promise<ImportResult>
         await commit(deps.sheet, rec, { importStatus: "added", connectionId: there.connectionId, ownerMemberId: there.memberId, addedAt: stamp, lastError: "linked-existing", updatedAt: stamp });
         res.linkedExisting += 1;
         continue;
+      }
+      // Concurrency guard (new AND resumed claims), decided from ONE fresh read of the tracking tab:
+      //  1. the FIRST live claim for a contact (sheet order) is the only one allowed to create its Connection; later duplicates stand down;
+      //  2. a claim may create a Connection only if its place among the live claims of the last 24 hours, in sheet order, is within the limit.
+      // Both rules are deterministic, so overlapping workers can never create a duplicate Connection or exceed the limit together.
+      {
+        const live = inWindow((await deps.sheet.readTracking()).records).sort((a, b) => a.row - b.row);
+        const firstPerContact = live.filter((r, i) => live.findIndex((x) => x.contactId === r.contactId) === i);
+        const mine = rec;
+        if (!firstPerContact.some((r) => r.row === mine.row)) {
+          if (live.some((r) => r.contactId === mine.contactId && r.row < mine.row)) await commit(deps.sheet, mine, { importStatus: "import_failed", lastError: "duplicate-claim", updatedAt: stamp });
+          continue; // another worker owns this contact
+        }
+        const rank = firstPerContact.findIndex((r) => r.row === mine.row) + 1;
+        if (rank > deps.dailyLimit) {
+          await commit(deps.sheet, mine, { importStatus: "import_failed", lastError: "over-limit", updatedAt: stamp });
+          res.stoppedBecause = "daily-limit";
+          break;
+        }
       }
       const created = await deps.connections.create(rec.ownerMemberId as MemberId, connectionInputFor(contact));
       // Only now is the contact "added": the Connection exists.

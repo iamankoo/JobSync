@@ -68,6 +68,8 @@ export interface ContactSpec {
   company?: string;
   owner?: MemberId;
   role?: string;
+  /** Whose mailbox holds a personalised draft for this Connection. Default: only the owner (legacy); pass all three for the shared-Connection fan-out. */
+  members?: MemberId[];
 }
 
 export function buildSendFixture(specs: ContactSpec[] = [{ email: "jane@acme.example.com", name: "Jane Doe", company: "Acme" }], limits: Partial<SendLimits> = {}) {
@@ -88,13 +90,15 @@ export function buildSendFixture(specs: ContactSpec[] = [{ email: "jane@acme.exa
       connectionId, memberId: owner, name: s.name || "Hiring Team", ...(s.company ? { company: s.company } : {}), email: s.email, roleCategory: "SDE", applyRole: role, status: "Not Connected",
       createdAt: "2026-11-05T05:00:00.000Z", updatedAt: "2026-11-05T05:00:00.000Z",
     });
-    const draftId = `draft_${i}_${owner}`;
-    draftLedger.set(draftKeyFor(connectionId, owner), { status: "created", detail: `attached: ${resumeFile(owner)}`, gmailDraftId: draftId, threadId: `thr_${i}` });
     const first = s.name ? s.name.split(" ")[0] : undefined;
-    gmail.drafts.set(draftId, {
-      status: "ok",
-      draft: { to: s.email, from: gmail.addresses[owner] ?? "", subject: `Application for ${role} — ${s.company ?? "your company"}`, body: draftBody({ member: owner, ...(first ? { first } : {}), ...(s.company ? { company: s.company } : {}), role }), attachments: [{ filename: resumeFile(owner), size: resumeBytes(owner).length }], threadId: `thr_${i}` } satisfies DraftReadback,
-    });
+    for (const m of s.members ?? [owner]) {
+      const draftId = `draft_${i}_${m}`;
+      draftLedger.set(draftKeyFor(connectionId, m), { status: "created", detail: `attached: ${resumeFile(m)}`, gmailDraftId: draftId, threadId: `thr_${i}_${m}` });
+      gmail.drafts.set(draftId, {
+        status: "ok",
+        draft: { to: s.email, from: gmail.addresses[m] ?? "", subject: `Application for ${role} — ${s.company ?? "your company"}`, body: draftBody({ member: m, ...(first ? { first } : {}), ...(s.company ? { company: s.company } : {}), role }), attachments: [{ filename: resumeFile(m), size: resumeBytes(m).length }], threadId: `thr_${i}_${m}` } satisfies DraftReadback,
+      });
+    }
     tracking.push({
       row: 0, contactId: contactIdFor(s.email), email: s.email, source: "outreach-database", importStatus: "added", connectionId, ownerMemberId: owner, importDay: "2026-11-05", claimedAt: "2026-11-05T05:00:00.000Z",
       addedAt: `2026-11-05T05:00:0${i}.000Z`, attempts: 1, segment: "person-and-company", targetRole: role, roleBasis: "default-fallback", processing: "drafted", drafts: emptyDrafts(), reviewReason: "", ...emptySendFields(), sentAt: "", lastError: "", updatedAt: "",

@@ -624,7 +624,7 @@ describe("send workflow with the real Gmail adapters (mock Gmail server)", () =>
         if (cur) await recordDraft({ ...cur, status: "sent", checkedAt: clock.toISOString() });
       },
     },
-    limits: { ...DEFAULT_SEND_LIMITS, perRun: 10 },
+    limits: { ...DEFAULT_SEND_LIMITS, perRun: 20 },
     now: () => clock,
     timezone: "Asia/Kolkata",
     ...over,
@@ -643,28 +643,29 @@ describe("send workflow with the real Gmail adapters (mock Gmail server)", () =>
     clock = new Date("2026-11-06T06:00:00.000Z");
   });
 
-  it("sends each contact ONCE, from the OWNER's own mailbox, with the owner's own verified resume; the other mailboxes' drafts are untouched", async () => {
+  it("one shared Connection -> THREE separately personalised e-mails, each sent from that member's OWN Gmail with that member's OWN resume (4 contacts -> 12 sends)", async () => {
     const r = await runSendStep(sendDeps());
-    expect(r).toMatchObject({ status: "ran", sent: 4, errors: [] });
-    expect(google.sentLog).toHaveLength(4);
-    const owners = tracking().map((t) => [t[1], t[5]]);
-    for (const [email, owner] of owners) {
-      const sent = google.sentLog.filter((s) => google.drafts.find((d) => d.id === s.draftId)!.to === email);
-      expect(sent, email).toHaveLength(1);
-      expect(sent[0].mailbox).toBe(owner); // the correct member's Gmail account
-      const d = google.drafts.find((x) => x.id === sent[0].draftId)!;
-      expect(d.mailbox).toBe(owner);
-      expect(d.files).toHaveLength(1);
-      expect(d.files[0].name).toMatch(owner === "anni" ? /^Aniket/ : owner === "lukky" ? /^Lakshya/ : /^Rishi/);
+    expect(r).toMatchObject({ status: "ran", sent: 12, errors: [] });
+    expect(google.sentLog).toHaveLength(12);
+    for (const [email] of tracking().map((t) => [t[1]])) {
+      const sent = google.sentLog.filter((x) => google.drafts.find((d) => d.id === x.draftId)!.to === email);
+      expect(sent.map((x) => x.mailbox).sort(), email).toEqual(["anni", "lukky", "rishii"]); // the same recipient, one e-mail from each account
+      for (const x of sent) {
+        const d = google.drafts.find((y) => y.id === x.draftId)!;
+        expect(d.mailbox).toBe(x.mailbox); // sent from the member whose draft it is
+        expect(d.files).toHaveLength(1);
+        expect(d.files[0].name).toMatch(x.mailbox === "anni" ? /^Aniket/ : x.mailbox === "lukky" ? /^Lakshya/ : /^Rishi/); // never another member's resume
+      }
     }
-    // the two non-owner drafts for every contact were never sent
-    expect(google.drafts.filter((d) => !google.sentDrafts.has(d.id))).toHaveLength(8);
-    // tracking + ledger + Connections
-    expect(tracking().every((t) => t[21] === "sent" && t[26] === t[5] && /@gmail\.example$/.test(t[27]) && /^msg-\d$/.test(t[28]) && /\.pdf$/.test(t[29]))).toBe(true);
+    expect(google.drafts.filter((d) => !google.sentDrafts.has(d.id))).toHaveLength(0);
+    // tracking (one row per contact) + ledger (one row per member and recipient) + Connections
+    expect(tracking().every((t) => t[21] === "sent" && t[26] === "anni,lukky,rishii" && t[27].split(",").length === 3 && t[27].split(",").every((a: string) => /@gmail\.example$/.test(a)) && /^msg-\d+(,msg-\d+){2}$/.test(t[28]) && t[29].split("; ").length === 3)).toBe(true);
+    expect(ledgerRows()).toHaveLength(12);
+    expect(new Set(ledgerRows().map((l) => l[0])).size).toBe(12); // member|recipient keys are all distinct
     expect(ledgerRows().every((l) => /^[0-9a-f]{64}$/.test(l[10]) && Number(l[11]) > 0 && l[14].startsWith("msg-") && l[19] === "2026-11-06")).toBe(true);
     for (const c of (await realConnectionsPort.listFresh())) expect(c.status).toBe("Messaged");
     // exact message identity: the sent message IS the verified draft
-    for (const s of google.sentLog) expect(s.raw).toBe(google.drafts.find((d) => d.id === s.draftId)!.raw);
+    for (const x of google.sentLog) expect(x.raw).toBe(google.drafts.find((d) => d.id === x.draftId)!.raw);
   });
 
   it("counters count only confirmed sends, per day and per member", async () => {
@@ -672,16 +673,16 @@ describe("send workflow with the real Gmail adapters (mock Gmail server)", () =>
     const { records } = await outreach.sheet.readTracking();
     const { records: ledger } = await outreach.sheet.readSendLedger();
     const c = computeCounters(records, "2026-11-06", 0, { ledger });
-    expect(c.sentToday).toBe(4);
-    expect(c.sentTodayByMember.anni + c.sentTodayByMember.lukky + c.sentTodayByMember.rishii).toBe(4);
+    expect(c.sentToday).toBe(12);
+    expect(c.sentTodayByMember).toEqual({ anni: 4, lukky: 4, rishii: 4 }); // independent per-member counts; one Connection is three sends, not one
     expect(computeCounters(records, "2026-11-07", 0, { ledger }).sentToday).toBe(0);
   });
 
   it("repeated cron runs never send again (idempotent), even after drafts are re-listed", async () => {
     await runSendStep(sendDeps());
     for (let i = 0; i < 3; i++) await runSendStep(sendDeps());
-    expect(sendPosts()).toHaveLength(4);
-    expect(google.sentLog).toHaveLength(4);
+    expect(sendPosts()).toHaveLength(12);
+    expect(google.sentLog).toHaveLength(12);
   });
 
   it("quota (429): nothing sent, nothing counted, retried after the back-off; the success is recorded once", async () => {
@@ -692,24 +693,24 @@ describe("send workflow with the real Gmail adapters (mock Gmail server)", () =>
     expect(ledgerRows()[0][3]).toBe("failed_transient");
     expect(new Date(ledgerRows()[0][17]).getTime()).toBe(clock.getTime() + 15 * 60_000);
     clock = new Date(clock.getTime() + 20 * 60_000);
-    expect((await runSendStep(sendDeps())).sent).toBe(4);
-    expect(google.sentLog).toHaveLength(4);
+    expect((await runSendStep(sendDeps())).sent).toBe(12);
+    expect(google.sentLog).toHaveLength(12);
   });
 
-  it("authentication failure (401): nothing sent or counted; the member is flagged for re-authorisation; the others still send", async () => {
+  it("authentication failure (401): nothing sent or counted for that member, who is flagged for re-authorisation; the OTHER members still send", async () => {
     google.state.sendScript = [401];
     const r = await runSendStep(sendDeps());
     expect(r.failed).toBe(1);
-    // the failing member's account is now marked as needing re-authorisation, so their OTHER contact is held back too; the rest go out
-    const failing = tracking().find((t) => t[21] === "failed")!;
-    const theirs = tracking().filter((t) => t[5] === failing[5]).length;
-    expect(r.sent).toBe(4 - theirs);
-    expect(google.sentLog).toHaveLength(4 - theirs);
-    expect(google.sentLog.every((s) => s.mailbox !== failing[5])).toBe(true);
-    expect(failing[25]).toMatch(/\[gmail_auth\]/);
-    expect(failing[23]).toBe("auth");
-    expect(tracking().filter((t) => t[5] === failing[5] && t !== failing).every((t) => /not connected/.test(t[25]))).toBe(true);
-    expect((await readGmailAccounts({ fresh: true })).find((a) => a.memberId === failing[5])!.status).toBe("reauth_required");
+    const failing = ledgerRows().find((l) => l[3] === "failed_transient")!;
+    const bad = failing[4];
+    expect(r.sent).toBe(8); // 4 contacts x the two healthy members
+    expect(google.sentLog).toHaveLength(8);
+    expect(google.sentLog.every((x) => x.mailbox !== bad)).toBe(true);
+    const first = tracking().find((t) => t[21] === "failed")!;
+    expect(first[25]).toMatch(/\[gmail_auth\]/);
+    expect(first[23]).toBe("auth");
+    expect(tracking().every((t) => t[21] !== "sent")).toBe(true); // no contact is finished without the failing member's e-mail
+    expect((await readGmailAccounts({ fresh: true })).find((a) => a.memberId === bad)!.status).toBe("reauth_required");
   });
 
   it("invalid recipient (400 from Gmail): flagged for review, never retried", async () => {
@@ -719,8 +720,8 @@ describe("send workflow with the real Gmail adapters (mock Gmail server)", () =>
     expect(tracking().filter((t) => t[21] === "review")).toHaveLength(1);
     clock = new Date(clock.getTime() + 48 * 3600_000);
     await runSendStep(sendDeps());
-    expect(sendPosts()).toHaveLength(4); // 3 successes + the one rejected attempt: the rejected one is never retried
-    expect(google.sentLog).toHaveLength(3);
+    expect(sendPosts()).toHaveLength(12); // 11 successes + the one rejected attempt: the rejected one is never retried
+    expect(google.sentLog).toHaveLength(11);
   });
 
   it("timeout AFTER Gmail processed the send: reconciled against Gmail (metadata permission) -> recorded as sent once, never resent", async () => {
@@ -730,9 +731,9 @@ describe("send workflow with the real Gmail adapters (mock Gmail server)", () =>
     google.state.sendScript = ["timeout-but-sent"];
     const r = await runSendStep(sendDeps());
     expect(r.reconciled).toBe(1);
-    expect(r.sent).toBe(4);
-    expect(google.sentLog).toHaveLength(4);
-    expect(ledgerRows().filter((l) => l[3] === "sent")).toHaveLength(4);
+    expect(r.sent).toBe(12);
+    expect(google.sentLog).toHaveLength(12);
+    expect(ledgerRows().filter((l) => l[3] === "sent")).toHaveLength(12);
     expect(ledgerRows().some((l) => /uncertain send result; reconciling.*confirmed by reconciliation/.test(l[21]))).toBe(true);
   });
 
@@ -741,11 +742,11 @@ describe("send workflow with the real Gmail adapters (mock Gmail server)", () =>
     for (const m of MEMBERS) await connectGmail(m);
     google.state.sendScript = ["timeout-not-sent"];
     const r = await runSendStep(sendDeps());
-    expect(r.sent).toBe(3);
+    expect(r.sent).toBe(11);
     expect(ledgerRows().filter((l) => l[3] === "failed_transient")).toHaveLength(1);
     clock = new Date(clock.getTime() + 20 * 60_000);
     expect((await runSendStep(sendDeps())).sent).toBe(1);
-    expect(google.sentLog).toHaveLength(4);
+    expect(google.sentLog).toHaveLength(12);
   });
 
   it("timeout after Gmail processed the send, WITHOUT the metadata permission: cannot be proven -> manual review, never resent", async () => {
@@ -757,8 +758,8 @@ describe("send workflow with the real Gmail adapters (mock Gmail server)", () =>
       clock = new Date(clock.getTime() + i * 24 * 3600_000);
       await runSendStep(sendDeps());
     }
-    expect(google.sentLog).toHaveLength(4); // 3 + the one Gmail did process; the uncertain one was never sent a second time
-    expect(sendPosts().length).toBe(4);
+    expect(google.sentLog).toHaveLength(12); // 11 + the one Gmail did process; the uncertain one was never sent a second time
+    expect(sendPosts().length).toBe(12);
   });
 
   it("an attachment that cannot be verified in the saved draft blocks the send and flags it for review", async () => {
@@ -769,11 +770,11 @@ describe("send workflow with the real Gmail adapters (mock Gmail server)", () =>
     expect(tracking().every((t) => t[21] === "review")).toBe(true);
   });
 
-  it("a member's Gmail that is not connected sends nothing for their contacts; other members' contacts still go out", async () => {
+  it("a member whose Gmail is not connected sends nothing and is paused; the other members' e-mails still go out; no contact is reported complete", async () => {
     const r = await runSendStep(sendDeps({ gmail: { ...sendDeps().gmail, address: async (m) => (m === "lukky" ? null : `${m}@gmail.example`) } }));
-    const lukkyContacts = tracking().filter((t) => t[5] === "lukky").length;
-    expect(r.sent).toBe(4 - lukkyContacts);
-    expect(google.sentLog.every((s) => s.mailbox !== "lukky")).toBe(true);
+    expect(r.sent).toBe(8);
+    expect(google.sentLog.every((x) => x.mailbox !== "lukky")).toBe(true);
+    expect(tracking().every((t) => t[21] === "pending" && /lukky: \[member_identity\]/.test(t[25]))).toBe(true);
   });
 
   it("a closed gate sends nothing even with all mocks wired", async () => {
@@ -788,11 +789,11 @@ describe("send workflow with the real Gmail adapters (mock Gmail server)", () =>
 
   it("the cycle runs the send step only when the gate is open, then refreshes statuses and counters", async () => {
     const out = await runOutreachCycle(cycle({ gate: true, send: () => runSendStep(sendDeps()) }));
-    expect(out.send).toMatchObject({ status: "ran", sent: 4 });
-    expect(out.counters).toMatchObject({ sentToday: 4, emailsSent: 4 });
-    expect(outreach.fake.dataRows("Outreach Daily Counters").at(-1)![11]).toBe("4");
+    expect(out.send).toMatchObject({ status: "ran", sent: 12 });
+    expect(out.counters).toMatchObject({ sentToday: 12, emailsSent: 12 });
+    expect(outreach.fake.dataRows("Outreach Daily Counters").at(-1)![11]).toBe("12");
     const again = await runOutreachCycle(cycle({ gate: true, send: () => runSendStep(sendDeps()) }));
     expect(again.send?.sent).toBe(0);
-    expect(google.sentLog).toHaveLength(4);
+    expect(google.sentLog).toHaveLength(12);
   });
 });

@@ -30,7 +30,7 @@ Manual Connections added by Aniket, Lakshya or Rishi and imported contacts are t
 exactly the same path from step 3 on. A contact is identified by its normalised e-mail; whoever got there first owns the tracking row.
 
 ### Import (steps 1-2)
-At most 200 contacts per IST day (`OUTREACH_DAILY_LIMIT`, can only be lowered), 10 per call. Per contact: write a tracking row
+At most 200 **shared Connections globally per rolling 24 hours** (`OUTREACH_DAILY_LIMIT`, can only be lowered; all three members together, not 200 each), 10 per call. Per contact: write a tracking row
 `importing` and read it back; re-check Connections; create the Connection; mark the row `added` **only after** the Connection was
 saved. A crash between the last two steps is repaired by the next call (it finds the Connection by e-mail). Imported Connections are
 owned round-robin by the three members. Eligible = valid e-mail with matching ContactID, not a legacy-ISP address, not an investor
@@ -45,7 +45,7 @@ entry, mappable role, first member of a possible-duplicate group. PersonName / C
 | 1 | valid recipient address (`valid_email`) | blocked |
 | 2 | eligible for outreach, still in the Outreach Database (`eligible`) | blocked |
 | 3 | has a Connection, still "Not Connected" (`connection`) | blocked |
-| 4 | the tracked owner is the Connection's owner (`owner`) | blocked |
+| 4 | the sending member is a known member (each member sends from their OWN account) (`owner`) | blocked |
 | 5 | the owner's Gmail identity is connected (`member_identity`) | waits / auth |
 | 6 | a personalised draft exists in the OWNER's mailbox (`email_generated`) | waits |
 | 7 | the saved draft is supported: greeting (person or Hiring Team), company in the body (or "your company"), the target role stated as a phrase, the owner's signature, no unresolved placeholder, nothing about another member (`content_supported`) | **review** |
@@ -80,7 +80,7 @@ Gmail is read only after every local check passed.
 
 ## 4. Draft fallback behaviour
 Drafts are always created by the existing worker (one per member). Unresolved resume or validation problems leave the draft in place
-with a `review:` flag; automation never sends a flagged draft. Only the **Connection owner's** draft is ever auto-sent. The two other
+with a `review:` flag; automation never sends a flagged draft. **Each member's own** draft is auto-sent from that member's own Gmail (one Connection = three separately personalised e-mails, sent only after that member's draft passes all checks). Previously only the owner's was sent; the next sentence is historical: the two other
 members' drafts for the same contact stay as drafts: they must not be sent by hand once the owner's was (the tracking tab shows
 `SentBy`, and check 9 blocks automation if a member sent theirs).
 
@@ -176,12 +176,12 @@ summaries, jobs, applications, chat, calls and the scheduled messages behave exa
 
 | Setting | Default | Ceiling | Meaning |
 |---|---|---|---|
-| `OUTREACH_DAILY_LIMIT` | 200 | 200 | contacts **imported** per IST day |
+| `OUTREACH_DAILY_LIMIT` | 200 | 200 | shared Connections **imported** per rolling 24 h, all members together |
 | `OUTREACH_IMPORT_PER_RUN` | 10 | 50 | contacts imported per cron call |
 | `OUTREACH_DRAFTS_PER_RUN` | 2 | 10 | contacts drafted per cron call |
-| `OUTREACH_SEND_PER_MEMBER_DAILY` | 10 | 50 | messages per member per IST day |
-| `OUTREACH_SEND_GLOBAL_DAILY` | 25 | 100 (and <= 3 x per-member) | messages across all members per IST day |
-| `OUTREACH_SEND_PER_RUN` | 3 | 10 | messages per cron execution |
+| `OUTREACH_SEND_PER_MEMBER_DAILY` | 200 | 200 | confirmed/in-flight sends per member's own Gmail per rolling 24 h |
+| `OUTREACH_SEND_GLOBAL_DAILY` | 600 | 600 (and <= 3 x per-member) | sends across all three accounts per rolling 24 h |
+| `OUTREACH_SEND_PER_RUN` | 10 | 30 | messages per cron execution |
 | `OUTREACH_MASTER_TAB` | `Master Contacts` | plain tab name | the tab contacts are read from (a separate tab lets a controlled test use its own contacts) |
 | `OUTREACH_OWNER` | unset (round-robin) | a member id | every imported Connection is owned by this member, so it is sent from that member's Gmail |
 | `OUTREACH_SEND_ONLY_TO` | unset (no allowlist) | - | comma-separated recipients that are the ONLY ones ever sent to; exact addresses or `local+jobsync*@domain` (hard safety net for tests) |
@@ -224,3 +224,13 @@ Logs: one `[outreach]` line per call with counts and statuses only (no names, ad
 - Many addresses come from old lists: bounces damage sender reputation. Start slowly; remove bounced addresses via `Outreach Exclusions`.
 - A deleted Connection stops further processing of that contact; an already-sent message cannot be recalled.
 - Dependency advisories apply to the installed Next.js (16.4.0): see the security note delivered with this change; upgrade to 16.4.5 before any production activation.
+
+
+## Shared-Connection workflow (live)
+One imported contact is ONE shared Connection. The drafting worker writes one personalised draft per member (own name, signature, resume); the
+send step sends each member's draft from that member's own Gmail. Idempotency key = `member|recipient` (the same recipient may receive one e-mail
+per member, never two from one account). Limits: 200 Connections per rolling 24 h (global); 200 sends per member and 600 combined per rolling 24 h.
+The tracking row is "sent" only when all three e-mails are confirmed; the Connection becomes "Messaged" then. A disconnected member is paused
+(`reauth_required`) until they reconnect through the normal OAuth flow; the others keep sending. Each cron call: send first (own time slice), then
+import, then drafting; Master Contacts is cached per instance for 20 minutes. Test-artefact removal: `POST /api/cron/outreach-cleanup` (inert unless
+`OUTREACH_TEST_CLEANUP_BASE` is set; dry run unless `"dryRun": false`).

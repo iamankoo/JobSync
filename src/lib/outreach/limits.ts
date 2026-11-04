@@ -13,9 +13,9 @@ export interface SendLimits {
   perRun: number;
 }
 
-export const DEFAULT_SEND_LIMITS: SendLimits = { perMemberDaily: 10, globalDaily: 25, perRun: 3 };
+export const DEFAULT_SEND_LIMITS: SendLimits = { perMemberDaily: 200, globalDaily: 600, perRun: 10 };
 /** Absolute ceilings: values above these are ignored (the default applies). Well below Gmail's own daily sending quota. */
-export const MAX_SEND_LIMITS: SendLimits = { perMemberDaily: 50, globalDaily: 100, perRun: 10 };
+export const MAX_SEND_LIMITS: SendLimits = { perMemberDaily: 200, globalDaily: 600, perRun: 30 };
 
 const pick = (raw: string | undefined, fallback: number, max: number) => {
   if (raw === undefined || raw.trim() === "") return fallback;
@@ -37,18 +37,25 @@ export function loadSendLimits(env: NodeJS.ProcessEnv = process.env): SendLimits
 /** A claim that never reached "sending" is stale after this long (no API call was made, so it is safe to release). */
 export const CLAIM_TTL_MS = 10 * 60_000;
 
+/** The sending limits are measured over a rolling window, never a calendar day. */
+export const SEND_WINDOW_MS = 24 * 60 * 60_000;
+
+/** When a ledger row counts from: the confirmed send time, otherwise when it was claimed. */
+const stampOf = (r: SendRecord) => Date.parse(r.sentAt || r.createdAt);
+
+/** Does this ledger row use up sending allowance right now? Sent, being sent, or uncertain (it might have gone out), or a fresh claim. */
+export const countsAgainstLimit = (r: SendRecord, nowMs: number) =>
+  nowMs - stampOf(r) < SEND_WINDOW_MS && (r.status === "sent" || r.status === "sending" || r.status === "uncertain" || (r.status === "claimed" && nowMs - Date.parse(r.updatedAt || r.createdAt) < CLAIM_TTL_MS));
+
 /**
- * Today's usage, counted CONSERVATIVELY. Every ledger row carries its IST accounting day (SentDay) from the moment it is claimed,
- * so a message that is claimed, being sent, or whose outcome is uncertain counts toward the limit (it might have gone out) as well as
- * every confirmed send. Failed, released and superseded rows never count (nothing was sent).
+ * Usage over the LAST 24 HOURS, per sending member and combined, counted conservatively (a message that is claimed, being sent or
+ * of uncertain outcome counts as well as every confirmed send). Failed, released and superseded rows never count (nothing was sent).
  */
-export function usageToday(ledger: readonly SendRecord[], day: string, nowMs: number): { global: number; byMember: Record<MemberId, number> } {
+export function usageRolling(ledger: readonly SendRecord[], nowMs: number): { global: number; byMember: Record<MemberId, number> } {
   const byMember = { anni: 0, lukky: 0, rishii: 0 } as Record<MemberId, number>;
   let global = 0;
   for (const r of ledger) {
-    if (r.sentDay !== day) continue;
-    const counts = r.status === "sent" || r.status === "sending" || r.status === "uncertain" || (r.status === "claimed" && nowMs - Date.parse(r.updatedAt || r.createdAt) < CLAIM_TTL_MS);
-    if (!counts) continue;
+    if (!countsAgainstLimit(r, nowMs)) continue;
     global += 1;
     if (r.member in byMember) byMember[r.member as MemberId] += 1;
   }
@@ -56,9 +63,9 @@ export function usageToday(ledger: readonly SendRecord[], day: string, nowMs: nu
 }
 
 /** `usage` is recomputed from the ledger before every candidate, so it already includes this run's sends; only the per-run cap needs `sentThisRun`. */
-export function limitReason(limits: SendLimits, usage: ReturnType<typeof usageToday>, member: MemberId, sentThisRun: number): string | null {
+export function limitReason(limits: SendLimits, usage: ReturnType<typeof usageRolling>, member: MemberId, sentThisRun: number): string | null {
   if (sentThisRun >= limits.perRun) return `per-run sending limit (${limits.perRun}) reached`;
-  if (usage.global >= limits.globalDaily) return `global daily sending limit (${limits.globalDaily}) reached`;
-  if (usage.byMember[member] >= limits.perMemberDaily) return `${member}'s daily sending limit (${limits.perMemberDaily}) reached`;
+  if (usage.global >= limits.globalDaily) return `global rolling 24-hour sending limit (${limits.globalDaily}) reached`;
+  if (usage.byMember[member] >= limits.perMemberDaily) return `${member}'s rolling 24-hour sending limit (${limits.perMemberDaily}) reached`;
   return null;
 }
