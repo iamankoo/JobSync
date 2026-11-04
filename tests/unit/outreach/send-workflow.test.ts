@@ -29,7 +29,7 @@ describe("the gate", () => {
 });
 
 describe("A: a fully validated email is sent, confirmed, recorded and counted", () => {
-  it("sends the OWNER's verified draft from the owner's mailbox, once, and records everything", async () => {
+  it("sends each member's OWN verified draft from that member's own mailbox, once, and records everything", async () => {
     const f = buildSendFixture([{ email: "jane@acme.example.com", name: "Jane Doe", company: "Acme", owner: "lukky" }]);
     await f.seed();
     const r = await runSendStep(f.deps());
@@ -43,10 +43,12 @@ describe("A: a fully validated email is sent, confirmed, recorded and counted", 
     expect(ledger[19]).toBe("2026-11-06");
     expect(ledger[21]).toMatch(/claimed \(attempt 1\).*sending.*sent \(confirmed by Gmail\); message msg-1/);
     const [t] = f.track();
-    expect([t[21], t[26], t[27], t[28], t[29], t[30]]).toEqual(["sent", "lukky", "lakshya@gmail.test", "msg-1", "Lakshya_SDE.pdf", "1"]);
+    expect(ledger[0]).toBe("lukky|jane@acme.example.com"); // the key is (member, recipient)
+    // only Lakshya has a draft here, so the contact is NOT finished ("sent" needs every member's own e-mail)
+    expect([t[21], t[26], t[27], t[28], t[29], t[30]]).toEqual(["pending", "lukky", "lakshya@gmail.test", "msg-1", "Lakshya_SDE.pdf", "1"]);
     expect(f.calls.markSent).toEqual(["lukky:conn_0"]);
-    expect(f.calls.markMessaged).toEqual(["conn_0"]);
-    expect(f.connections.get("conn_0")!.status).toBe("Messaged");
+    expect(f.calls.markMessaged).toEqual([]);
+    expect(f.connections.get("conn_0")!.status).toBe("Not Connected");
   });
 
   it("counters come from the confirmed ledger row", async () => {
@@ -121,10 +123,9 @@ describe("the fourteen validations: any failure means NOT sent", () => {
     notSent(y);
     expect(y.reason).toMatch(/\[not_already_received\].*Reply/);
   });
-  it("4 the tracked owner is the Connection's owner", async () => {
+  it("4 the tracked import owner no longer decides who sends: each member sends from their own mailbox", async () => {
     const x = await run((f) => { f.tracking[0].ownerMemberId = "rishii"; });
-    notSent(x);
-    expect(x.reason).toMatch(/\[owner\]/);
+    expect(x.f.gmail.sendCalls()).toEqual(["send:anni:draft_0_anni"]); // only Aniket has a draft in this fixture
   });
   it("5 the member's Gmail identity is connected", async () => {
     const x = await run((f) => { f.gmail.addresses.anni = null; });
@@ -161,10 +162,11 @@ describe("the fourteen validations: any failure means NOT sent", () => {
     notSent(x);
     expect(x.reason).toMatch(/\[word_limit\].*limit 150/);
   });
-  it("9 the recipient has not already received outreach (a member sent a draft by hand)", async () => {
-    const x = await run((f) => { f.draftLedger.set("contact:conn_0:rishii", { status: "sent", detail: "", gmailDraftId: "d" }); });
+  it("9 a member who already sent their own draft by hand is not duplicated; other members' hand-sent drafts do not block them", async () => {
+    const x = await run((f) => { f.draftLedger.set("contact:conn_0:anni", { status: "sent", detail: "", gmailDraftId: "draft_0_anni" }); });
     notSent(x);
-    expect(x.reason).toMatch(/rishii already sent/);
+    const y = await run((f) => { f.draftLedger.set("contact:conn_0:rishii", { status: "sent", detail: "", gmailDraftId: "d" }); });
+    expect(y.f.gmail.sendCalls()).toEqual(["send:anni:draft_0_anni"]);
   });
   it("10 not opted out / excluded (by address or by domain)", async () => {
     for (const value of ["jane@acme.example.com", "@acme.example.com", "example.com"]) {
@@ -179,10 +181,10 @@ describe("the fourteen validations: any failure means NOT sent", () => {
     expect(x.status).toBe("sent"); // already done: not a candidate at all
     const y = await run(async (f) => {
       await f.sheet.ensureTabs();
-      await f.sheet.appendSendRecord({ row: 0, sendKey: "jane@acme.example.com", contactId: f.tracking[0].contactId, claimId: "earlier", status: "sent", member: "anni", gmailAccount: "a@b", connectionId: "conn_0", company: "Acme", role: "Software Engineer", resumeFile: "x.pdf", resumeSha256: "", resumeBytes: 1, draftId: "d", threadId: "", gmailMessageId: "m-old", wordCount: 90, attempts: 1, notBefore: "", sentAt: "2026-11-01T00:00:00.000Z", sentDay: "2026-11-01", reason: "", history: "", createdAt: "2026-11-01T00:00:00.000Z", updatedAt: "2026-11-01T00:00:00.000Z" }, 2);
+      await f.sheet.appendSendRecord({ row: 0, sendKey: "anni|jane@acme.example.com", contactId: f.tracking[0].contactId, claimId: "earlier", status: "sent", member: "anni", gmailAccount: "a@b", connectionId: "conn_0", company: "Acme", role: "Software Engineer", resumeFile: "x.pdf", resumeSha256: "", resumeBytes: 1, draftId: "d", threadId: "", gmailMessageId: "m-old", wordCount: 90, attempts: 1, notBefore: "", sentAt: "2026-11-01T00:00:00.000Z", sentDay: "2026-11-01", reason: "", history: "", createdAt: "2026-11-01T00:00:00.000Z", updatedAt: "2026-11-01T00:00:00.000Z" }, 2);
     });
-    expect(y.f.gmail.sendCalls()).toEqual([]);
-    expect(y.reason).toMatch(/\[no_prior_send\] a message to this recipient was already sent successfully/);
+    expect(y.f.gmail.sendCalls()).toEqual([]); // anni's earlier send to this recipient is final
+    expect(y.f.ledger()).toHaveLength(1);
   });
   it("12 the member's resume is available and passes attachment validation (B: not sent, flagged for review)", async () => {
     for (const mode of ["unmapped", "missing"] as const) {
@@ -218,18 +220,18 @@ describe("the fourteen validations: any failure means NOT sent", () => {
   it("14 the daily limits (per member, global, and 0 pauses sending)", async () => {
     const perMember = await run(() => undefined, { perMemberDaily: 0 });
     notSent(perMember);
-    expect(perMember.reason).toMatch(/\[daily_limit\].*daily sending limit/);
+    expect(perMember.reason).toMatch(/\[daily_limit\].*rolling 24-hour sending limit/);
     const global = await run(() => undefined, { globalDaily: 0 });
     notSent(global);
-    expect(global.reason).toMatch(/global daily sending limit/);
+    expect(global.reason).toMatch(/combined rolling 24-hour sending limit|global rolling 24-hour sending limit/);
   });
-  it("the daily limit counts sends already made today (IST), and a new day starts fresh", async () => {
+  it("the limit counts sends made in the last 24 hours (rolling), and frees up as they age out", async () => {
     const f = buildSendFixture(Array.from({ length: 4 }, (_, i) => ({ email: `p${i}@c${i}.example.com`, name: `Pat Person${i}`, company: `Co${i}` })), { perMemberDaily: 2, globalDaily: 25, perRun: 10 });
     await f.seed();
     expect((await runSendStep(f.deps())).sent).toBe(2);
     expect((await runSendStep(f.deps())).sent).toBe(0);
     expect(f.gmail.sendCalls()).toHaveLength(2);
-    f.clock.now = new Date("2026-11-07T06:00:00.000Z");
+    f.clock.now = new Date("2026-11-07T06:01:00.000Z");
     expect((await runSendStep(f.deps())).sent).toBe(2);
   });
 });
@@ -382,14 +384,14 @@ describe("E: uncertain results are reconciled, never blindly retried", () => {
     expect(f.ledger()[0][3]).toBe("sent");
     expect(f.ledger()[0][14]).toBe("msg-found");
     expect(f.gmail.sendCalls()).toHaveLength(1);
-    expect(f.track()[0][21]).toBe("sent");
+    expect([f.track()[0][21], f.track()[0][26]]).toEqual(["pending", "anni"]); // Aniket's e-mail is confirmed; the contact finishes when every member's is
   });
 
   it("a stale claim that never reached 'sending' is released and a fresh claim sends once", async () => {
     const f = await setup();
     await f.sheet.ensureTabs();
     await f.sheet.appendSendRecord({
-      row: 0, sendKey: "jane@acme.example.com", contactId: f.tracking[0].contactId, claimId: "old-claim", status: "claimed", member: "anni", gmailAccount: "", connectionId: "conn_0", company: "Acme", role: "Software Engineer",
+      row: 0, sendKey: "anni|jane@acme.example.com", contactId: f.tracking[0].contactId, claimId: "old-claim", status: "claimed", member: "anni", gmailAccount: "", connectionId: "conn_0", company: "Acme", role: "Software Engineer",
       resumeFile: "", resumeSha256: "", resumeBytes: 0, draftId: "", threadId: "", gmailMessageId: "", wordCount: 0, attempts: 1, notBefore: "", sentAt: "", sentDay: "2026-11-06", reason: "", history: "", createdAt: new Date(NOW.getTime() - 3600_000).toISOString(), updatedAt: new Date(NOW.getTime() - 3600_000).toISOString(),
     }, 2);
     await f.seed();
@@ -402,7 +404,7 @@ describe("E: uncertain results are reconciled, never blindly retried", () => {
     const f = await setup();
     await f.sheet.ensureTabs();
     await f.sheet.appendSendRecord({
-      row: 0, sendKey: "jane@acme.example.com", contactId: f.tracking[0].contactId, claimId: "other-worker", status: "claimed", member: "anni", gmailAccount: "", connectionId: "conn_0", company: "", role: "", resumeFile: "", resumeSha256: "", resumeBytes: 0,
+      row: 0, sendKey: "anni|jane@acme.example.com", contactId: f.tracking[0].contactId, claimId: "other-worker", status: "claimed", member: "anni", gmailAccount: "", connectionId: "conn_0", company: "", role: "", resumeFile: "", resumeSha256: "", resumeBytes: 0,
       draftId: "", threadId: "", gmailMessageId: "", wordCount: 0, attempts: 1, notBefore: "", sentAt: "", sentDay: "2026-11-06", reason: "", history: "", createdAt: NOW.toISOString(), updatedAt: NOW.toISOString(),
     }, 2);
     await f.seed();
@@ -414,7 +416,7 @@ describe("E: uncertain results are reconciled, never blindly retried", () => {
 });
 
 describe("one outreach per recipient, across members and records", () => {
-  it("the same recipient on two Connections owned by two members is sent exactly once", async () => {
+  it("a second record that is not an eligible Outreach Database contact is never sent", async () => {
     const f = buildSendFixture([
       { email: "same@acme.example.com", name: "Sam Same", company: "Acme", owner: "anni" },
       { email: "same@acme.example.com", name: "Sam Same", company: "Acme", owner: "rishii" },
@@ -426,14 +428,16 @@ describe("one outreach per recipient, across members and records", () => {
     expect(f.ledger().filter((r) => r[3] === "sent")).toHaveLength(1);
   });
 
-  it("imported and manual records of one person: the first sent wins, the other is blocked", async () => {
+  it("imported and manual records of one person: each member still sends at most once to them", async () => {
     const f = buildSendFixture([{ email: "m@acme.example.com", name: "Max Man", company: "Acme" }, { email: "M@Acme.Example.com", name: "Max Man", company: "Acme", owner: "lukky" }]);
     f.tracking[1].source = "manual";
     f.tracking[1].contactId = "HRC-MANUALRECORD";
     await f.seed();
     await runSendStep(f.deps());
     await runSendStep(f.deps());
-    expect(f.gmail.sendCalls()).toHaveLength(1);
+    // record 0 has Aniket's draft, record 1 has Lakshya's: one e-mail from each of the two accounts, never two from the same account
+    expect(f.gmail.sendCalls().sort()).toEqual(["send:anni:draft_0_anni", "send:lukky:draft_1_lukky"]);
+    expect(new Set(f.ledger().filter((r) => r[3] === "sent").map((r) => r[0])).size).toBe(2);
   });
 });
 

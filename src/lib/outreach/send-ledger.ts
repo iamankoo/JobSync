@@ -24,6 +24,14 @@ const HISTORY_MAX = 900;
 
 export const normalKey = (email: string) => email.trim().toLowerCase();
 
+/**
+ * The idempotency key of ONE send: the sending member AND the normalised recipient. The same recipient legitimately receives one
+ * separately personalised e-mail from each member (the shared-Connection workflow), but never two from the same member's account.
+ */
+export const sendKeyFor = (member: string, email: string) => `${member}|${normalKey(email)}`;
+/** The recipient part of a send key (also accepts the older recipient-only keys). */
+export const recipientOfKey = (key: string) => (key.includes("|") ? key.slice(key.indexOf("|") + 1) : key);
+
 export const rowsFor = (records: readonly SendRecord[], key: string) => records.filter((r) => r.sendKey === key);
 
 /** Appends "<iso> <event>" to the history, keeping the newest ~900 characters. */
@@ -34,13 +42,16 @@ export function withHistory(history: string, at: string, event: string): string 
 
 export type ClaimResult =
   | { won: true; record: SendRecord }
-  | { won: false; reason: "already_sent" | "in_flight" | "needs_review" | "failed_permanent" | "lost_race" | "too_many_attempts"; existing?: SendRecord };
+  | { won: false; reason: "already_sent" | "in_flight" | "needs_review" | "failed_permanent" | "lost_race" | "too_many_attempts" | "limit_reached"; existing?: SendRecord };
 
 export type ClaimInput = Pick<SendRecord, "sendKey" | "contactId" | "member" | "gmailAccount" | "connectionId" | "company" | "role" | "draftId" | "threadId" | "resumeFile" | "resumeSha256" | "resumeBytes" | "wordCount">;
 
 type LedgerSheet = Pick<OutreachSheet, "readSendLedger" | "appendSendRecord" | "updateSendRecord">;
 
-export async function claimSend(sheet: LedgerSheet, input: ClaimInput, day: string, now: Date): Promise<ClaimResult> {
+/** Evaluated against the ledger AFTER this claim was appended; a non-null result releases the claim (e.g. a concurrent worker used the last slot). */
+export type PostClaimCheck = (ledger: readonly SendRecord[], mine: SendRecord) => string | null;
+
+export async function claimSend(sheet: LedgerSheet, input: ClaimInput, day: string, now: Date, postCheck?: PostClaimCheck): Promise<ClaimResult> {
   const stamp = now.toISOString();
   const before = await sheet.readSendLedger();
   const mine = rowsFor(before.records, input.sendKey);
@@ -69,6 +80,11 @@ export async function claimSend(sheet: LedgerSheet, input: ClaimInput, day: stri
   if (!winner || winner.claimId !== claimId) {
     await sheet.updateSendRecord({ ...me, status: "superseded", reason: `lost the claim to row ${winner?.row ?? "?"}`, history: withHistory(me.history, now.toISOString(), "superseded"), updatedAt: now.toISOString() });
     return { won: false, reason: "lost_race", ...(winner ? { existing: winner } : {}) };
+  }
+  const over = postCheck?.(after.records, me) ?? null;
+  if (over) {
+    await sheet.updateSendRecord({ ...me, status: "released", reason: over, history: withHistory(me.history, now.toISOString(), `released (${over})`), updatedAt: now.toISOString() });
+    return { won: false, reason: "limit_reached" };
   }
   return { won: true, record: me };
 }

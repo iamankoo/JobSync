@@ -77,8 +77,12 @@ export async function runOutreachCycle(deps: CycleDeps): Promise<CycleResult> {
   try {
     await deps.sheet.ensureTabs();
     result.manual = await step("manual", () => registerManualConnections({ sheet: deps.sheet, connections: deps.connections, now: deps.now, since: deps.config.manualSince }));
+    // Sending runs FIRST with its own time slice, so slow drafting or Sheets back-off can never starve it.
+    const gate: boolean = deps.gate ?? SENDING_ENABLED;
+    if (gate && deps.send) result.send = await step("send", deps.send);
+    else result.send = { status: "disabled", sent: 0, blocked: 0, needsReview: 0, failed: 0, waiting: 0, duplicatesPrevented: 0, reconciled: 0, stoppedBecause: "none", errors: [] };
     result.import = await step("import", () =>
-      runOutreachImport({ sheet: deps.sheet, connections: deps.connections, now: deps.now, timezone: deps.timezone, dailyLimit: deps.config.dailyLimit, perRun: deps.config.perRun, ownerOverride: deps.config.ownerOverride, ...(deps.deadline ? { deadline: deps.deadline } : {}) }),
+      runOutreachImport({ sheet: deps.sheet, connections: deps.connections, now: deps.now, timezone: deps.timezone, dailyLimit: deps.config.dailyLimit, perRun: deps.config.perRun, ownerOverride: deps.config.ownerOverride, staleClaimMs: 120_000, ...(deps.deadline ? { deadline: deps.deadline } : {}) }),
     );
     result.drafts = deps.draft ? ((await step("drafts", () => deps.draft!(deps.config.draftsPerRun))) ?? "skipped") : "skipped";
     const sync = () =>
@@ -87,11 +91,6 @@ export async function runOutreachCycle(deps: CycleDeps): Promise<CycleResult> {
         await syncTracking({ sheet: deps.sheet, ledger: await deps.ledger(), connected: await deps.connected(), connections, now: deps.now });
       });
     await sync();
-    // Sending: behind the compile-time gate. With the gate closed this does nothing, and an exception inside can never send.
-    const gate: boolean = deps.gate ?? SENDING_ENABLED;
-    if (gate && deps.send) result.send = await step("send", deps.send);
-    else result.send = { status: "disabled", sent: 0, blocked: 0, needsReview: 0, failed: 0, waiting: 0, duplicatesPrevented: 0, reconciled: 0, stoppedBecause: "none", errors: [] };
-    if (result.send?.status === "ran") await sync();
     // System notifications to all three members: only AFTER the work they describe is saved and confirmed in the ledgers.
     if (deps.notify) {
       const notify = deps.notify;
@@ -123,7 +122,7 @@ export function openOutreachSheet(config: OutreachConfig = loadOutreachConfig())
   const base = loadSheetsConfig();
   if (!config.spreadsheetId) throw new Error("OUTREACH_SPREADSHEET_ID is not set.");
   if (config.spreadsheetId === base.spreadsheetId) throw new Error("OUTREACH_SPREADSHEET_ID must not be the production spreadsheet.");
-  return new OutreachSheet(createGoogleClient({ ...base, spreadsheetId: config.spreadsheetId }), config.masterTab);
+  return new OutreachSheet(createGoogleClient({ ...base, spreadsheetId: config.spreadsheetId }), config.masterTab, config.spreadsheetId);
 }
 
 export const realConnectionsPort: ConnectionsPort = {
@@ -175,7 +174,7 @@ export function buildRealCycleDeps(config: OutreachConfig = loadOutreachConfig()
     gate,
     notify: async (payload, key) => ((await notifyEveryone(payload, key)).status === "unreadable" ? "retry" : "done"),
     // The send step is only built when the compile-time gate is open. In the shipped state this is undefined.
-    ...(gate ? { send: () => runSendStep(buildRealSendDeps(config, sheet, timezone, started + budgetMs - 8_000)) } : {}),
+    ...(gate ? { send: () => runSendStep(buildRealSendDeps(config, sheet, timezone, started + 20_000)) } : {}),
     connections: realConnectionsPort,
     ledger: async () => new Map([...(await readDraftLedger({ fresh: true })).entries()].map(([k, v]) => [k, { status: v.status, detail: v.detail, gmailDraftId: v.gmailDraftId, ...(v.threadId ? { threadId: v.threadId } : {}) }])),
     connected: async () => {

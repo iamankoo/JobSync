@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { checkAttachment, checkDraft, bodyWordCount } from "@/lib/outreach/draft-check";
 import { isExcluded } from "@/lib/outreach/exclusions";
-import { DEFAULT_SEND_LIMITS, MAX_SEND_LIMITS, limitReason, loadSendLimits, usageToday } from "@/lib/outreach/limits";
+import { DEFAULT_SEND_LIMITS, MAX_SEND_LIMITS, limitReason, loadSendLimits, usageRolling } from "@/lib/outreach/limits";
 import { claimSend, releaseStaleClaims, withHistory } from "@/lib/outreach/send-ledger";
 import { loadOutreachConfig } from "@/lib/outreach/config";
 import type { SendRecord } from "@/lib/outreach/types";
@@ -12,32 +12,37 @@ import { draftBody } from "../../helpers/send-fixture";
 describe("send limits: conservative defaults, hard ceilings, never unlimited", () => {
   it("defaults", () => {
     expect(loadSendLimits({} as NodeJS.ProcessEnv)).toEqual(DEFAULT_SEND_LIMITS);
-    expect(DEFAULT_SEND_LIMITS).toEqual({ perMemberDaily: 10, globalDaily: 25, perRun: 3 });
+    expect(DEFAULT_SEND_LIMITS).toEqual({ perMemberDaily: 200, globalDaily: 600, perRun: 10 });
   });
   it("can be lowered (0 pauses sending) or raised only up to the ceilings; anything else falls back to the default", () => {
     const env = (o: Record<string, string>) => o as unknown as NodeJS.ProcessEnv;
     expect(loadSendLimits(env({ OUTREACH_SEND_PER_MEMBER_DAILY: "0" })).perMemberDaily).toBe(0);
     expect(loadSendLimits(env({ OUTREACH_SEND_PER_MEMBER_DAILY: "50", OUTREACH_SEND_GLOBAL_DAILY: "100" }))).toMatchObject({ perMemberDaily: 50, globalDaily: 100 });
-    for (const bad of ["51", "1000000", "-1", "1.5", "abc", "Infinity", "NaN"]) expect(loadSendLimits(env({ OUTREACH_SEND_PER_MEMBER_DAILY: bad })).perMemberDaily, bad).toBe(10);
-    expect(loadSendLimits(env({ OUTREACH_SEND_PER_RUN: "11" })).perRun).toBe(3);
-    expect(MAX_SEND_LIMITS).toEqual({ perMemberDaily: 50, globalDaily: 100, perRun: 10 });
+    for (const bad of ["201", "1000000", "-1", "1.5", "abc", "Infinity", "NaN"]) expect(loadSendLimits(env({ OUTREACH_SEND_PER_MEMBER_DAILY: bad })).perMemberDaily, bad).toBe(200);
+    expect(loadSendLimits(env({ OUTREACH_SEND_PER_RUN: "31" })).perRun).toBe(10);
+    expect(MAX_SEND_LIMITS).toEqual({ perMemberDaily: 200, globalDaily: 600, perRun: 30 });
   });
   it("the global limit can never exceed what the three per-member limits allow", () => {
     expect(loadSendLimits({ OUTREACH_SEND_PER_MEMBER_DAILY: "2", OUTREACH_SEND_GLOBAL_DAILY: "90" } as unknown as NodeJS.ProcessEnv).globalDaily).toBe(6);
   });
-  it("is independent of the import limit", () => {
+  it("is independent of the import limit: 200 shared Connections per 24h, up to 200 sends per member (600 combined)", () => {
     const c = loadOutreachConfig({ OUTREACH_DAILY_LIMIT: "200" } as unknown as NodeJS.ProcessEnv);
     expect(c.dailyLimit).toBe(200);
-    expect(c.sendLimits.globalDaily).toBeLessThan(c.dailyLimit);
+    expect(c.sendLimits).toMatchObject({ perMemberDaily: 200, globalDaily: 600 });
+    expect(loadOutreachConfig({ OUTREACH_DAILY_LIMIT: "9999" } as unknown as NodeJS.ProcessEnv).dailyLimit).toBe(200); // the import limit can only be lowered
   });
   const row = (over: Partial<SendRecord>): SendRecord => ({ row: 2, sendKey: "a@b.co", contactId: "x", claimId: "c", status: "sent", member: "anni", gmailAccount: "", connectionId: "", company: "", role: "", resumeFile: "", resumeSha256: "", resumeBytes: 0, draftId: "", threadId: "", gmailMessageId: "", wordCount: 0, attempts: 1, notBefore: "", sentAt: "", sentDay: "2026-11-06", reason: "", history: "", createdAt: "2026-11-06T06:00:00.000Z", updatedAt: "2026-11-06T06:00:00.000Z", ...over });
-  it("usage counts confirmed, in-flight and uncertain sends of TODAY (IST) and ignores failed / released / superseded / other days", () => {
+  it("usage is measured over the LAST 24 HOURS: counts confirmed, in-flight and uncertain sends; ignores failed / released / superseded / older ones", () => {
     const now = Date.parse("2026-11-06T06:01:00.000Z");
-    const u = usageToday([row({}), row({ status: "sending", member: "lukky" }), row({ status: "uncertain" }), row({ status: "failed_transient" }), row({ status: "released" }), row({ status: "superseded" }), row({ sentDay: "2026-11-05" }), row({ status: "claimed" }), row({ status: "claimed", updatedAt: "2026-11-06T04:00:00.000Z" })], "2026-11-06", now);
-    expect(u).toEqual({ global: 4, byMember: { anni: 3, lukky: 1, rishii: 0 } });
-    expect(limitReason(DEFAULT_SEND_LIMITS, { global: 25, byMember: { anni: 0, lukky: 0, rishii: 0 } }, "anni", 0)).toMatch(/global daily/);
-    expect(limitReason(DEFAULT_SEND_LIMITS, { global: 3, byMember: { anni: 10, lukky: 0, rishii: 0 } }, "anni", 0)).toMatch(/anni's daily/);
-    expect(limitReason(DEFAULT_SEND_LIMITS, { global: 3, byMember: { anni: 1, lukky: 0, rishii: 0 } }, "anni", 3)).toMatch(/per-run/);
+    const u = usageRolling([row({ sentAt: "2026-11-06T05:00:00.000Z" }), row({ status: "sending", member: "lukky" }), row({ status: "uncertain" }), row({ status: "failed_transient" }), row({ status: "released" }), row({ status: "superseded" }),
+      row({ sentAt: "2026-11-05T05:00:00.000Z", createdAt: "2026-11-05T05:00:00.000Z" }), // 25 hours old: aged out of the window
+      row({ sentAt: "2026-11-05T07:00:00.000Z", createdAt: "2026-11-05T07:00:00.000Z" }), // 23 hours old: still counts (calendar day does not matter)
+      row({ status: "claimed" }), row({ status: "claimed", updatedAt: "2026-11-06T04:00:00.000Z" })], now);
+    expect(u).toEqual({ global: 5, byMember: { anni: 4, lukky: 1, rishii: 0 } });
+    expect(limitReason(DEFAULT_SEND_LIMITS, { global: 600, byMember: { anni: 0, lukky: 0, rishii: 0 } }, "anni", 0)).toMatch(/rolling 24-hour/);
+    expect(limitReason(DEFAULT_SEND_LIMITS, { global: 3, byMember: { anni: 200, lukky: 0, rishii: 0 } }, "anni", 0)).toMatch(/anni's rolling 24-hour/);
+    expect(limitReason(DEFAULT_SEND_LIMITS, { global: 3, byMember: { anni: 199, lukky: 0, rishii: 0 } }, "anni", 0)).toBeNull();
+    expect(limitReason(DEFAULT_SEND_LIMITS, { global: 3, byMember: { anni: 1, lukky: 0, rishii: 0 } }, "anni", 10)).toMatch(/per-run/);
     expect(limitReason(DEFAULT_SEND_LIMITS, { global: 3, byMember: { anni: 1, lukky: 0, rishii: 0 } }, "anni", 2)).toBeNull();
   });
 });

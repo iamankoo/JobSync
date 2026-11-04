@@ -15,6 +15,11 @@ const HEADERS: Record<string, readonly string[]> = { [TRACKING_TAB]: TRACKING_HE
 /** A milestone claim that was never completed (the process died) may be claimed again after this long. */
 export const MILESTONE_CLAIM_TTL_MS = 10 * 60_000;
 const q = (tab: string) => `'${tab}'`;
+
+/** Master Contacts is static (15,891 rows x 32 columns) but every cron call used to read it 3 times. Warm serverless instances reuse it for this long. */
+export const MASTER_CACHE_TTL_MS = 20 * 60_000;
+const masterCache = new Map<string, { at: number; grid: string[][] }>();
+export const clearMasterCache = () => masterCache.clear();
 const lastCol = (tab: string) => columnLetter(HEADERS[tab].length);
 
 const IMPORT_STATUSES: readonly ImportStatus[] = ["importing", "added", "import_failed"];
@@ -56,6 +61,8 @@ export class OutreachSheet {
   constructor(
     private readonly client: SheetsClient,
     private readonly masterTab: string = MASTER_TAB,
+    /** When set (production: the spreadsheet id), Master Contacts reads are cached under this key. Tests leave it unset. */
+    private readonly cacheKey?: string,
   ) {}
 
   /** Verifies the three tracking tabs exist with the right headers (writing the header row only into a blank tab). */
@@ -79,7 +86,12 @@ export class OutreachSheet {
   }
 
   async readMaster(): Promise<string[][]> {
-    return this.client.getValues(`${q(this.masterTab)}!A:AZ`);
+    const key = this.cacheKey ? `${this.cacheKey}|${this.masterTab}` : "";
+    const hit = key ? masterCache.get(key) : undefined;
+    if (hit && Date.now() - hit.at < MASTER_CACHE_TTL_MS) return hit.grid;
+    const grid = await this.client.getValues(`${q(this.masterTab)}!A:AZ`);
+    if (key) masterCache.set(key, { at: Date.now(), grid });
+    return grid;
   }
 
   async readTracking(): Promise<{ records: TrackingRecord[]; nextRow: number }> {

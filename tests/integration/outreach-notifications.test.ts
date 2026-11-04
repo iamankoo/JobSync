@@ -163,7 +163,7 @@ describe("\"10 connections added\" milestones", () => {
       ...manyContacts(7),
     ]);
     const flaky = { ...realConnectionsPort, create: async (o: MemberId, i: Parameters<typeof realConnectionsPort.create>[1]) => { if (i.email?.startsWith("fail")) throw new Error("always fails"); return realConnectionsPort.create(o, i); } };
-    for (let i = 0; i < 14; i++) await runOutreachCycle(cycle({ connections: flaky }));
+    for (let i = 0; i < 14; i++) { await runOutreachCycle(cycle({ connections: flaky })); clock = new Date(clock.getTime() + 3 * 60_000); } // a stalled claim is only taken over after 2 minutes
     const rows = outreach.fake.dataRows(TRACKING_TAB).filter((t) => t[0]);
     expect(rows.filter((t) => t[3] === "added" && t[2] === "outreach-database")).toHaveLength(7);
     expect(rows.filter((t) => t[3] === "import_failed")).toHaveLength(2);
@@ -171,7 +171,7 @@ describe("\"10 connections added\" milestones", () => {
     // three more good contacts make it 10 successful imports -> exactly one milestone
     // three more good contacts arrive: now 10 SUCCESSFUL JobSync imports -> exactly one milestone
     outreach.fake.tabs.get("Master Contacts")!.push(...batch("late", 3));
-    for (let i = 0; i < 6 && importedByJobSync() < 10; i++) await runOutreachCycle(cycle({ connections: flaky }));
+    for (let i = 0; i < 6 && importedByJobSync() < 10; i++) { await runOutreachCycle(cycle({ connections: flaky })); clock = new Date(clock.getTime() + 3 * 60_000); }
     expect(importedByJobSync()).toBe(10);
     expect(connNotes()).toHaveLength(3);
   });

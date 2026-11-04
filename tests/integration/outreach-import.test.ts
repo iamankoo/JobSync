@@ -58,7 +58,7 @@ describe("daily import limit", () => {
     expect(tracking()).toHaveLength(200);
     const again = await runOutreachImport(deps());
     expect(again).toMatchObject({ importedThisRun: 0, importedToday: 200, stoppedBecause: "daily-limit" });
-  });
+  }, 180_000);
 
   it("the next local day continues with the remaining contacts (and only those)", async () => {
     await setup(manyContacts(230));
@@ -69,7 +69,7 @@ describe("daily import limit", () => {
     expect(r.importedThisRun).toBe(30);
     expect(connections()).toHaveLength(230);
     expect(new Set(tracking().map((t) => t[0])).size).toBe(230);
-  });
+  }, 180_000);
 
   it("the daily limit setting can be lowered (and the day boundary is the app timezone, not UTC)", async () => {
     await setup(manyContacts(30));

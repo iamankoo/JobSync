@@ -3,7 +3,8 @@
  *
  *   OUTREACH_TEST_ACTION=seed     creates the isolated "Test Contacts" tab in the Outreach Database with 10 labelled contacts
  *   OUTREACH_TEST_ACTION=status   read-only progress snapshot -> test-results/outreach-test-status.json (no personal data)
- *   OUTREACH_TEST_ACTION=cleanup  removes every test artefact (see tests/helpers/outreach-test-tool.ts); real rows are never selected
+ *   OUTREACH_TEST_ACTION=drop-tab deletes ONLY the isolated Test Contacts tab (Sheets only; Gmail drafts/Connections are removed by the
+ *                                 server-side /api/cron/outreach-cleanup route, never from a local machine)
  *
  *   needs OUTREACH_SPREADSHEET_ID and OUTREACH_TEST_EMAIL_BASE (e.g. me@gmail.com -> me+jobsync01@gmail.com ...)
  *   npx vitest run --config vitest.live.config.mts tests/live/outreach-test-tool.live.test.ts
@@ -14,16 +15,14 @@ import fs from "node:fs";
 import path from "node:path";
 import { createRequire } from "node:module";
 import { describe, expect, it } from "vitest";
-import type { MemberId } from "@/config/members";
-import { accessFor } from "@/lib/gmail/drafts";
-import { createGoogleClient, setSheetsClientForTesting } from "@/lib/google-sheets/client";
+import { createGoogleClient } from "@/lib/google-sheets/client";
 import { normalizePrivateKey } from "@/lib/google-sheets/config";
-import { deleteConnection, listConnections } from "@/lib/google-sheets/connections-service";
+import { recipientOfKey } from "@/lib/outreach/send-ledger";
 import { OutreachSheet } from "@/lib/outreach/sheet";
 import { MASTER_FIELDS } from "@/lib/hr-master/types";
-import { MASTER_TAB, TRACKING_TAB } from "@/lib/outreach/types";
+import { MASTER_TAB } from "@/lib/outreach/types";
 import { parseEnvFile } from "../helpers/live-env";
-import { TEST_TAB, buildTestContactRows, cleanupTestArtifacts, testContactIds, testEmails } from "../helpers/outreach-test-tool";
+import { TEST_TAB, buildTestContactRows, testContactIds, testEmails } from "../helpers/outreach-test-tool";
 
 const root = path.resolve(__dirname, "..", "..");
 const envFile = parseEnvFile(path.join(root, ".env.local"));
@@ -65,7 +64,7 @@ describe.skipIf(!ready)(`controlled outreach test tool (${action})`, () => {
     const emails = testEmails(local, domain);
     const tracking = (await sheet.readTracking()).records;
     const mine = tracking.filter((t) => ids.has(t.contactId));
-    const ledger = (await sheet.readSendLedger()).records.filter((r) => emails.has(r.sendKey));
+    const ledger = (await sheet.readSendLedger()).records.filter((r) => emails.has(recipientOfKey(r.sendKey)));
     const state = (await out.getValues("'Outreach State'!A:C")).slice(1).map((r) => ({ key: r[0], value: String(r[1] ?? "").replace(/^(done|[0-9a-f-]{36}).*/, (m) => (m.startsWith("done") ? "done" : "claimed")) }));
     const conns = (await prod.getValues("Connections!A:M")).slice(1).filter((r) => emails.has((r[12] ?? "").toLowerCase()));
     const drafts = (await prod.getValues("NF_Drafts!A:J")).slice(1).filter((r) => conns.some((c) => c[0] === r[3]));
@@ -88,32 +87,15 @@ describe.skipIf(!ready)(`controlled outreach test tool (${action})`, () => {
     expect(snapshot.masterContactsRows).toBe(15891);
   });
 
-  it.runIf(action === "cleanup")("removes the test artefacts (Connections, drafts, tracking, ledger, milestone state, Test Contacts tab)", async () => {
-    expect(env.OUTREACH_TEST_CONFIRM_CLEANUP).toBe("yes");
+  it.runIf(action === "drop-tab")("deletes only the Test Contacts tab, after confirming nothing real is tracked from it", async () => {
+    expect(env.OUTREACH_TEST_CONFIRM_DROP).toBe("yes");
     const out = createGoogleClient({ spreadsheetId: outreachId!, ...creds() });
-    const prod = createGoogleClient({ spreadsheetId: prodId!, ...creds() });
-    setSheetsClientForTesting(prod); // the application services (Connections, Gmail accounts) read/write the production sheet through this
-    const report = await cleanupTestArtifacts({
-      local, domain, outreach: out, prod,
-      listConnections,
-      deleteConnection: async (owner, id) => { await deleteConnection(owner, id); },
-      deleteGmailDraft: async (member: MemberId, draftId: string) => {
-        const access = await accessFor(member, fetch);
-        if (!access.ok) return "error";
-        const res = await fetch(`https://gmail.googleapis.com/gmail/v1/users/me/drafts/${encodeURIComponent(draftId)}`, { method: "DELETE", headers: { Authorization: `Bearer ${access.token}` } });
-        return res.status === 204 || res.status === 200 ? "deleted" : res.status === 404 ? "gone" : "error";
-      },
-    });
-    fs.mkdirSync(path.join(root, "test-results"), { recursive: true });
-    fs.writeFileSync(path.join(root, "test-results", "outreach-test-cleanup.json"), JSON.stringify(report, null, 1));
-    expect(report.gmailDraftErrors).toBe(0);
-    // finally remove the isolated test tab itself
+    const tracking = (await new OutreachSheet(out).readTracking()).records;
+    expect(tracking.filter((t) => !testContactIds(local, domain).has(t.contactId))).toEqual([]); // no real contact may be tracked yet
     const api = rawApi();
     const meta = await api.spreadsheets.get({ spreadsheetId: outreachId, fields: "sheets.properties" });
     const tab = (meta.data.sheets ?? []).find((s: { properties: { title: string } }) => s.properties.title === TEST_TAB);
     if (tab) await api.spreadsheets.batchUpdate({ spreadsheetId: outreachId, requestBody: { requests: [{ deleteSheet: { sheetId: tab.properties.sheetId } }] } });
     expect((await out.getValues(`'${MASTER_TAB}'!A:A`)).length - 1).toBe(15891);
-    setSheetsClientForTesting(null);
-    expect(TRACKING_TAB).toBeTruthy();
   });
 });

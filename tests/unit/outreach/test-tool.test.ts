@@ -103,4 +103,28 @@ describe("cleanup removes ONLY test artefacts", () => {
     expect(o.fake.dataRows(TRACKING_TAB).filter((t) => t[0])).toHaveLength(2);
     expect([...(await o.sheet.claimedMilestones(now().toISOString()))]).toContain("connections:10"); // shared state kept: real work exists
   });
+
+  it("handles member|recipient send keys, keeps real ledger rows, never deletes SENT drafts' messages, is a no-op on dry run and idempotent", async () => {
+    o.fake.tabs.set(TEST_TAB, masterGrid(buildTestContactRows(LOCAL, DOMAIN)));
+    await runOutreachImport({ sheet: new OutreachSheet(o.fake, TEST_TAB), connections: realConnectionsPort, now, timezone: "Asia/Kolkata", dailyLimit: 200, perRun: 10, ownerOverride: "anni" });
+    const conns = prod.dataRows("Connections").filter((c) => c[12].startsWith(`${LOCAL}+jobsync`));
+    const draft = (cid: string, m: string, status: string) => [`contact:${cid}:${m}`, m, "contact", cid, `gd-${cid}-${m}`, status, "", "", "", ""];
+    for (const c of conns) { prod.rows("NF_Drafts").push(draft(c[0], "anni", "sent")); prod.rows("NF_Drafts").push(draft(c[0], "lukky", "created")); }
+    const ledger = (key: string, member: string) => ({ row: 0, sendKey: key, contactId: "x", claimId: `c-${key}`, status: "sent" as const, member, gmailAccount: "", connectionId: "", company: "", role: "", resumeFile: "", resumeSha256: "", resumeBytes: 0, draftId: "", threadId: "", gmailMessageId: "m", wordCount: 1, attempts: 1, notBefore: "", sentAt: "", sentDay: "", reason: "", history: "", createdAt: "", updatedAt: "" });
+    await o.sheet.appendSendRecord(ledger(`anni|${testEmail(LOCAL, DOMAIN, 1)}`, "anni"), 2);
+    await o.sheet.appendSendRecord(ledger("anni|real@realco.example.com", "anni"), 3);
+    invalidateTableCache();
+    const deleted: string[] = [];
+    const ports = { local: LOCAL, domain: DOMAIN, outreach: o.fake, prod, listConnections, deleteConnection: async (a: Parameters<typeof deleteConnection>[0], b: string) => { await deleteConnection(a, b); }, deleteGmailDraft: async (m: string, id: string) => { deleted.push(`${m}:${id}`); return "deleted" as const; } };
+    const dry = await cleanupTestArtifacts({ ...ports, dryRun: true });
+    expect(dry).toMatchObject({ dryRun: true, connectionsDeleted: 10, gmailDraftsDeleted: 10, sentDraftsKept: 10, sendLedgerRowsDeleted: 1 });
+    expect(deleted).toEqual([]);
+    expect(prod.dataRows("Connections")).toHaveLength(10);
+    const real = await cleanupTestArtifacts(ports);
+    expect(real).toMatchObject({ dryRun: false, connectionsDeleted: 10, gmailDraftsDeleted: 10, draftLedgerRowsDeleted: 20, sendLedgerRowsDeleted: 1 });
+    expect(deleted.every((d) => d.startsWith("lukky:"))).toBe(true); // only UNSENT drafts are deleted from Gmail
+    expect(o.fake.dataRows("Outreach Send Ledger").filter((r) => r[0]).map((r) => r[0])).toEqual(["anni|real@realco.example.com"]);
+    const again = await cleanupTestArtifacts(ports);
+    expect(again).toMatchObject({ connectionsDeleted: 0, gmailDraftsDeleted: 0, draftLedgerRowsDeleted: 0, trackingRowsDeleted: 0, sendLedgerRowsDeleted: 0 });
+  });
 });
