@@ -4,7 +4,7 @@
  * idempotent, so a cron retry or an interrupted run simply continues. It cannot send email (see send-gate.ts).
  */
 import { MEMBER_IDS, type MemberId } from "@/config/members";
-import { createGoogleClient } from "@/lib/google-sheets/client";
+import { createGoogleClient, sheetsRateLimitHits } from "@/lib/google-sheets/client";
 import { loadSheetsConfig } from "@/lib/google-sheets/config";
 import { createConnection } from "@/lib/google-sheets/connections-service";
 import { readConnectionsLocated } from "@/lib/google-sheets/repositories";
@@ -28,7 +28,10 @@ import { notifyEveryone } from "@/lib/push/notify";
 import { runSendStep, type SendDeps, type SendRunResult } from "./send-workflow";
 import { SENDING_ENABLED, type DailyCounters } from "./types";
 
-export const OUTREACH_LOCK_TTL_MS = 75_000;
+/** Longer than the route's 60 s limit, so a run that is killed never holds the lock past the next call; a normal run releases it at once. */
+export const OUTREACH_LOCK_TTL_MS = 65_000;
+/** When Google answers 429 this often within one run, drafting (the slowest step) yields for this run; sending and importing already ran. */
+export const DRAFT_YIELD_AFTER_RATE_LIMITS = 8;
 
 export interface CycleDeps {
   config: OutreachConfig;
@@ -47,6 +50,8 @@ export interface CycleDeps {
   now: () => Date;
   timezone: string;
   deadline?: number;
+  /** Number of Sheets 429 responses seen so far in this run (absent = never yield). */
+  rateLimitHits?: () => number;
 }
 
 export interface CycleResult {
@@ -84,7 +89,8 @@ export async function runOutreachCycle(deps: CycleDeps): Promise<CycleResult> {
     result.import = await step("import", () =>
       runOutreachImport({ sheet: deps.sheet, connections: deps.connections, now: deps.now, timezone: deps.timezone, dailyLimit: deps.config.dailyLimit, perRun: deps.config.perRun, ownerOverride: deps.config.ownerOverride, staleClaimMs: 120_000, ...(deps.deadline ? { deadline: deps.deadline } : {}) }),
     );
-    result.drafts = deps.draft ? ((await step("drafts", () => deps.draft!(deps.config.draftsPerRun))) ?? "skipped") : "skipped";
+    const pressured = (deps.rateLimitHits?.() ?? 0) >= DRAFT_YIELD_AFTER_RATE_LIMITS;
+    result.drafts = deps.draft && !pressured ? ((await step("drafts", () => deps.draft!(deps.config.draftsPerRun))) ?? "skipped") : "skipped";
     const sync = () =>
       step("sync", async () => {
         const connections = await deps.connections.listFresh();
@@ -197,6 +203,7 @@ export function buildRealCycleDeps(config: OutreachConfig = loadOutreachConfig()
     now: () => new Date(),
     timezone,
     deadline: started + budgetMs - 8_000,
+    rateLimitHits: sheetsRateLimitHits,
   };
 }
 

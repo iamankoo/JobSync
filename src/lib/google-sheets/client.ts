@@ -108,6 +108,11 @@ export function setSheetsRetryDeadline(deadline: number | null): void {
   retryDeadline = deadline;
 }
 
+let rateLimitHits = 0;
+/** How many 429 responses this process has seen since the last reset (the outreach run lets drafting yield when this is high). */
+export const sheetsRateLimitHits = () => rateLimitHits;
+export const resetSheetsRateLimitHits = () => { rateLimitHits = 0; };
+
 /** Test hook: replace the backoff sleep (null restores real waiting). */
 export function setRetrySleepForTesting(fn: ((ms: number) => Promise<void>) | null): void {
   sleepImpl = fn ?? realSleep;
@@ -139,6 +144,7 @@ export async function withRetry<T>(
       return await op();
     } catch (err) {
       const mapped = mapGoogleError(err);
+      if (mapped.code === "rate_limited") rateLimitHits += 1;
       const limit = mapped.code === "rate_limited" ? RATE_LIMIT_MAX_ATTEMPTS : MAX_ATTEMPTS;
       if (!retryOn(mapped) || attempt >= limit - 1) throw mapped;
       const wait = backoffMs(mapped, attempt, random);

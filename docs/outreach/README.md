@@ -234,3 +234,11 @@ The tracking row is "sent" only when all three e-mails are confirmed; the Connec
 (`reauth_required`) until they reconnect through the normal OAuth flow; the others keep sending. Each cron call: send first (own time slice), then
 import, then drafting; Master Contacts is cached per instance for 20 minutes. Test-artefact removal: `POST /api/cron/outreach-cleanup` (inert unless
 `OUTREACH_TEST_CLEANUP_BASE` is set; dry run unless `"dryRun": false`).
+
+## Cron execution model (background work)
+`GET /api/cron/outreach` authenticates and answers **202 `{accepted:true}` within milliseconds** (cron-job.org gives up after 30 s). The cycle runs as
+Next.js `after()` work, which Vercel keeps alive for the route's `maxDuration` (60 s); nothing relies on an un-awaited promise. Inside: Sheets retry
+sleeping stops at 50 s, send runs first (~20 s), then import (~36 s), then drafting (~44 s, skipped for the run after 8 Google 429s), hard stop 55 s.
+Overlap is prevented by an ordered-claim run lock (first live claim wins; expires after 65 s, so a killed run never blocks the next call). Progress is
+durable and idempotent (claims, send ledger, reconciliation), so the next call simply continues. Results are logged as `[outreach] {...}` (counts only).
+Schedule every 1-2 minutes.
