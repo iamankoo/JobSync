@@ -3,6 +3,7 @@
  * Database). It reads Master Contacts and keeps three small tabs of its own. It never touches the production spreadsheet and
  * never deletes or rewrites Master Contacts rows.
  */
+import { randomUUID } from "node:crypto";
 import { MEMBER_IDS, type MemberId } from "@/config/members";
 import type { SheetsClient } from "@/lib/google-sheets/client";
 import { columnLetter } from "@/lib/google-sheets/schema";
@@ -19,7 +20,10 @@ const q = (tab: string) => `'${tab}'`;
 /** Master Contacts is static (15,891 rows x 32 columns) but every cron call used to read it 3 times. Warm serverless instances reuse it for this long. */
 export const MASTER_CACHE_TTL_MS = 20 * 60_000;
 const masterCache = new Map<string, { at: number; grid: string[][] }>();
-export const clearMasterCache = () => masterCache.clear();
+/** Tabs and headers do not change between cron calls; verifying them costs 5 reads, so a warm instance re-checks only every 10 minutes. */
+const TABS_OK_TTL_MS = 10 * 60_000;
+const tabsVerified = new Map<string, number>();
+export const clearMasterCache = () => { masterCache.clear(); tabsVerified.clear(); };
 const lastCol = (tab: string) => columnLetter(HEADERS[tab].length);
 
 const IMPORT_STATUSES: readonly ImportStatus[] = ["importing", "added", "import_failed"];
@@ -67,6 +71,8 @@ export class OutreachSheet {
 
   /** Verifies the three tracking tabs exist with the right headers (writing the header row only into a blank tab). */
   async ensureTabs(): Promise<void> {
+    const verifiedAt = this.cacheKey ? tabsVerified.get(this.cacheKey) : undefined;
+    if (verifiedAt !== undefined && Date.now() - verifiedAt < TABS_OK_TTL_MS) return;
     for (const [tab, headers] of Object.entries(HEADERS)) {
       let first: string[] | undefined;
       try {
@@ -83,6 +89,7 @@ export class OutreachSheet {
         await this.client.updateValues(`${q(tab)}!A1:${columnLetter(headers.length)}1`, [[...headers]]);
       }
     }
+    if (this.cacheKey) tabsVerified.set(this.cacheKey, Date.now());
   }
 
   async readMaster(): Promise<string[][]> {
@@ -234,21 +241,35 @@ export class OutreachSheet {
     return out;
   }
 
-  /** One outreach worker at a time. The lock expires by itself after `ttlMs`, so a crashed run never blocks later ones. */
+  private lockId = "";
+
+  /**
+   * One outreach worker at a time, safe against simultaneous callers. Sheets has no transactions, so this uses ordered appends (like the send
+   * ledger): if no live lock exists the caller appends a claim row `run-lock | <expiry>:<id>`, re-reads the tab, and the FIRST live claim wins; a
+   * loser writes nothing more and stands down. The lock expires by itself after `ttlMs`, so a crashed or killed run never blocks later ones.
+   * The winner removes expired claim rows so the tab does not grow.
+   */
   async acquireLock(now: number, ttlMs: number): Promise<boolean> {
-    const grid = await this.client.getValues(`${q(STATE_TAB)}!A:C`);
-    const at = grid.findIndex((r, i) => i > 0 && (r[0] ?? "").trim() === "run-lock");
-    if (at >= 0 && Number(grid[at][1]) > now) return false;
-    const row = [["run-lock", String(now + ttlMs), new Date(now).toISOString()]];
-    if (at >= 0) await this.client.updateValues(`${q(STATE_TAB)}!A${at + 1}:C${at + 1}`, row);
-    else await this.client.appendValues(`${q(STATE_TAB)}!A:C`, row);
+    const parse = (r: string[]) => ({ key: (r[0] ?? "").trim(), expiry: Number(String(r[1] ?? "").split(":")[0]) || 0, id: String(r[1] ?? "").split(":")[1] ?? "" });
+    const live = (grid: string[][]) => grid.map((r, i) => ({ i, ...parse(r) })).filter((r) => r.i > 0 && r.key === "run-lock" && r.expiry > now);
+    if (live(await this.client.getValues(`${q(STATE_TAB)}!A:C`)).length) return false;
+    const id = randomUUID();
+    await this.client.appendValues(`${q(STATE_TAB)}!A:C`, [["run-lock", `${now + ttlMs}:${id}`, new Date(now).toISOString()]]);
+    const after = await this.client.getValues(`${q(STATE_TAB)}!A:C`);
+    if (live(after)[0]?.id !== id) return false; // an earlier claim won
+    this.lockId = id;
+    // housekeeping (only the holder deletes, so row numbers cannot shift under another caller's claim): expired claims and the legacy single row
+    const stale = after.map((r, i) => ({ i, ...parse(r) })).filter((r) => r.i > 0 && r.key === "run-lock" && r.expiry <= now).map((r) => r.i + 1);
+    if (stale.length) await this.client.deleteRows(STATE_TAB, stale).catch(() => undefined);
     return true;
   }
 
   async releaseLock(now: number): Promise<void> {
+    if (!this.lockId) return;
     const grid = await this.client.getValues(`${q(STATE_TAB)}!A:C`);
-    const at = grid.findIndex((r, i) => i > 0 && (r[0] ?? "").trim() === "run-lock");
-    if (at >= 0) await this.client.updateValues(`${q(STATE_TAB)}!A${at + 1}:C${at + 1}`, [["run-lock", "0", new Date(now).toISOString()]]);
+    const at = grid.findIndex((r, i) => i > 0 && (r[0] ?? "").trim() === "run-lock" && String(r[1] ?? "").endsWith(`:${this.lockId}`));
+    if (at >= 0) await this.client.updateValues(`${q(STATE_TAB)}!A${at + 1}:C${at + 1}`, [["run-lock", `0:${this.lockId}`, new Date(now).toISOString()]]);
+    this.lockId = "";
   }
 }
 
