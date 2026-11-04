@@ -53,7 +53,10 @@ export function parseTracking(cells: readonly string[], row: number): TrackingRe
 }
 
 export class OutreachSheet {
-  constructor(private readonly client: SheetsClient) {}
+  constructor(
+    private readonly client: SheetsClient,
+    private readonly masterTab: string = MASTER_TAB,
+  ) {}
 
   /** Verifies the three tracking tabs exist with the right headers (writing the header row only into a blank tab). */
   async ensureTabs(): Promise<void> {
@@ -76,7 +79,7 @@ export class OutreachSheet {
   }
 
   async readMaster(): Promise<string[][]> {
-    return this.client.getValues(`${q(MASTER_TAB)}!A:AZ`);
+    return this.client.getValues(`${q(this.masterTab)}!A:AZ`);
   }
 
   async readTracking(): Promise<{ records: TrackingRecord[]; nextRow: number }> {

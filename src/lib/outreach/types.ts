@@ -22,10 +22,12 @@ export const DEFAULT_IMPORT_PER_RUN = 10;
 export const MAX_IMPORT_ATTEMPTS = 3;
 
 /**
- * Real sending is NOT built in Part 2: no code path in this module can send mail, and this switch is a constant, not an
- * environment variable, so it cannot be enabled by configuration. Part 3 replaces it deliberately.
+ * The code-level sending switch. It is a compile-time constant, NOT an environment variable, so configuration alone cannot flip it.
+ * It is now `true`: the send workflow exists and is tested, but NOTHING runs unless the outreach cron is enabled
+ * (OUTREACH_ENABLED=true plus OUTREACH_CRON_SECRET and OUTREACH_SPREADSHEET_ID), and every send still has to pass all 14 validations,
+ * the daily limits and (when configured) the recipient allowlist. Setting it back to `false` instantly disables all sending.
  */
-export const SENDING_ENABLED = false as const;
+export const SENDING_ENABLED = true as const;
 
 export type ContactSource = "outreach-database" | "manual";
 /** importing = claimed, Connection not yet confirmed; added = Connection saved; import_failed = gave up after MAX_IMPORT_ATTEMPTS. */

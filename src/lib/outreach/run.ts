@@ -76,9 +76,9 @@ export async function runOutreachCycle(deps: CycleDeps): Promise<CycleResult> {
   };
   try {
     await deps.sheet.ensureTabs();
-    result.manual = await step("manual", () => registerManualConnections({ sheet: deps.sheet, connections: deps.connections, now: deps.now }));
+    result.manual = await step("manual", () => registerManualConnections({ sheet: deps.sheet, connections: deps.connections, now: deps.now, since: deps.config.manualSince }));
     result.import = await step("import", () =>
-      runOutreachImport({ sheet: deps.sheet, connections: deps.connections, now: deps.now, timezone: deps.timezone, dailyLimit: deps.config.dailyLimit, perRun: deps.config.perRun, ...(deps.deadline ? { deadline: deps.deadline } : {}) }),
+      runOutreachImport({ sheet: deps.sheet, connections: deps.connections, now: deps.now, timezone: deps.timezone, dailyLimit: deps.config.dailyLimit, perRun: deps.config.perRun, ownerOverride: deps.config.ownerOverride, ...(deps.deadline ? { deadline: deps.deadline } : {}) }),
     );
     result.drafts = deps.draft ? ((await step("drafts", () => deps.draft!(deps.config.draftsPerRun))) ?? "skipped") : "skipped";
     const sync = () =>
@@ -123,7 +123,7 @@ export function openOutreachSheet(config: OutreachConfig = loadOutreachConfig())
   const base = loadSheetsConfig();
   if (!config.spreadsheetId) throw new Error("OUTREACH_SPREADSHEET_ID is not set.");
   if (config.spreadsheetId === base.spreadsheetId) throw new Error("OUTREACH_SPREADSHEET_ID must not be the production spreadsheet.");
-  return new OutreachSheet(createGoogleClient({ ...base, spreadsheetId: config.spreadsheetId }));
+  return new OutreachSheet(createGoogleClient({ ...base, spreadsheetId: config.spreadsheetId }), config.masterTab);
 }
 
 export const realConnectionsPort: ConnectionsPort = {
@@ -157,6 +157,7 @@ export function buildRealSendDeps(config: OutreachConfig, sheet: OutreachSheet, 
       },
     },
     limits: config.sendLimits,
+    allowlist: config.sendAllowlist,
     now: () => new Date(),
     timezone,
     ...(deadline ? { deadline } : {}),

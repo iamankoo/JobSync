@@ -13,8 +13,8 @@ const ONE = [{ email: "jane@acme.example.com", name: "Jane Doe", company: "Acme"
 // ledger columns: 3 Status, 4 Member, 9 ResumeFile, 14 GmailMessageID, 17 NotBefore, 19 SentDay, 20 Reason, 21 History
 
 describe("the gate", () => {
-  it("the shipped gate is closed", () => {
-    expect(SENDING_ENABLED).toBe(false);
+  it("the code-level switch is open, but the workflow still refuses when it is handed a closed gate", () => {
+    expect(SENDING_ENABLED).toBe(true);
   });
 
   it("with the gate closed the workflow does nothing at all (no Gmail call, no sheet write)", async () => {
