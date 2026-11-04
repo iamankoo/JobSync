@@ -46,6 +46,12 @@ describe("the HTTP endpoint answers immediately", () => {
     await pending;
   });
 
+  it("the route's segment config is a literal number (Next.js rejects imported constants in the production build)", async () => {
+    const { readFileSync } = await import("node:fs");
+    const src = readFileSync("src/app/api/cron/outreach/route.ts", "utf8");
+    expect(src).toMatch(new RegExp(`export const maxDuration = ${ROUTE_MAX_DURATION_S};`));
+  });
+
   it("the route allows the background work to live for the documented limit", () => {
     expect(maxDuration).toBe(ROUTE_MAX_DURATION_S);
     expect(HARD_STOP_MS).toBeLessThan(ROUTE_MAX_DURATION_S * 1000);

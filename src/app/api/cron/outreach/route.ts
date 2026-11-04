@@ -1,10 +1,11 @@
 import { createHash, timingSafeEqual } from "node:crypto";
 import { after } from "next/server";
 import { errorJson } from "@/lib/api/responses";
-import { ROUTE_MAX_DURATION_S, runOutreachInBackground } from "@/lib/outreach/background";
+import { runOutreachInBackground } from "@/lib/outreach/background";
 import { loadOutreachConfig } from "@/lib/outreach/config";
 
-export const maxDuration = ROUTE_MAX_DURATION_S;
+// Next.js requires route segment config to be a literal (an imported constant fails the production build). Keep in step with ROUTE_MAX_DURATION_S.
+export const maxDuration = 60;
 const digest = (v: string) => createHash("sha256").update(v).digest();
 
 /**
