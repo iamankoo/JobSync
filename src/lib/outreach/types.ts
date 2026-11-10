@@ -13,6 +13,8 @@ export const COUNTERS_TAB = "Outreach Daily Counters";
 export const STATE_TAB = "Outreach State";
 /** Durable idempotency + history of every send attempt (one active row per recipient e-mail). */
 export const SEND_LEDGER_TAB = "Outreach Send Ledger";
+/** OPTIONAL. Contacts to import BEFORE the rest of Master Contacts (same columns as Master; see priority.ts). Not created automatically. */
+export const PRIORITY_TAB = "Priority Contacts";
 /** Hand-maintained opt-outs / exclusions (e-mail or domain). */
 export const EXCLUSIONS_TAB = "Outreach Exclusions";
 
@@ -29,7 +31,8 @@ export const MAX_IMPORT_ATTEMPTS = 3;
  */
 export const SENDING_ENABLED = true as const;
 
-export type ContactSource = "outreach-database" | "manual";
+/** "existing-draft": a Connection that already had unsent JobSync drafts in the members' Gmail (e.g. Network Finder drafts) and was brought into the send workflow. */
+export type ContactSource = "outreach-database" | "manual" | "existing-draft";
 /** importing = claimed, Connection not yet confirmed; added = Connection saved; import_failed = gave up after MAX_IMPORT_ATTEMPTS. */
 export type ImportStatus = "importing" | "added" | "import_failed";
 /** awaiting = no draft yet; drafting = some mailboxes done; drafted = all connected mailboxes; needs_review = a draft carries a review flag; failed; sent = Gmail confirmed. */

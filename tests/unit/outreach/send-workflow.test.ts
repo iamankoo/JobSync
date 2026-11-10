@@ -82,19 +82,30 @@ describe("A: a fully validated email is sent, confirmed, recorded and counted", 
     expect(rows.every((r) => ["sent", "superseded"].includes(r[3]))).toBe(true);
   });
 
-  it("many contacts: the per-run limit stops the run after N sends", async () => {
-    const f = buildSendFixture(Array.from({ length: 6 }, (_, i) => ({ email: `p${i}@c${i}.example.com`, name: `Pat Person${i}`, company: `Co${i}` })), { perRun: 3, globalDaily: 50, perMemberDaily: 50 });
+  it("many contacts: there is no per-run count cap, every eligible e-mail is sent in the one run", async () => {
+    const f = buildSendFixture(Array.from({ length: 25 }, (_, i) => ({ email: `p${i}@c${i}.example.com`, name: `Pat Person${i}`, company: `Co${i}` })));
     await f.seed();
     const r = await runSendStep(f.deps());
-    expect(r).toMatchObject({ sent: 3, stoppedBecause: "per-run-limit" });
-    expect(f.gmail.sendCalls()).toHaveLength(3);
+    expect(r).toMatchObject({ sent: 25, stoppedBecause: "none" });
+    expect(f.gmail.sendCalls()).toHaveLength(25);
+  });
+
+  it("only the time budget ends a run early, and the next call continues exactly where it stopped", async () => {
+    const f = buildSendFixture(Array.from({ length: 8 }, (_, i) => ({ email: `p${i}@c${i}.example.com`, name: `Pat Person${i}`, company: `Co${i}` })));
+    await f.seed();
+    const first = await runSendStep(f.deps({ deadline: Date.now() - 1 })); // the budget is already spent: nothing starts
+    expect(first).toMatchObject({ sent: 0, stoppedBecause: "deadline" });
+    const second = await runSendStep(f.deps());
+    expect(second.sent).toBe(8);
+    expect((await runSendStep(f.deps())).sent).toBe(0); // drained
+    expect(f.gmail.sendCalls()).toHaveLength(8);
   });
 });
 
 describe("the fourteen validations: any failure means NOT sent", () => {
   const specs = [{ email: "jane@acme.example.com", name: "Jane Doe", company: "Acme" }];
-  const run = async (mutate: (f: ReturnType<typeof buildSendFixture>) => void | Promise<void>, limits = {}) => {
-    const f = buildSendFixture(specs, limits);
+  const run = async (mutate: (f: ReturnType<typeof buildSendFixture>) => void | Promise<void>) => {
+    const f = buildSendFixture(specs);
     await mutate(f);
     await f.seed();
     const r = await runSendStep(f.deps());
@@ -175,10 +186,16 @@ describe("the fourteen validations: any failure means NOT sent", () => {
       expect(x.reason, value).toMatch(/\[not_excluded\].*asked not to be contacted/);
     }
   });
-  it("11 no previous successful send for this outreach/contact (tracking says sent, or the ledger does)", async () => {
-    const x = await run((f) => { f.tracking[0].sendStatus = "sent"; });
+  it("11 no previous successful send for this outreach/contact (the draft ledger or the send ledger says so)", async () => {
+    // A contact flagged "sent" whose every draft is sent is finished: not a candidate at all, so not a single Gmail call.
+    const x = await run((f) => { f.tracking[0].sendStatus = "sent"; for (const [k, v] of f.draftLedger) f.draftLedger.set(k, { ...v, status: "sent" }); });
     notSent(x);
-    expect(x.status).toBe("sent"); // already done: not a candidate at all
+    expect(x.status).toBe("sent");
+    expect(x.f.gmail.calls.filter((c) => c.startsWith("read:"))).toEqual([]);
+    // The contact-level flag ALONE is only a summary and does not suppress a member's unsent draft (production had 153 contacts flagged "sent" that still had
+    // unsent drafts): what keeps a confirmed e-mail from being repeated is the durable ledgers, tested right below.
+    const z = await run((f) => { f.tracking[0].sendStatus = "sent"; });
+    expect(z.f.gmail.sendCalls()).toHaveLength(1);
     const y = await run(async (f) => {
       await f.sheet.ensureTabs();
       await f.sheet.appendSendRecord({ row: 0, sendKey: "anni|jane@acme.example.com", contactId: f.tracking[0].contactId, claimId: "earlier", status: "sent", member: "anni", gmailAccount: "a@b", connectionId: "conn_0", company: "Acme", role: "Software Engineer", resumeFile: "x.pdf", resumeSha256: "", resumeBytes: 1, draftId: "d", threadId: "", gmailMessageId: "m-old", wordCount: 90, attempts: 1, notBefore: "", sentAt: "2026-11-01T00:00:00.000Z", sentDay: "2026-11-01", reason: "", history: "", createdAt: "2026-11-01T00:00:00.000Z", updatedAt: "2026-11-01T00:00:00.000Z" }, 2);
@@ -217,22 +234,16 @@ describe("the fourteen validations: any failure means NOT sent", () => {
     notSent(y);
     expect(y.reason).toMatch(/no longer exists in Gmail/);
   });
-  it("14 the daily limits (per member, global, and 0 pauses sending)", async () => {
-    const perMember = await run(() => undefined, { perMemberDaily: 0 });
-    notSent(perMember);
-    expect(perMember.reason).toMatch(/\[daily_limit\].*rolling 24-hour sending limit/);
-    const global = await run(() => undefined, { globalDaily: 0 });
-    notSent(global);
-    expect(global.reason).toMatch(/combined rolling 24-hour sending limit|global rolling 24-hour sending limit/);
-  });
-  it("the limit counts sends made in the last 24 hours (rolling), and frees up as they age out", async () => {
-    const f = buildSendFixture(Array.from({ length: 4 }, (_, i) => ({ email: `p${i}@c${i}.example.com`, name: `Pat Person${i}`, company: `Co${i}` })), { perMemberDaily: 2, globalDaily: 25, perRun: 10 });
+  it("14 Gmail's own quota: after Gmail refuses an account for quota reasons that account waits out the cool-down (a Gmail limit, not a JobSync cap)", async () => {
+    const f = buildSendFixture(Array.from({ length: 3 }, (_, i) => ({ email: `p${i}@c${i}.example.com`, name: `Pat Person${i}`, company: `Co${i}` })));
     await f.seed();
-    expect((await runSendStep(f.deps())).sent).toBe(2);
-    expect((await runSendStep(f.deps())).sent).toBe(0);
-    expect(f.gmail.sendCalls()).toHaveLength(2);
-    f.clock.now = new Date("2026-11-07T06:01:00.000Z");
-    expect((await runSendStep(f.deps())).sent).toBe(2);
+    f.gmail.sendScript = [{ status: "rate_limited", retryAfterMs: 45 * 60_000 }];
+    const first = await runSendStep(f.deps());
+    expect(first).toMatchObject({ sent: 0, failed: 1, stoppedBecause: "rate-limited" });
+    expect(f.gmail.sendCalls()).toHaveLength(1); // the other two e-mails of the same account did NOT hit Gmail again
+    expect(f.track()[1][25]).toMatch(/\[gmail_quota\].*slow down/);
+    f.clock.now = new Date(NOW.getTime() + 46 * 60_000);
+    expect((await runSendStep(f.deps())).sent).toBe(3); // cool-down over: everything goes out
   });
 });
 
@@ -267,7 +278,7 @@ describe("D: Gmail authentication, quota and API failures", () => {
     f.clock.now = new Date(NOW.getTime() + 20 * 60_000);
     expect((await runSendStep(f.deps())).sent).toBe(1);
     expect(f.ledger().map((r) => r[3])).toEqual(["failed_transient", "sent"]);
-    expect(f.ledger()[1][16]).toBe("2"); // attempt number carried over
+    expect(f.ledger()[1][16]).toBe("1"); // a Gmail rate-limit refusal is pacing, not a failed attempt: it does not use up the recipient's attempts
     f.clock.now = new Date(NOW.getTime() + 60 * 60_000);
     expect((await runSendStep(f.deps())).sent).toBe(0);
   });

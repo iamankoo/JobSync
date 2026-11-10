@@ -15,6 +15,7 @@ import { GET as callback } from "@/app/api/gmail/callback/route";
 import { GET as cron } from "@/app/api/cron/network-finder/route";
 import type { MemberId } from "@/config/members";
 import { GMAIL_COMPOSE_SCOPE } from "@/lib/gmail/config";
+import { getDraftBacklogGate } from "@/lib/gmail/draft-backlog";
 import { setSheetsClientForTesting } from "@/lib/google-sheets/client";
 import { resetMembersCache } from "@/lib/google-sheets/members-service";
 import { loadNetworkFinderConfig } from "@/lib/network-finder/config";
@@ -39,12 +40,18 @@ beforeEach(() => {
   resetMembersCache();
   google.drafts = [];
   google.calls = [];
+  getDraftBacklogGate().invalidate(); // the process-wide backlog gate caches its count: start every test fresh
   vi.stubEnv("GOOGLE_OAUTH_CLIENT_ID", "test-client.apps.googleusercontent.com");
   vi.stubEnv("GOOGLE_OAUTH_CLIENT_SECRET", "test-client-secret");
   vi.stubEnv("GOOGLE_OAUTH_REDIRECT_URI", "http://localhost:3000/api/gmail/callback");
   vi.stubEnv("GMAIL_TOKEN_ENCRYPTION_KEY", randomBytes(32).toString("base64"));
   vi.stubGlobal("fetch", vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
     const url = String(input);
+    // drafts.list (read-only; what the draft-backlog gate counts): the ids of the drafts really in this mailbox. Not recorded as a call.
+    if (url.startsWith("https://gmail.googleapis.com/gmail/v1/users/me/drafts?") && (init?.method ?? "GET") === "GET") {
+      const token = (init?.headers as Record<string, string>).Authorization.replace("Bearer ", "");
+      return Response.json({ drafts: google.drafts.map((d, i) => ({ d, i })).filter(({ d }) => d.token === token).map(({ i }) => ({ id: `draft-${i + 1}` })) });
+    }
     google.calls.push(url.split("?")[0]);
     if (url === "https://oauth2.googleapis.com/token") {
       const p = new URLSearchParams(String(init?.body));

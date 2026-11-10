@@ -4,6 +4,7 @@
  */
 import { randomBytes } from "node:crypto";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { getDraftBacklogGate } from "@/lib/gmail/draft-backlog";
 import { NextRequest } from "next/server";
 
 vi.mock("@/lib/auth/session", async (orig) => ({ ...(await orig<typeof import("@/lib/auth/session")>()), getSession: vi.fn() }));
@@ -51,6 +52,11 @@ function mockGoogle() {
   const failMailbox = new Set<string>();
   const fn = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
     const url = String(input);
+    // drafts.list (read-only; what the draft-backlog gate counts): the ids of the drafts really in this mailbox. Not recorded as a call.
+    if (url.startsWith("https://gmail.googleapis.com/gmail/v1/users/me/drafts?") && (init?.method ?? "GET") === "GET") {
+      const who = (init?.headers as Record<string, string>).Authorization.replace("Bearer access-", "");
+      return Response.json({ drafts: drafts.map((d, i) => ({ d, i })).filter(({ d }) => d.mailbox === who).map(({ i }) => ({ id: `draft-${i + 1}` })) });
+    }
     if (url === "https://oauth2.googleapis.com/token") {
       const p = new URLSearchParams(String(init?.body));
       if (p.get("grant_type") === "authorization_code") {
@@ -149,6 +155,7 @@ beforeEach(async () => {
   vi.stubEnv("NEMOTRON_API_KEY", ""); // the built-in writer: the deterministic, validated fill
   google = mockGoogle();
   vi.stubGlobal("fetch", google.fn);
+  getDraftBacklogGate().invalidate(); // the process-wide backlog gate caches its count: start every test fresh
   for (const m of MEMBERS) await connectGmail(m);
   google.drafts.length = 0;
   google.fn.mockClear();
@@ -176,7 +183,11 @@ describe("six-field connection → researched, role-specific drafts in three mai
     }
     expect(ledger().filter((r) => r[3] === c.connectionId).map((r) => r[5])).toEqual(["created", "created", "created"]);
     // Drafts only: the only Gmail call is drafts.create (no send endpoint was ever requested).
-    const gmailCalls = google.fn.mock.calls.map((a) => String(a[0])).filter((u) => u.includes("gmail.googleapis.com"));
+    const allGmail = google.fn.mock.calls.filter((a) => String(a[0]).includes("gmail.googleapis.com"));
+    // The draft-backlog gate also lists each member's Drafts folder (read-only GET drafts.list); those are the only other Gmail calls.
+    const lists = allGmail.filter((a) => String(a[0]).includes("/users/me/drafts?"));
+    expect(lists.every((a) => ((a[1] as RequestInit | undefined)?.method ?? "GET") === "GET")).toBe(true);
+    const gmailCalls = allGmail.filter((a) => !lists.includes(a)).map((a) => String(a[0]));
     expect(gmailCalls.length).toBe(3);
     expect(gmailCalls.every((u) => u.endsWith("/users/me/drafts"))).toBe(true);
   });

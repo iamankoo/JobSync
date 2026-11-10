@@ -7,8 +7,9 @@ import { getMember } from "@/config/members";
 import type { ResumeLookup, ResumeResult } from "@/lib/gmail/attachment";
 import type { DraftReadback, Reconciliation, ReadResult, SendOutcome } from "@/lib/gmail/send";
 import { contactIdFor } from "@/lib/hr-master/ids";
-import { DEFAULT_SEND_LIMITS, type SendLimits } from "@/lib/outreach/limits";
+
 import type { DraftInfo, GmailPort, SendDeps } from "@/lib/outreach/send-workflow";
+import { withParkedReason } from "@/lib/gmail/draft-flags";
 import { draftKeyFor } from "@/lib/outreach/sync";
 import { emptyDrafts, emptySendFields, type TrackingRecord } from "@/lib/outreach/types";
 import type { Connection } from "@/types/domain";
@@ -72,14 +73,14 @@ export interface ContactSpec {
   members?: MemberId[];
 }
 
-export function buildSendFixture(specs: ContactSpec[] = [{ email: "jane@acme.example.com", name: "Jane Doe", company: "Acme" }], limits: Partial<SendLimits> = {}) {
+export function buildSendFixture(specs: ContactSpec[] = [{ email: "jane@acme.example.com", name: "Jane Doe", company: "Acme" }]) {
   const master = specs.map((s) => masterRow({ PersonEmail: s.email, PersonName: s.name ?? "", CompanyName: s.company ?? "" }));
   const out = newOutreachSpreadsheet(masterGrid(master));
   const gmail = new FakeGmail();
   const connections = new Map<string, Connection>();
   const draftLedger = new Map<string, DraftInfo>();
   const tracking: TrackingRecord[] = [];
-  const calls = { markMessaged: [] as string[], markSent: [] as string[] };
+  const calls = { markMessaged: [] as string[], markSent: [] as string[], parked: [] as string[] };
   let resumeMode: "ok" | "unmapped" | "missing" | "wrong_size" = "ok";
 
   specs.forEach((s, i) => {
@@ -132,8 +133,14 @@ export function buildSendFixture(specs: ContactSpec[] = [{ email: "jane@acme.exa
         const k = draftKeyFor(connectionId, m);
         draftLedger.set(k, { ...draftLedger.get(k)!, status: "sent" });
       },
+      // Same effect as the production wiring: only the ledger row's note changes (the Gmail draft is never touched).
+      setParked: async (m, connectionId, reason) => {
+        const k = draftKeyFor(connectionId, m);
+        const cur = draftLedger.get(k);
+        calls.parked.push(`${m}:${connectionId}:${reason ?? "cleared"}`);
+        if (cur && cur.status === "created") draftLedger.set(k, { ...cur, detail: withParkedReason(cur.detail, reason) });
+      },
     },
-    limits: { ...DEFAULT_SEND_LIMITS, ...limits },
     now: () => clock.now,
     timezone: "Asia/Kolkata",
     ...over,

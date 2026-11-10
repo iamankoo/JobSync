@@ -32,7 +32,8 @@ describe("the sending surface", () => {
   it("the real send wiring is constructed only when the gate is open, and no environment variable can open it", () => {
     const run = fs.readFileSync(path.join(root, "lib/outreach/run.ts"), "utf8");
     expect(run).toContain("const gate: boolean = SENDING_ENABLED;");
-    expect(run).toContain("...(gate ? { send: () => runSendStep(buildRealSendDeps");
+    expect(run).toMatch(/\.\.\.\(gate\s*\?\s*\{\s*send: async \(\) => \{/);
+    expect(run).toContain("runSendStep(buildRealSendDeps(config, sheet, timezone");
     expect(fs.readFileSync(path.join(root, "lib/outreach/types.ts"), "utf8")).toContain("export const SENDING_ENABLED = true as const;");
     expect(using(/process\.env\.[A-Z_]*SEND(ING)?_ENABLED/)).toEqual([]);
   });

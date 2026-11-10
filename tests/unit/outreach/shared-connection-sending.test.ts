@@ -1,6 +1,6 @@
 /**
  * The shared-Connection workflow: ONE Connection -> one separately personalised e-mail per member, each sent from that member's own
- * Gmail with that member's own resume; independent rolling-24h limits per member; (member, recipient) idempotency. MOCK ports only.
+ * Gmail with that member's own resume; no JobSync sending cap; (member, recipient) idempotency. MOCK ports only.
  */
 import { describe, expect, it } from "vitest";
 import type { MemberId } from "@/config/members";
@@ -85,42 +85,30 @@ describe("one shared Connection -> three separate e-mails", () => {
   });
 });
 
-describe("rolling 24-hour limits, independent per member", () => {
-  it("each member may send up to the limit; the limit is NOT shared between members; 0 pauses a member", async () => {
-    const f = buildSendFixture(people(5), { perMemberDaily: 2, globalDaily: 6, perRun: 30 });
+describe("no JobSync sending cap: every member's e-mails keep going out, independently", () => {
+  it("one shared Connection per person -> all three members' e-mails are sent, for any number of Connections", async () => {
+    const f = buildSendFixture(people(40));
     await f.seed();
     const r = await runSendStep(f.deps());
-    expect(r.sent).toBe(6);
-    for (const m of ALL) expect(f.gmail.sendCalls().filter((c) => c.startsWith(`send:${m}:`))).toHaveLength(2);
-    const g = buildSendFixture(people(3), { perMemberDaily: 0, globalDaily: 0, perRun: 30 });
-    await g.seed();
-    expect((await runSendStep(g.deps())).sent).toBe(0);
+    expect(r).toMatchObject({ sent: 120, stoppedBecause: "none" });
+    for (const m of ALL) expect(f.gmail.sendCalls().filter((c) => c.startsWith(`send:${m}:`))).toHaveLength(40);
   });
 
-  it("the window is a rolling 24 hours: a calendar-day change does not reset it, aging out does", async () => {
-    const f = buildSendFixture(people(4), { perMemberDaily: 2, globalDaily: 6, perRun: 30 });
+  it("a calendar-day change or the passage of time changes nothing: there is no window to wait for", async () => {
+    const f = buildSendFixture(people(4));
     await f.seed();
-    expect((await runSendStep(f.deps())).sent).toBe(6);
-    f.clock.now = new Date(f.clock.now.getTime() + 13 * 3600_000); // 19:00 UTC = 00:30 IST next day: a new calendar day, still inside 24h
-    expect((await runSendStep(f.deps())).sent).toBe(0);
-    f.clock.now = new Date(f.clock.now.getTime() + 12 * 3600_000); // 25 hours after the first sends
-    expect((await runSendStep(f.deps())).sent).toBe(6);
+    expect((await runSendStep(f.deps())).sent).toBe(12);
+    f.clock.now = new Date(f.clock.now.getTime() + 13 * 3600_000);
+    expect((await runSendStep(f.deps())).sent).toBe(0); // nothing left, not "limited"
+    expect(f.gmail.sendCalls()).toHaveLength(12);
   });
 
-  it("the combined limit (600 by default = 3 x 200) also holds", async () => {
-    const f = buildSendFixture(people(4), { perMemberDaily: 5, globalDaily: 4, perRun: 30 });
-    await f.seed();
-    expect((await runSendStep(f.deps())).sent).toBe(4);
-  });
-
-  it("concurrent workers cannot overshoot a member's limit", async () => {
-    const f = buildSendFixture(people(6), { perMemberDaily: 2, globalDaily: 30, perRun: 30 });
+  it("concurrent workers never send one (member, recipient) twice", async () => {
+    const f = buildSendFixture(people(6));
     await f.seed();
     await Promise.all([runSendStep(f.deps()), runSendStep(f.deps()), runSendStep(f.deps())]);
-    for (const m of ALL) {
-      const live = f.ledger().filter((l) => l[4] === m && ["sent", "sending", "uncertain", "claimed"].includes(l[3]));
-      expect(live.length, m).toBeLessThanOrEqual(2);
-    }
-    expect(new Set(f.ledger().filter((l) => l[3] === "sent").map((l) => l[0])).size).toBe(f.ledger().filter((l) => l[3] === "sent").length); // never two sends for one (member, recipient)
+    const sent = f.ledger().filter((l) => l[3] === "sent");
+    expect(new Set(sent.map((l) => l[0])).size).toBe(sent.length); // never two sends for one (member, recipient)
+    expect(f.gmail.sendCalls().length).toBe(new Set(f.gmail.sendCalls()).size);
   });
 });
