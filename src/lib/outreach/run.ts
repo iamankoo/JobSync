@@ -38,11 +38,11 @@ export const OUTREACH_LOCK_TTL_MS = 65_000;
 /** Contacts that need a person (review / blocked / recorded as unsendable) are re-checked about every 30 minutes (every 15th call), not on every call (see SendDeps.reviewRecheckEvery). */
 export const REVIEW_RECHECK_EVERY = 15;
 /** How long (from the start of the call) the send step may START new sends: the usual slice, and the longer one while drafting is paused by the backlog gate. */
-export const SEND_SLICE_MS = 20_000;
+export const SEND_SLICE_MS = 10_000;
 /** Bookkeeping that registers/parks old drafts runs BEFORE sending: it gets a small slice and batch so it can never use the Sheets quota sending needs. */
 export const ADOPT_SLICE_MS = 6_000;
 export const ADOPT_BATCH = 8;
-export const SEND_SLICE_BACKLOG_MS = 28_000;
+export const SEND_SLICE_BACKLOG_MS = 16_000;
 /** When Google answers 429 this often within one run, drafting (the slowest step) yields for this run; sending and importing already ran. */
 export const DRAFT_YIELD_AFTER_RATE_LIMITS = 8;
 
