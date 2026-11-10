@@ -110,12 +110,26 @@ export async function runOutreachImport(deps: ImportDeps): Promise<ImportResult>
   const members = deps.members ?? MEMBER_IDS;
   const res: ImportResult = { day, importedThisRun: 0, importedToday: 0, dailyLimit: deps.dailyLimit, resumed: 0, linkedExisting: 0, failed: 0, stoppedBecause: "none", masterRejected: 0, queueRemaining: 0, errors: [] };
 
-  const parsed = parseMasterRows(await deps.sheet.readMaster());
-  res.masterRejected = parsed.rejected.length;
-  const byId = new Map(parsed.contacts.map((c) => [c.contactId, c]));
   const tracking = await deps.sheet.readTracking();
   let nextRow = tracking.nextRow;
   const records = tracking.records;
+
+  // Rolling 24 hours from the FIRST claim of each contact (a retry never moves it). Contacts linked to an already existing Connection do not count.
+  const windowStart = at.getTime() - 24 * 60 * 60_000;
+  const inWindow = (rows: readonly TrackingRecord[]) => rows.filter((r) => r.source === "outreach-database" && Date.parse(r.claimedAt) > windowStart && (r.importStatus === "added" || r.importStatus === "importing") && r.lastError !== "linked-existing");
+  const countedToday = () => inWindow(records).length;
+  const quota = () => Math.max(0, deps.dailyLimit - countedToday());
+
+  // Allowance used up and no interrupted claim to finish: nothing can be imported, so Master Contacts (15,000+ rows) and Connections are not even read.
+  if (quota() <= 0 && !records.some((x) => x.importStatus === "importing")) {
+    res.stoppedBecause = "daily-limit";
+    res.importedToday = countedToday();
+    return res;
+  }
+
+  const parsed = parseMasterRows(await deps.sheet.readMaster());
+  res.masterRejected = parsed.rejected.length;
+  const byId = new Map(parsed.contacts.map((c) => [c.contactId, c]));
   const connByEmail = indexConnectionsByEmail(await deps.connections.listFresh());
 
   // 1. Finish interrupted claims.
@@ -130,12 +144,6 @@ export async function runOutreachImport(deps: ImportDeps): Promise<ImportResult>
       res.failed += 1;
     } else if (r.source === "outreach-database" && at.getTime() - Date.parse(r.updatedAt || r.claimedAt) >= (deps.staleClaimMs ?? 0)) retry.push(r);
   }
-
-  // Rolling 24 hours from the FIRST claim of each contact (a retry never moves it). Contacts linked to an already existing Connection do not count.
-  const windowStart = at.getTime() - 24 * 60 * 60_000;
-  const inWindow = (rows: readonly TrackingRecord[]) => rows.filter((r) => r.source === "outreach-database" && Date.parse(r.claimedAt) > windowStart && (r.importStatus === "added" || r.importStatus === "importing") && r.lastError !== "linked-existing");
-  const countedToday = () => inWindow(records).length;
-  const quota = () => Math.max(0, deps.dailyLimit - countedToday());
 
   // 2. The queue: eligible, untracked, not already in Connections (manual or earlier), best-identified first.
   const trackedIds = new Set(records.map((r) => r.contactId));

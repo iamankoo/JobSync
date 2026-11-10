@@ -19,6 +19,7 @@ import { setSheetsClientForTesting } from "@/lib/google-sheets/client";
 import { createConnection, updateConnection } from "@/lib/google-sheets/connections-service";
 import { resetMembersCache } from "@/lib/google-sheets/members-service";
 import { distributeDrafts } from "@/lib/network-finder/draft-fanout";
+import { forgetAccess } from "@/lib/gmail/access-cache";
 import { existingSentTrackerDeps } from "@/lib/network-finder/gateways";
 import { runSentTracking } from "@/lib/network-finder/sent-tracker";
 import { FakeSheets } from "../helpers/fake-sheets";
@@ -201,6 +202,9 @@ describe("sent-draft tracking", () => {
     const row = sheets.rows("NF_GmailAccounts").find((r) => r[0] === "anni")!;
     row[4] = "disconnected";
     row[2] = "";
+    // The sheet was edited behind this process's back (a disconnect done by another server instance). That reaches a process holding a cached
+    // access only when the 90-second cache entry has expired: simulate that.
+    forgetAccess();
     gmail.act("anni", "sent");
     gmail.act("rishii", "sent");
     const r = await track();

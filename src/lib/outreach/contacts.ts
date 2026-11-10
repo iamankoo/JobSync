@@ -20,7 +20,20 @@ export interface ParsedSource {
 }
 
 /** Parses the Master Contacts grid (header + rows). Throws when a required column is missing; the sheet is never written. */
+/**
+ * The Master Contacts grid is cached for 20 minutes and is read by the send step, the importer and the counters in every cycle: parse each cached grid
+ * object ONCE (15,891 rows today) and share the result. Results are read-only. A new grid object (a fresh read) is parsed afresh.
+ */
+const parsedMemo = new WeakMap<object, ParsedSource>();
 export function parseMasterRows(grid: readonly (readonly string[])[]): ParsedSource {
+  const hit = parsedMemo.get(grid);
+  if (hit) return hit;
+  const parsed = parseMasterRowsUncached(grid);
+  parsedMemo.set(grid, parsed);
+  return parsed;
+}
+
+function parseMasterRowsUncached(grid: readonly (readonly string[])[]): ParsedSource {
   const header = (grid[0] ?? []).map((h) => h.trim());
   const idx = Object.fromEntries(header.map((h, i) => [h, i]));
   const missing = REQUIRED_COLUMNS.filter((c) => !(c in idx));
@@ -112,8 +125,28 @@ export function importEligibility(c: OutreachContact, firstInGroup: ReadonlySet<
   return { eligible: reasons.length === 0, reasons };
 }
 
+const eligibleMemo = new WeakMap<object, Set<string>>();
+/** ContactIDs of a parsed Master that pass the import eligibility rules (computed once per parsed grid). */
+export function eligibleIdSet(parsed: ParsedSource): Set<string> {
+  const hit = eligibleMemo.get(parsed);
+  if (hit) return hit;
+  const first = firstInDuplicateGroups(parsed.contacts);
+  const ids = new Set(parsed.contacts.filter((c) => importEligibility(c, first).eligible).map((c) => c.contactId));
+  eligibleMemo.set(parsed, ids);
+  return ids;
+}
+
 /** ContactIDs that are first in their duplicate group(s) by ContactID order. */
+const firstMemo = new WeakMap<object, Set<string>>();
 export function firstInDuplicateGroups(contacts: readonly OutreachContact[]): Set<string> {
+  const memo = firstMemo.get(contacts);
+  if (memo) return memo;
+  const first = firstInDuplicateGroupsUncached(contacts);
+  firstMemo.set(contacts, first);
+  return first;
+}
+
+function firstInDuplicateGroupsUncached(contacts: readonly OutreachContact[]): Set<string> {
   const byGroup = new Map<string, string[]>();
   for (const c of contacts) {
     if (!c.duplicateGroup) continue;

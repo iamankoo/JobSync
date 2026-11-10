@@ -265,9 +265,16 @@ export function getSheetsClient(): SheetsClient {
   return cached.client;
 }
 
+const resetHooks: (() => void)[] = [];
+/** Registers a function that clears a cache which depends on the Sheets backend (called whenever the client is replaced, e.g. by tests). */
+export function onSheetsClientReset(fn: () => void): void {
+  resetHooks.push(fn);
+}
+
 /** Test hook: inject a fake client (or pass null to restore the real one). */
 export function setSheetsClientForTesting(client: SheetsClient | null): void {
   override = client;
   cached = null;
   invalidateTableCache();
+  for (const fn of resetHooks) fn();
 }

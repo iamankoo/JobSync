@@ -36,7 +36,7 @@ const LINKS: Record<MemberId, [string, string]> = {
 const as = (m: MemberId | null) => vi.mocked(getSession).mockResolvedValue(m ? { memberId: m, expiresAt: 9_999_999_999 } : null);
 const idToken = (email: string) => `h.${Buffer.from(JSON.stringify({ email, email_verified: true })).toString("base64url")}.s`;
 
-import { addResume } from "@/lib/google-sheets/member-files-service";
+import { addResume, deleteResume, listResumes } from "@/lib/google-sheets/member-files-service";
 import { existingResumes } from "@/lib/network-finder/gateways";
 import { wordCount } from "@/lib/network-finder/email-composer";
 
@@ -785,6 +785,45 @@ describe("send workflow with the real Gmail adapters (mock Gmail server)", () =>
     const out = await runOutreachCycle(cycle({ gate: false, send: async () => { throw new Error("must not be called"); } }));
     expect(out.send?.status).toBe("disabled");
     expect(out.errors).toEqual([]);
+  });
+
+  it("READ BUDGET: a send step for 12 e-mails makes no per-call token refresh, almost no Gmail-account or resume-file reads, and far fewer Sheets reads than before (~190)", async () => {
+    const counts: Record<string, number> = {};
+    const wrap = (fake: { getValues(r: string): Promise<string[][]> }, prefix: string) => {
+      const orig = fake.getValues.bind(fake);
+      fake.getValues = async (range: string) => { const k = prefix + range.split("!")[0].replace(/'/g, ""); counts[k] = (counts[k] ?? 0) + 1; return orig(range); };
+    };
+    wrap(sheets, "");
+    wrap(outreach.fake, "OUTREACH:");
+    google.urls.length = 0;
+    const r = await runSendStep(sendDeps());
+    expect(r.sent).toBe(12);
+    const total = Object.values(counts).reduce((a, b) => a + b, 0);
+    expect(google.urls.filter((u) => u.includes("oauth2.googleapis.com/token")).length).toBeLessThanOrEqual(3); // at most one per member (was 24)
+    expect(counts["NF_GmailAccounts"] ?? 0).toBeLessThanOrEqual(6); // was 27
+    expect(counts["ChatFiles"] ?? 0).toBeLessThanOrEqual(6); // resume bytes: was 24
+    expect(total).toBeLessThanOrEqual(130); // was ~190 with the table cache switched off, as it is under test
+  });
+
+  it("a resume is downloaded once and reused for later checks, but a replaced file is always loaded afresh", async () => {
+    const { existingResumes } = await import("@/lib/network-finder/gateways");
+    const counts = { chat: 0 };
+    const orig = sheets.getValues.bind(sheets);
+    sheets.getValues = async (range: string) => { if (range.startsWith("ChatFiles")) counts.chat += 1; return orig(range); };
+    const first = await existingResumes("anni", "Software Engineer");
+    expect(first.status).toBe("attached");
+    const afterFirst = counts.chat;
+    const second = await existingResumes("anni", "Software Engineer");
+    expect(counts.chat).toBe(afterFirst); // no further download
+    expect(second.status === "attached" && first.status === "attached" && Buffer.from(second.attachment.bytes).equals(Buffer.from(first.attachment.bytes))).toBe(true);
+    // the member replaces the file (delete + upload under the same name): the next check must see the NEW bytes
+    const old = (await listResumes("anni"))!.find((x) => x.fileName === "Aniket_Raj_SDE.pdf")!;
+    await deleteResume("anni", old.recordId);
+    await addResume("anni", { bytes: pdfBytes("anni:replacement"), fileName: "Aniket_Raj_SDE.pdf", mimeType: "application/pdf" });
+    const third = await existingResumes("anni", "Software Engineer");
+    expect(third.status).toBe("attached");
+    if (third.status === "attached" && first.status === "attached") expect(Buffer.from(third.attachment.bytes).equals(Buffer.from(first.attachment.bytes))).toBe(false);
+    expect(counts.chat).toBeGreaterThan(afterFirst); // it was downloaded again
   });
 
   it("the cycle runs the send step only when the gate is open, then refreshes statuses and counters", async () => {

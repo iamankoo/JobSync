@@ -1,5 +1,6 @@
 import "server-only";
 import { MEMBER_IDS, type MemberId } from "@/config/members";
+import { forgetAccess } from "./access-cache";
 import { getSheetsClient } from "@/lib/google-sheets/client";
 import { withWriteLock } from "@/lib/google-sheets/lock";
 import { rowRange, tableRange } from "@/lib/google-sheets/schema";
@@ -41,6 +42,7 @@ const serialize = (r: Omit<GmailAccountRecord, "row">) => [r.memberId, r.email, 
 
 /** Inserts or replaces the ONE row of `memberId` (the last write wins; other members' rows are never touched). */
 export async function upsertGmailAccount(rec: Omit<GmailAccountRecord, "row">): Promise<void> {
+  forgetAccess(rec.memberId);
   await withWriteLock(async () => {
     const existing = (await readGmailAccounts({ fresh: true })).find((r) => r.memberId === rec.memberId);
     try {
@@ -53,6 +55,7 @@ export async function upsertGmailAccount(rec: Omit<GmailAccountRecord, "row">): 
 }
 
 export async function updateGmailStatus(memberId: MemberId, status: GmailStatus, lastError: string, nowIso: string, clearToken = false): Promise<void> {
+  forgetAccess(memberId);
   await withWriteLock(async () => {
     const existing = (await readGmailAccounts({ fresh: true })).find((r) => r.memberId === memberId);
     if (!existing) return;
@@ -84,7 +87,7 @@ export interface DraftRecord {
   checkedAt?: string;
 }
 
-export async function readDraftLedger(options: { fresh?: boolean } = {}): Promise<Map<string, DraftRecord & { row: number }>> {
+export async function readDraftLedger(options: { fresh?: boolean; maxAgeMs?: number; allowStaleMs?: number } = {}): Promise<Map<string, DraftRecord & { row: number }>> {
   const rows = await readTable("nfDrafts", options);
   const out = new Map<string, DraftRecord & { row: number }>();
   for (const { row, cells } of rows) {
