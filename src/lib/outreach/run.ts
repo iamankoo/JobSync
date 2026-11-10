@@ -39,6 +39,9 @@ export const OUTREACH_LOCK_TTL_MS = 65_000;
 export const REVIEW_RECHECK_EVERY = 15;
 /** How long (from the start of the call) the send step may START new sends: the usual slice, and the longer one while drafting is paused by the backlog gate. */
 export const SEND_SLICE_MS = 20_000;
+/** Bookkeeping that registers/parks old drafts runs BEFORE sending: it gets a small slice and batch so it can never use the Sheets quota sending needs. */
+export const ADOPT_SLICE_MS = 6_000;
+export const ADOPT_BATCH = 8;
 export const SEND_SLICE_BACKLOG_MS = 28_000;
 /** When Google answers 429 this often within one run, drafting (the slowest step) yields for this run; sending and importing already ran. */
 export const DRAFT_YIELD_AFTER_RATE_LIMITS = 8;
@@ -91,18 +94,23 @@ export async function runOutreachCycle(deps: CycleDeps): Promise<CycleResult> {
   if (!(await deps.sheet.acquireLock(t, OUTREACH_LOCK_TTL_MS))) return { ran: false, reason: "busy", errors: [] };
   const result: CycleResult = { ran: true, errors: [] };
   const step = async <T>(name: string, fn: () => Promise<T>): Promise<T | undefined> => {
+    const began = Date.now();
     try {
       return await fn();
     } catch (err) {
       result.errors.push(`${name}: ${err instanceof Error ? err.name : "error"}`);
       return undefined;
+    } finally {
+      // Timing only (no data): shows which step used the call's time when a call is slow or times out.
+      const ms = Date.now() - began;
+      if (ms >= 2_000) console.log(`[outreach-step] ${name} ${ms}ms`);
     }
   };
   try {
     await deps.sheet.ensureTabs();
     result.manual = await step("manual", () => registerManualConnections({ sheet: deps.sheet, connections: deps.connections, now: deps.now, since: deps.config.manualSince }));
     // EVERY unsent JobSync draft in the members' Gmail, however old, must be looked at by the send step: register the Connections that have none yet.
-    result.existing = await step("existing-drafts", () => adoptExistingDrafts({ sheet: deps.sheet, connections: deps.connections, ledger: deps.ledger, now: deps.now, ...(deps.parkDraft ? { park: deps.parkDraft } : {}), ...(deps.deadline ? { deadline: deps.deadline } : {}) }));
+    result.existing = await step("existing-drafts", () => adoptExistingDrafts({ sheet: deps.sheet, connections: deps.connections, ledger: deps.ledger, now: deps.now, ...(deps.parkDraft ? { park: deps.parkDraft } : {}), deadline: Math.min(deps.deadline ?? Infinity, Date.now() + ADOPT_SLICE_MS), perRun: ADOPT_BATCH }));
     // Sending runs FIRST with its own time slice, so slow drafting or Sheets back-off can never starve it.
     const gate: boolean = deps.gate ?? SENDING_ENABLED;
     if (gate && deps.send) result.send = await step("send", deps.send);
@@ -244,7 +252,8 @@ export function buildRealCycleDeps(config: OutreachConfig = loadOutreachConfig()
       },
     },
     parkDraft: async (draftKey, reason) => {
-      const current = (await readDraftLedger({ fresh: true })).get(draftKey);
+      // recordDraft re-reads the tab fresh under the write lock to find the row; this read only carries the other columns, so a cached one is enough.
+      const current = (await readDraftLedger({ allowStaleMs: 20_000 })).get(draftKey);
       if (current && current.status === "created") await recordDraft({ ...current, detail: withParkedReason(current.detail, reason) });
     },
     // Registration of existing drafts and the status sync are bookkeeping: a ledger up to 20 s old is fine (this instance's own writes invalidate it at once).
