@@ -6,6 +6,7 @@
  */
 import { randomBytes } from "node:crypto";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { getDraftBacklogGate } from "@/lib/gmail/draft-backlog";
 import { NextRequest } from "next/server";
 
 vi.mock("@/lib/auth/session", async (orig) => ({ ...(await orig<typeof import("@/lib/auth/session")>()), getSession: vi.fn() }));
@@ -51,6 +52,11 @@ function mockGoogle() {
   const failMailbox = new Set<string>();
   const fn = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
     const url = String(input);
+    // drafts.list (read-only; what the draft-backlog gate counts): the ids of the drafts really in this mailbox. Not recorded as a call.
+    if (url.startsWith("https://gmail.googleapis.com/gmail/v1/users/me/drafts?") && (init?.method ?? "GET") === "GET") {
+      const who = (init?.headers as Record<string, string>).Authorization.replace("Bearer access-", "");
+      return Response.json({ drafts: drafts.map((d, i) => ({ d, i })).filter(({ d }) => d.mailbox === who).map(({ i }) => ({ id: `draft-${i + 1}` })) });
+    }
     if (url === "https://oauth2.googleapis.com/token") {
       const p = new URLSearchParams(String(init?.body));
       if (p.get("grant_type") === "authorization_code") {
@@ -130,6 +136,7 @@ beforeEach(async () => {
   vi.stubEnv("NEMOTRON_API_KEY", ""); // the built-in writer: the deterministic, validated fill
   google = mockGoogle();
   vi.stubGlobal("fetch", google.fn);
+  getDraftBacklogGate().invalidate(); // the process-wide backlog gate caches its count: start every test fresh
   for (const m of MEMBERS) await connectGmail(m);
   google.drafts.length = 0;
 });

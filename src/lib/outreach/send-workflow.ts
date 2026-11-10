@@ -19,19 +19,20 @@ import type { ResumeLookup } from "@/lib/gmail/attachment";
 import { normalizeEmail } from "@/lib/hr-master/normalize";
 import { dateInTimezone } from "@/lib/utils/time";
 import type { Connection } from "@/types/domain";
-import { importEligibility, firstInDuplicateGroups, parseMasterRows } from "./contacts";
+import { eligibleIdSet, importEligibility, firstInDuplicateGroups, parseMasterRows } from "./contacts";
+import { resolvePriorityContacts } from "./priority";
 import { checkAttachment, checkDraft } from "./draft-check";
 import { isExcluded, matchesAllowlist } from "./exclusions";
-import { countsAgainstLimit, limitReason, usageRolling, type SendLimits } from "./limits";
-import { MAX_SEND_ATTEMPTS, claimSend, normalKey, releaseStaleClaims, rowsFor, sendKeyFor, withHistory } from "./send-ledger";
+import { MAX_SEND_ATTEMPTS, RATE_LIMIT_REASON, claimSend, countedFailures, normalKey, releaseStaleClaims, rowsFor, sendKeyFor, withHistory } from "./send-ledger";
 import type { OutreachSheet } from "./sheet";
 import { draftKeyFor } from "./sync";
+import { hasReviewFlag, normalizeParkReason, parkedReasonOf } from "@/lib/gmail/draft-flags";
 import type { SendRecord, SendStatus, TrackingRecord } from "./types";
 
 /** The fourteen pre-send validations, in the order they are reported (evaluation order is cheap-first, see `evaluate`). */
 export const CHECKS = [
   "valid_email", "eligible", "connection", "owner", "member_identity", "email_generated", "content_supported", "word_limit",
-  "not_already_received", "not_excluded", "no_prior_send", "resume", "gmail_auth", "daily_limit",
+  "not_already_received", "not_excluded", "no_prior_send", "resume", "gmail_auth", "gmail_quota",
 ] as const;
 export type CheckId = (typeof CHECKS)[number];
 
@@ -53,15 +54,27 @@ export interface DraftInfo {
 export interface SendDeps {
   /** The compile-time SENDING_ENABLED, passed in by the cycle. Tests pass true with MOCK ports only. */
   gate: boolean;
-  sheet: Pick<OutreachSheet, "readTracking" | "updateTracking" | "readSendLedger" | "appendSendRecord" | "updateSendRecord" | "readExclusions" | "readMaster">;
+  sheet: Pick<OutreachSheet, "readTracking" | "updateTracking" | "readSendLedger" | "appendSendRecord" | "updateSendRecord" | "readExclusions" | "readMaster"> & Partial<Pick<OutreachSheet, "readPriority">>;
   gmail: GmailPort;
   resumes: ResumeLookup;
   connections: { listFresh(): Promise<Connection[]>; markMessaged(c: Connection): Promise<void> };
-  drafts: { snapshot(): Promise<ReadonlyMap<string, DraftInfo>>; markSent(member: MemberId, connectionId: string): Promise<void> };
-  limits: SendLimits;
+  drafts: {
+    snapshot(): Promise<ReadonlyMap<string, DraftInfo>>;
+    markSent(member: MemberId, connectionId: string): Promise<void>;
+    /**
+     * Records on the draft ledger row WHY the send step cannot send this draft (reason) or clears that note (null). It only edits the ledger
+     * row's note: the draft in Gmail is never touched. A parked draft stays in Gmail but leaves the eligible backlog the drafting gate counts.
+     */
+    setParked?(member: MemberId, connectionId: string, reason: string | null): Promise<void>;
+  };
   now: () => Date;
   timezone: string;
   deadline?: number;
+  /**
+   * A contact whose drafts are ALL already recorded as unsendable ("parked") is re-checked only on every Nth call (a stateless rotation by contact),
+   * so hundreds of them cannot use up every call's time and Sheets quota. 1 (default) = every call. Production sets 15 (about every 30 minutes).
+   */
+  parkedRecheckEvery?: number;
   /** When non-empty, ONLY these recipients may ever be sent to (see config OUTREACH_SEND_ONLY_TO). */
   allowlist?: readonly string[];
 }
@@ -75,11 +88,14 @@ export interface SendRunResult {
   waiting: number;
   duplicatesPrevented: number;
   reconciled: number;
-  stoppedBecause: "none" | "per-run-limit" | "rate-limited" | "deadline" | "error";
+  /** "rate-limited": Gmail refused at least one member's send for quota reasons (that member pauses; the others continue). "deadline": the time budget of this call ran out; the next call continues. */
+  stoppedBecause: "none" | "rate-limited" | "deadline" | "error";
+  /** Drafts newly recorded as "cannot be sent, needs a person" (parked) or released from that note in this call. */
+  parkedChanges?: number;
   errors: string[];
 }
 
-const zero = (status: SendRunResult["status"]): SendRunResult => ({ status, sent: 0, blocked: 0, needsReview: 0, failed: 0, waiting: 0, duplicatesPrevented: 0, reconciled: 0, stoppedBecause: "none", errors: [] });
+const zero = (status: SendRunResult["status"]): SendRunResult => ({ status, sent: 0, blocked: 0, needsReview: 0, failed: 0, waiting: 0, duplicatesPrevented: 0, reconciled: 0, stoppedBecause: "none", parkedChanges: 0, errors: [] });
 
 type Evaluation =
   | { kind: "send"; ctx: SendContext }
@@ -146,11 +162,14 @@ async function evaluate(deps: SendDeps, rec: TrackingRecord, member: MemberId, e
   const mine = rowsFor(env.ledger, key);
   const backoff = mine.filter((r) => r.status === "failed_transient" && r.notBefore && Date.parse(r.notBefore) > deps.now().getTime()).sort((a, b) => b.notBefore.localeCompare(a.notBefore))[0];
   if (backoff) return { kind: "wait", check: "gmail_auth", reason: `retry scheduled after ${backoff.notBefore} (${backoff.reason})` };
-  if (mine.filter((r) => r.status === "failed_transient").length >= MAX_SEND_ATTEMPTS) return { kind: "review", check: "gmail_auth", reason: `${MAX_SEND_ATTEMPTS} send attempts failed; manual review needed` };
+  if (countedFailures(mine) >= MAX_SEND_ATTEMPTS) return { kind: "review", check: "gmail_auth", reason: `${MAX_SEND_ATTEMPTS} send attempts failed; manual review needed` };
 
-  const usage = usageRolling(env.ledger, deps.now().getTime());
-  const limited = limitReason(deps.limits, usage, member, 0);
-  if (limited) return { kind: "wait", check: "daily_limit", reason: limited };
+  // Gmail's OWN quota: after Gmail refused this member's account for rate/quota reasons, no further send is attempted from it until the cool-down
+  // ends (derived from the durable ledger, so it also holds across cron calls). This is Gmail's limit, not a JobSync cap; other members continue.
+  const cooling = env.ledger
+    .filter((r) => r.member === member && r.status === "failed_transient" && r.reason === RATE_LIMIT_REASON && r.notBefore && Date.parse(r.notBefore) > deps.now().getTime())
+    .sort((a, b) => b.notBefore.localeCompare(a.notBefore))[0];
+  if (cooling) return { kind: "wait", check: "gmail_quota", reason: `Gmail asked ${member}'s account to slow down; sending resumes after ${cooling.notBefore}` };
 
   // Gmail is read only now. The REAL saved draft is what gets verified.
   const read = await deps.gmail.readDraft(member, draft.gmailDraftId);
@@ -229,9 +248,16 @@ async function refreshAggregate(deps: SendDeps, rec: TrackingRecord, ledger: rea
   if (all && conn && conn.status === "Not Connected") await deps.connections.markMessaged(conn).catch(() => undefined);
 }
 
+/** Bookkeeping bound per call: notes written to the draft ledger (each is a Sheets read and write). It never limits sending. */
+const MAX_PARK_WRITES_PER_RUN = 25;
+/** One cron call per slot (the cron runs every ~2 minutes); used to rotate which already-parked contacts are re-checked. */
+const RUN_SLOT_MS = 120_000;
+const hashOf = (s: string) => [...s].reduce((n, ch) => (n * 31 + ch.charCodeAt(0)) >>> 0, 7);
 const RETRY_AFTER_TRANSIENT_MS = 10 * 60_000;
 const RETRY_AFTER_AUTH_MS = 60 * 60_000;
 const RETRY_AFTER_RATE_MS = 15 * 60_000;
+/** Gmail refusals of one account closer together than this escalate its back-off. */
+const RATE_ESCALATION_WINDOW_MS = 6 * 60 * 60_000;
 /** A send that was started but has no recorded result is only reconciled once it is this old (Gmail may still be finishing it). */
 const RECONCILE_AFTER_MS = 2 * 60_000;
 
@@ -273,9 +299,15 @@ export async function runSendStep(deps: SendDeps): Promise<SendRunResult> {
 
   const parsed = parseMasterRows(await deps.sheet.readMaster());
   const first = firstInDuplicateGroups(parsed.contacts);
-  const eligibleIds = new Set(parsed.contacts.filter((c) => importEligibility(c, first).eligible).map((c) => c.contactId));
+  // Contacts of the optional Priority Contacts tab are eligible on exactly the same rules as Master Contacts (the eligible Master set is computed once per cached grid).
+  const priority = deps.sheet.readPriority ? resolvePriorityContacts(await deps.sheet.readPriority(), parsed) : { contacts: [] as typeof parsed.contacts };
+  const masterEligible = eligibleIdSet(parsed);
+  const eligibleIds = priority.contacts.length
+    ? new Set([...masterEligible, ...priority.contacts.filter((c) => importEligibility(c, first).eligible).map((c) => c.contactId)])
+    : masterEligible;
   const exclusions = await deps.sheet.readExclusions();
-  const drafts = await deps.drafts.snapshot();
+  // A local copy: a parked note written below is reflected at once, so the same draft is never rewritten twice in one call.
+  const drafts = new Map(await deps.drafts.snapshot());
   const addresses = new Map<MemberId, string | null>();
   for (const m of MEMBER_IDS) addresses.set(m, await deps.gmail.address(m));
 
@@ -283,16 +315,49 @@ export async function runSendStep(deps: SendDeps): Promise<SendRunResult> {
   const candidates = tracking
     .filter((t) => t.importStatus === "added" && t.connectionId && t.sendStatus !== "sent")
     .sort((a, b) => (a.addedAt || a.claimedAt).localeCompare(b.addedAt || b.claimedAt));
+  // Drafts already recorded as "cannot be sent" are looked at LAST (they are re-checked with whatever time is left, in case something changed), so
+  // they can never use up the time slice that eligible drafts need. Oldest first within each group.
+  const parkedRec = (t: TrackingRecord) => {
+    const open = MEMBER_IDS.map((m) => drafts.get(draftKeyFor(t.connectionId, m))).filter((d) => d?.status === "created");
+    return open.length > 0 && open.every((d) => hasReviewFlag(d!.detail) || parkedReasonOf(d!.detail) !== null);
+  };
+  candidates.sort((a, b) => Number(parkedRec(a)) - Number(parkedRec(b)));
+  const every = Math.max(1, deps.parkedRecheckEvery ?? 1);
+  const slot = Math.floor(deps.now().getTime() / RUN_SLOT_MS);
+  const dueForRecheck = (t: TrackingRecord) => every === 1 || (hashOf(t.contactId) + slot) % every === 0;
+  let parkBudget = MAX_PARK_WRITES_PER_RUN;
+  /** Keeps the draft ledger's "parked" note equal to what this call just found out. Best effort: a failed note never affects sending. */
+  const syncParked = async (member: MemberId, rec: TrackingRecord, ev: Evaluation) => {
+    if (!deps.drafts.setParked) return;
+    const key = draftKeyFor(rec.connectionId, member);
+    const d = drafts.get(key);
+    if (!d || d.status !== "created" || hasReviewFlag(d.detail)) return; // not a pending draft, or already flagged by the drafting step
+    let reason: string | null = null;
+    if (ev.kind === "review" || ev.kind === "done") reason = ev.reason;
+    else if (ev.kind === "block" && !(ev.check === "no_prior_send" && /is (claimed|sending|uncertain)/.test(ev.reason)) && !/no longer exists/.test(ev.reason)) reason = ev.reason;
+    const want = reason ? normalizeParkReason(reason) : null;
+    if ((parkedReasonOf(d.detail) ?? null) === want) return;
+    if (parkBudget <= 0 || (deps.deadline !== undefined && Date.now() > deps.deadline)) return;
+    parkBudget -= 1;
+    try {
+      await deps.drafts.setParked(member, rec.connectionId, want);
+      drafts.set(key, { ...d, detail: want ? `${d.detail}${d.detail ? "; " : ""}parked: ${want}` : d.detail.split("; ").filter((x) => !x.startsWith("parked:")).join("; ") });
+      result.parkedChanges = (result.parkedChanges ?? 0) + 1;
+    } catch {
+      // the note is bookkeeping only
+    }
+  };
 
+  // No count limit: every eligible e-mail is attempted until the time budget of this call runs out; the next cron call continues.
   outer: for (const rec of candidates) {
-    if (result.sent >= deps.limits.perRun) { result.stoppedBecause = "per-run-limit"; break; }
+    if (every > 1 && parkedRec(rec) && !dueForRecheck(rec)) continue; // already recorded as unsendable and not due for its periodic re-check
     let worst: { status: SendStatus; reason: string; lastError?: string } | null = null;
     const note = (status: SendStatus, reason: string, lastError?: string) => { if (!worst || RANK[status] > RANK[worst.status]) worst = { status, reason: reason.slice(0, 480), ...(lastError ? { lastError } : {}) }; };
     for (const member of MEMBER_IDS) {
-      if (result.sent >= deps.limits.perRun) { result.stoppedBecause = "per-run-limit"; break outer; }
       if (deps.deadline !== undefined && Date.now() > deps.deadline) { result.stoppedBecause = "deadline"; break outer; }
       try {
-        const ev = await evaluate(deps, rec, member, { connections: conns, drafts, ledger: ledgerAll, tracking, exclusions, eligibleIds: parsed.contacts.length ? eligibleIds : null, addresses });
+        const ev = await evaluate(deps, rec, member, { connections: conns, drafts, ledger: ledgerAll, tracking, exclusions, eligibleIds: parsed.contacts.length + priority.contacts.length ? eligibleIds : null, addresses });
+        if (ev.kind !== "send") await syncParked(member, rec, ev);
         if (ev.kind !== "send") {
           if (ev.kind === "done") { result.duplicatesPrevented += 1; continue; } // this member's own e-mail is already sent: nothing more to do for them
           if (ev.kind === "block" && ev.check === "no_prior_send" && /is uncertain/.test(ev.reason)) { note("uncertain", `${member}: ${ev.reason}`, "uncertain"); continue; } // waits for a person; never resent
@@ -308,18 +373,10 @@ export async function runSendStep(deps: SendDeps): Promise<SendRunResult> {
         const claim = await claimSend(deps.sheet, {
           sendKey: sendKeyFor(member, rec.email), contactId: rec.contactId, member: ctx.member, gmailAccount: ctx.address, connectionId: rec.connectionId, company: ctx.connection.company ?? "", role: ctx.role,
           draftId: ctx.draft.gmailDraftId, threadId: ctx.readback.threadId ?? ctx.draft.threadId ?? "", resumeFile: ctx.resume.fileName, resumeSha256: ctx.resume.sha256, resumeBytes: ctx.resume.bytes, wordCount: ctx.words,
-        }, day, now, (after, mine) => {
-          // Concurrent workers cannot overshoot: claims ahead of this one (sheet row order) use the allowance first.
-          const nowMs = deps.now().getTime();
-          const ahead = after.filter((r) => r.row < mine.row && countsAgainstLimit(r, nowMs));
-          if (ahead.length + 1 > deps.limits.globalDaily) return "combined rolling 24-hour sending limit reached (concurrent worker)";
-          if (ahead.filter((r) => r.member === member).length + 1 > deps.limits.perMemberDaily) return `${member}'s rolling 24-hour sending limit reached (concurrent worker)`;
-          return null;
-        });
-        ledgerAll = (await deps.sheet.readSendLedger()).records;
+        }, day, now);
+        ledgerAll = claim.ledger ?? (await deps.sheet.readSendLedger()).records; // the claim protocol has just read the ledger: no second read
         if (!claim.won) {
-          if (claim.reason === "limit_reached") note("pending", `${member}: rolling 24-hour limit reached`);
-          else result.duplicatesPrevented += 1;
+          result.duplicatesPrevented += 1;
           if (claim.reason === "needs_review" || claim.reason === "failed_permanent" || claim.reason === "too_many_attempts") note("review", `${member}: [no_prior_send] ${claim.reason.replace(/_/g, " ")}`);
           continue;
         }
@@ -332,14 +389,15 @@ export async function runSendStep(deps: SendDeps): Promise<SendRunResult> {
           await finishSent(deps, row, out.messageId, out.threadId, "confirmed by Gmail");
           result.sent += 1;
         } else if (out.status === "rate_limited") {
-          const wait = Math.max(out.retryAfterMs ?? 0, RETRY_AFTER_RATE_MS);
-          await patchLedger(deps, row, { status: "failed_transient", notBefore: new Date(now.getTime() + wait).toISOString(), reason: "Gmail rate limit / quota" }, "rate limited; nothing was sent");
-          note("failed", `${member}: [gmail_auth] Gmail rate limit reached; will retry later`, "rate_limited");
+          // Back off harder while Gmail keeps refusing this account (a daily quota lasts hours): 15, 30, 60, 120, then 240 minutes.
+          const recentRefusals = ledgerAll.filter((r) => r.member === member && r.reason === RATE_LIMIT_REASON && now.getTime() - Date.parse(r.updatedAt || r.createdAt) < RATE_ESCALATION_WINDOW_MS).length;
+          const wait = Math.max(out.retryAfterMs ?? 0, RETRY_AFTER_RATE_MS * 2 ** Math.min(recentRefusals, 4));
+          await patchLedger(deps, row, { status: "failed_transient", notBefore: new Date(now.getTime() + wait).toISOString(), reason: RATE_LIMIT_REASON }, "rate limited; nothing was sent");
+          note("failed", `${member}: [gmail_quota] Gmail rate limit reached; will retry later`, "rate_limited");
           result.failed += 1;
           result.stoppedBecause = "rate-limited";
-          ledgerAll = (await deps.sheet.readSendLedger()).records;
-          await refreshAggregate(deps, rec, ledgerAll, conns.get(rec.connectionId), worst ?? undefined);
-          break outer;
+          // Only THIS member's account is limited: the ledger row above is its cool-down (see evaluate), so its remaining e-mails wait
+          // while the other members' accounts keep sending.
         } else if (out.status === "auth_failed" || out.status === "no_access") {
           const reason = out.status === "auth_failed" ? out.reason : `no Gmail access (${out.access})`;
           await patchLedger(deps, row, { status: "failed_transient", notBefore: new Date(now.getTime() + RETRY_AFTER_AUTH_MS).toISOString(), reason }, "authorisation failure; nothing was sent");
@@ -368,7 +426,8 @@ export async function runSendStep(deps: SendDeps): Promise<SendRunResult> {
             result.needsReview += 1;
           }
         }
-        ledgerAll = (await deps.sheet.readSendLedger()).records;
+        // After a confirmed send the in-memory ledger already holds the updated row (it is the same object); anything else is re-read.
+        if (out.status !== "sent") ledgerAll = (await deps.sheet.readSendLedger()).records;
       } catch (err) {
         // An unexpected exception can never turn into a send: nothing here sends after a throw; the next call re-evaluates from the ledger.
         result.errors.push(err instanceof Error ? err.name : "error");

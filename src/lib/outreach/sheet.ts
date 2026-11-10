@@ -4,10 +4,11 @@
  * never deletes or rewrites Master Contacts rows.
  */
 import { randomUUID } from "node:crypto";
+import { SheetsError } from "@/lib/google-sheets/errors";
 import { MEMBER_IDS, type MemberId } from "@/config/members";
 import type { SheetsClient } from "@/lib/google-sheets/client";
 import { columnLetter } from "@/lib/google-sheets/schema";
-import { COUNTERS_TAB, EXCLUSIONS_TAB, MASTER_TAB, SEND_LEDGER_TAB, STATE_TAB, TRACKING_TAB, emptyDrafts, type DailyCounters, type ImportStatus, type ProcessingStatus, type Segment, type SendLedgerStatus, type SendRecord, type SendStatus, type TrackingRecord } from "./types";
+import { COUNTERS_TAB, EXCLUSIONS_TAB, MASTER_TAB, PRIORITY_TAB, SEND_LEDGER_TAB, STATE_TAB, TRACKING_TAB, emptyDrafts, type DailyCounters, type ImportStatus, type ProcessingStatus, type Segment, type SendLedgerStatus, type SendRecord, type SendStatus, type TrackingRecord } from "./types";
 
 import { COUNTER_HEADERS, EXCLUSION_HEADERS, SEND_LEDGER_HEADERS, STATE_HEADERS, TRACKING_HEADERS } from "./headers";
 export { COUNTER_HEADERS, EXCLUSION_HEADERS, SEND_LEDGER_HEADERS, STATE_HEADERS, TRACKING_HEADERS };
@@ -20,10 +21,13 @@ const q = (tab: string) => `'${tab}'`;
 /** Master Contacts is static (15,891 rows x 32 columns) but every cron call used to read it 3 times. Warm serverless instances reuse it for this long. */
 export const MASTER_CACHE_TTL_MS = 20 * 60_000;
 const masterCache = new Map<string, { at: number; grid: string[][] }>();
+/** The optional Priority Contacts tab is small and edited by hand: a short cache keeps it cheap while a change shows up within minutes. */
+export const PRIORITY_CACHE_TTL_MS = 5 * 60_000;
+const priorityCache = new Map<string, { at: number; grid: string[][] }>();
 /** Tabs and headers do not change between cron calls; verifying them costs 5 reads, so a warm instance re-checks only every 10 minutes. */
 const TABS_OK_TTL_MS = 10 * 60_000;
 const tabsVerified = new Map<string, number>();
-export const clearMasterCache = () => { masterCache.clear(); tabsVerified.clear(); };
+export const clearMasterCache = () => { masterCache.clear(); priorityCache.clear(); tabsVerified.clear(); };
 const lastCol = (tab: string) => columnLetter(HEADERS[tab].length);
 
 const IMPORT_STATUSES: readonly ImportStatus[] = ["importing", "added", "import_failed"];
@@ -53,7 +57,7 @@ export function parseTracking(cells: readonly string[], row: number): TrackingRe
   });
   const processing = (PROCESSING as readonly string[]).includes(c(13)) ? (c(13) as ProcessingStatus) : "awaiting";
   return {
-    row, contactId: c(0), email: c(1), source: c(2) === "manual" ? "manual" : "outreach-database", importStatus, connectionId: c(4), ownerMemberId: c(5),
+    row, contactId: c(0), email: c(1), source: c(2) === "manual" ? "manual" : c(2) === "existing-draft" ? "existing-draft" : "outreach-database", importStatus, connectionId: c(4), ownerMemberId: c(5),
     importDay: c(6), claimedAt: c(7), addedAt: c(8), attempts: Number(c(9)) || 0,
     segment: (SEGMENTS as readonly string[]).includes(c(10)) ? (c(10) as Segment) : "neither", targetRole: c(11), roleBasis: c(12), processing, drafts,
     reviewReason: c(20), sendStatus: (SEND_STATUSES as readonly string[]).includes(c(21)) ? (c(21) as SendStatus) : "disabled", sentAt: c(22), lastError: c(23), updatedAt: c(24),
@@ -98,6 +102,25 @@ export class OutreachSheet {
     if (hit && Date.now() - hit.at < MASTER_CACHE_TTL_MS) return hit.grid;
     const grid = await this.client.getValues(`${q(this.masterTab)}!A:AZ`);
     if (key) masterCache.set(key, { at: Date.now(), grid });
+    return grid;
+  }
+
+  /**
+   * The optional Priority Contacts tab (same columns as Master Contacts). A spreadsheet without that tab simply has no priority list: the read answers
+   * [] (the tab is never created here). Any other failure (quota, network) is NOT mistaken for "no list": it is thrown.
+   */
+  async readPriority(): Promise<string[][]> {
+    const key = this.cacheKey ? `${this.cacheKey}|${PRIORITY_TAB}` : "";
+    const hit = key ? priorityCache.get(key) : undefined;
+    if (hit && Date.now() - hit.at < PRIORITY_CACHE_TTL_MS) return hit.grid;
+    let grid: string[][];
+    try {
+      grid = await this.client.getValues(`${q(PRIORITY_TAB)}!A:AZ`);
+    } catch (err) {
+      if (!(err instanceof SheetsError && err.code === "schema_invalid")) throw err;
+      grid = [];
+    }
+    if (key) priorityCache.set(key, { at: Date.now(), grid });
     return grid;
   }
 

@@ -7,6 +7,7 @@ import { isEmailAddress } from "@/lib/validation/connections";
 import { GMAIL_METADATA_SCOPE, loadGmailConfig } from "./config";
 import { decryptToken } from "./crypto";
 import { GmailAuthError, refreshAccessToken, type FetchLike } from "./oauth";
+import { cachedAccess, rememberAccess } from "./access-cache";
 import { readGmailAccounts, updateGmailStatus } from "./store";
 
 /**
@@ -62,6 +63,14 @@ export type Access = { ok: true; token: string; scopes: string[] } | { ok: false
 
 /** A fresh access token for `memberId` from THEIR stored refresh token (no other member's row is used). */
 export async function accessFor(memberId: MemberId, fetchFn: FetchLike): Promise<Access> {
+  const hit = cachedAccess<Access>(memberId);
+  if (hit) return hit;
+  const fresh = await lookupAccess(memberId, fetchFn);
+  if (fresh.ok) rememberAccess(memberId, fresh);
+  return fresh;
+}
+
+async function lookupAccess(memberId: MemberId, fetchFn: FetchLike): Promise<Access> {
   const cfg = loadGmailConfig();
   if (!cfg.ok) return { ok: false, status: "not_authorized" };
   const account = (await readGmailAccounts({ fresh: true })).find((a) => a.memberId === memberId);

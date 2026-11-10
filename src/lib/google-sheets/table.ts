@@ -86,13 +86,16 @@ export function setTableCacheTtlForTesting(ms: number | null): void {
  * Reads a whole tab, verifying its header row first. Blank rows are skipped.
  * Never writes: a wrong header is reported, not repaired.
  */
-export async function readTable(tab: TabKey, options: { fresh?: boolean; maxAgeMs?: number } = {}): Promise<RawRow[]> {
+export async function readTable(tab: TabKey, options: { fresh?: boolean; maxAgeMs?: number; allowStaleMs?: number } = {}): Promise<RawRow[]> {
   return (await readTableWithMeta(tab, options)).rows;
 }
 
-export async function readTableWithMeta(tab: TabKey, options: { fresh?: boolean; maxAgeMs?: number } = {}): Promise<{ rows: RawRow[]; meta: TableMeta }> {
-  // `maxAgeMs` can only SHORTEN the shared TTL (chat polling wants fresher data than the dashboards).
-  const ttl = options.maxAgeMs === undefined ? ttlMs() : Math.min(ttlMs(), options.maxAgeMs);
+export async function readTableWithMeta(tab: TabKey, options: { fresh?: boolean; maxAgeMs?: number; allowStaleMs?: number } = {}): Promise<{ rows: RawRow[]; meta: TableMeta }> {
+  // `maxAgeMs` can only SHORTEN the shared TTL (chat polling wants fresher data than the dashboards). `allowStaleMs` LENGTHENS it for one read that is
+  // happy with older data (the scheduled worker's bookkeeping reads of the big ledger tabs); it does nothing when caching is off (tests, TTL 0), and a
+  // write made by this process still invalidates the cache at once.
+  const base = ttlMs();
+  const ttl = options.allowStaleMs !== undefined && base > 0 ? Math.max(base, options.allowStaleMs) : options.maxAgeMs === undefined ? base : Math.min(base, options.maxAgeMs);
   const hit = cache.get(tab);
   if (!options.fresh && ttl > 0 && hit && Date.now() - hit.at < ttl) return { rows: hit.rows, meta: hit.meta };
   // A non-fresh read may join one already under way (it returns data at least as new as a cache

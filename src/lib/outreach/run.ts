@@ -10,6 +10,8 @@ import { createConnection } from "@/lib/google-sheets/connections-service";
 import { readConnectionsLocated } from "@/lib/google-sheets/repositories";
 import { isGmailConnected } from "@/lib/gmail/drafts";
 import { readDraftLedger, recordDraft, readGmailAccounts } from "@/lib/gmail/store";
+import { getDraftBacklogGate } from "@/lib/gmail/draft-backlog";
+import { withParkedReason } from "@/lib/gmail/draft-flags";
 import { reconcileDraftSend, readDraftFor, sendDraftFor } from "@/lib/gmail/send";
 import { existingResumes } from "@/lib/network-finder/gateways";
 import { updateConnection } from "@/lib/google-sheets/connections-service";
@@ -18,8 +20,10 @@ import { runPendingDrafts } from "@/lib/network-finder/pipeline";
 import { resolveTimezone } from "@/lib/utils/time";
 import { createConnectionSchema } from "@/lib/validation/connections";
 import { loadOutreachConfig, type OutreachConfig } from "./config";
-import { firstInDuplicateGroups, importEligibility, parseMasterRows } from "./contacts";
+import { eligibleIdSet, firstInDuplicateGroups, importEligibility, parseMasterRows } from "./contacts";
+import { resolvePriorityContacts } from "./priority";
 import { runOutreachImport, type ConnectionsPort, type ImportResult } from "./importer";
+import { adoptExistingDrafts, type AdoptResult } from "./existing-drafts";
 import { registerManualConnections } from "./manual";
 import { OutreachSheet } from "./sheet";
 import { computeCounters, syncTracking, todayOf, type LedgerEntry } from "./sync";
@@ -30,19 +34,26 @@ import { SENDING_ENABLED, type DailyCounters } from "./types";
 
 /** Longer than the route's 60 s limit, so a run that is killed never holds the lock past the next call; a normal run releases it at once. */
 export const OUTREACH_LOCK_TTL_MS = 65_000;
+/** Contacts whose drafts are all recorded as unsendable are re-checked about every 30 minutes (every 15th call), not on every call. */
+export const PARKED_RECHECK_EVERY = 15;
+/** How long (from the start of the call) the send step may START new sends: the usual slice, and the longer one while drafting is paused by the backlog gate. */
+export const SEND_SLICE_MS = 20_000;
+export const SEND_SLICE_BACKLOG_MS = 28_000;
 /** When Google answers 429 this often within one run, drafting (the slowest step) yields for this run; sending and importing already ran. */
 export const DRAFT_YIELD_AFTER_RATE_LIMITS = 8;
 
 export interface CycleDeps {
   config: OutreachConfig;
-  sheet: Pick<OutreachSheet, "ensureTabs" | "readMaster" | "readTracking" | "appendTracking" | "updateTracking" | "upsertCounters" | "acquireLock" | "releaseLock" | "readSendLedger" | "claimMilestone" | "completeMilestone" | "releaseMilestone" | "claimedMilestones" | "setState">;
+  sheet: Partial<Pick<OutreachSheet, "readPriority">> & Pick<OutreachSheet, "ensureTabs" | "readMaster" | "readTracking" | "appendTracking" | "updateTracking" | "upsertCounters" | "acquireLock" | "releaseLock" | "readSendLedger" | "claimMilestone" | "completeMilestone" | "releaseMilestone" | "claimedMilestones" | "setState">;
   connections: ConnectionsPort;
   ledger(): Promise<ReadonlyMap<string, LedgerEntry>>;
   connected(): Promise<MemberId[]>;
   /** The existing drafting worker (same one the Network Finder cron runs). Absent = skip drafting this call. */
-  draft?: (limit: number) => Promise<{ checked: number; created: number; remaining: number } | "busy">;
+  draft?: (limit: number) => Promise<{ checked: number; created: number; remaining: number; paused?: string } | "busy">;
   /** The send step. Only ever called when `gate` is true; the real wiring does not even construct it while the gate is closed. */
   send?: () => Promise<SendRunResult>;
+  /** Notes on a draft-ledger row why its draft cannot be sent (null clears it). Only the note changes; the Gmail draft is never touched. */
+  parkDraft?: (draftKey: string, reason: string | null) => Promise<void>;
   /** Delivers a system notification to every member's devices ("10 connections added", "10 emails sent"). Absent = no notifications. */
   notify?: NotifyAll;
   /** Defaults to the compile-time SENDING_ENABLED (false). Tests pass true together with MOCK ports. */
@@ -58,8 +69,11 @@ export interface CycleResult {
   ran: boolean;
   reason?: "disabled" | "busy";
   manual?: { registered: number; alreadyTracked: number; skipped: number };
+  /** Unsent JobSync drafts of Connections that had no tracking row yet (any age), brought into the send workflow. */
+  existing?: AdoptResult;
   import?: ImportResult;
-  drafts?: { checked: number; created: number; remaining: number } | "busy" | "skipped";
+  /** `paused`: the draft-backlog gate stopped new drafting (reason; counts only). */
+  drafts?: { checked: number; created: number; remaining: number; paused?: string } | "busy" | "skipped";
   send?: SendRunResult;
   announced?: { connections: number; sentBlocks: number };
   counters?: DailyCounters;
@@ -82,6 +96,8 @@ export async function runOutreachCycle(deps: CycleDeps): Promise<CycleResult> {
   try {
     await deps.sheet.ensureTabs();
     result.manual = await step("manual", () => registerManualConnections({ sheet: deps.sheet, connections: deps.connections, now: deps.now, since: deps.config.manualSince }));
+    // EVERY unsent JobSync draft in the members' Gmail, however old, must be looked at by the send step: register the Connections that have none yet.
+    result.existing = await step("existing-drafts", () => adoptExistingDrafts({ sheet: deps.sheet, connections: deps.connections, ledger: deps.ledger, now: deps.now, ...(deps.parkDraft ? { park: deps.parkDraft } : {}), ...(deps.deadline ? { deadline: deps.deadline } : {}) }));
     // Sending runs FIRST with its own time slice, so slow drafting or Sheets back-off can never starve it.
     const gate: boolean = deps.gate ?? SENDING_ENABLED;
     if (gate && deps.send) result.send = await step("send", deps.send);
@@ -111,7 +127,12 @@ export async function runOutreachCycle(deps: CycleDeps): Promise<CycleResult> {
       const parsed = parseMasterRows(await deps.sheet.readMaster());
       const tracked = new Set(records.map((r) => r.contactId));
       const first = firstInDuplicateGroups(parsed.contacts);
-      const remaining = parsed.contacts.filter((c) => !tracked.has(c.contactId) && importEligibility(c, first).eligible).length;
+      let remaining = [...eligibleIdSet(parsed)].filter((id) => !tracked.has(id)).length;
+      // Priority contacts that are not in Master Contacts at all (promoted ones are already counted above).
+      if (deps.sheet.readPriority) {
+        const inMaster = new Set(parsed.contacts.map((c) => c.contactId));
+        remaining += resolvePriorityContacts(await deps.sheet.readPriority(), parsed).contacts.filter((c) => !inMaster.has(c.contactId) && !tracked.has(c.contactId) && importEligibility(c, first).eligible).length;
+      }
       result.counters = computeCounters(records, todayOf(deps.now(), deps.timezone), remaining, { ledger, masterIds: new Set(parsed.contacts.map((c) => c.contactId)) });
       await deps.sheet.upsertCounters(result.counters, deps.now().toISOString());
     });
@@ -157,12 +178,18 @@ export function buildRealSendDeps(config: OutreachConfig, sheet: OutreachSheet, 
     drafts: {
       snapshot: async () => new Map([...(await readDraftLedger({ fresh: true })).entries()].map(([k, v]) => [k, { status: v.status, detail: v.detail, gmailDraftId: v.gmailDraftId, ...(v.threadId ? { threadId: v.threadId } : {}) }])),
       markSent: async (m, connectionId) => {
-        const current = (await readDraftLedger({ fresh: true })).get(`contact:${connectionId}:${m}`);
+        // The row is only used to carry the other columns over; recordDraft itself re-reads the tab fresh (under the write lock) to find the row.
+        const current = (await readDraftLedger()).get(`contact:${connectionId}:${m}`);
         if (current) await recordDraft({ ...current, status: "sent", checkedAt: new Date().toISOString() });
       },
+      // Notes WHY an unsent draft cannot be sent (or clears the note). Only the ledger row's note changes; the draft in Gmail is never touched.
+      setParked: async (m, connectionId, reason) => {
+        const current = (await readDraftLedger({ fresh: true })).get(`contact:${connectionId}:${m}`);
+        if (current && current.status === "created") await recordDraft({ ...current, detail: withParkedReason(current.detail, reason) });
+      },
     },
-    limits: config.sendLimits,
     allowlist: config.sendAllowlist,
+    parkedRecheckEvery: PARKED_RECHECK_EVERY,
     now: () => new Date(),
     timezone,
     ...(deadline ? { deadline } : {}),
@@ -174,15 +201,34 @@ export function buildRealCycleDeps(config: OutreachConfig = loadOutreachConfig()
   const sheet = openOutreachSheet(config);
   const timezone = resolveTimezone(env.APP_TIMEZONE);
   const gate: boolean = SENDING_ENABLED;
+  const backlog = getDraftBacklogGate();
   return {
     config,
     sheet,
     gate,
     notify: async (payload, key) => ((await notifyEveryone(payload, key)).status === "unreadable" ? "retry" : "done"),
     // The send step is only built when the compile-time gate is open. In the shipped state this is undefined.
-    ...(gate ? { send: () => runSendStep(buildRealSendDeps(config, sheet, timezone, started + 20_000)) } : {}),
+    ...(gate
+      ? {
+          send: async () => {
+            // Backlog priority: while drafting is paused (100+ unsent drafts in Gmail, or the count is unavailable) there is nothing else to spend the
+            // time on, so sending gets a bigger slice of this call. Otherwise it keeps its usual slice and drafting/importing share the rest.
+            const open = (await backlog.check().catch(() => ({ allowed: false }))).allowed;
+            try {
+              return await runSendStep(buildRealSendDeps(config, sheet, timezone, started + (open ? SEND_SLICE_MS : SEND_SLICE_BACKLOG_MS)));
+            } finally {
+              backlog.invalidate(); // sends just freed drafts: the drafting step must recount, not reuse the count from before
+            }
+          },
+        }
+      : {}),
     connections: realConnectionsPort,
-    ledger: async () => new Map([...(await readDraftLedger({ fresh: true })).entries()].map(([k, v]) => [k, { status: v.status, detail: v.detail, gmailDraftId: v.gmailDraftId, ...(v.threadId ? { threadId: v.threadId } : {}) }])),
+    parkDraft: async (draftKey, reason) => {
+      const current = (await readDraftLedger({ fresh: true })).get(draftKey);
+      if (current && current.status === "created") await recordDraft({ ...current, detail: withParkedReason(current.detail, reason) });
+    },
+    // Registration of existing drafts and the status sync are bookkeeping: a ledger up to 20 s old is fine (this instance's own writes invalidate it at once).
+    ledger: async () => new Map([...(await readDraftLedger({ allowStaleMs: 20_000 })).entries()].map(([k, v]) => [k, { status: v.status, detail: v.detail, gmailDraftId: v.gmailDraftId, ...(v.threadId ? { threadId: v.threadId } : {}) }])),
     connected: async () => {
       const out: MemberId[] = [];
       for (const m of MEMBER_IDS) if (await isGmailConnected(m)) out.push(m);
@@ -212,6 +258,7 @@ export function summarizeCycle(r: CycleResult) {
   return {
     ran: r.ran,
     manual: r.manual ?? null,
+    existing: r.existing ?? null,
     import: r.import ? { ...r.import } : null,
     drafts: r.drafts ?? null,
     send: r.send ? { ...r.send } : null,

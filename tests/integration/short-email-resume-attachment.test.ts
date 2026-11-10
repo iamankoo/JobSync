@@ -20,6 +20,7 @@ import { invalidateTableCache } from "@/lib/google-sheets/table";
 import { loadNetworkFinderConfig } from "@/lib/network-finder/config";
 import type { CompanyResearcher } from "@/lib/network-finder/company-research";
 import { existingConnections, existingDraftDeps, existingJobs } from "@/lib/network-finder/gateways";
+import { getDraftBacklogGate } from "@/lib/gmail/draft-backlog";
 import { runPendingDrafts, type PipelineDeps } from "@/lib/network-finder/pipeline";
 import { createSheetsStores } from "@/lib/network-finder/sheets-stores";
 import type { Connection } from "@/types/domain";
@@ -36,7 +37,7 @@ const LINKS: Record<MemberId, [string, string]> = {
 const as = (m: MemberId | null) => vi.mocked(getSession).mockResolvedValue(m ? { memberId: m, expiresAt: 9_999_999_999 } : null);
 const idToken = (email: string) => `h.${Buffer.from(JSON.stringify({ email, email_verified: true })).toString("base64url")}.s`;
 
-import { addResume } from "@/lib/google-sheets/member-files-service";
+import { addResume, deleteResume, listResumes } from "@/lib/google-sheets/member-files-service";
 import { existingResumes } from "@/lib/network-finder/gateways";
 import { wordCount } from "@/lib/network-finder/email-composer";
 
@@ -81,6 +82,10 @@ function mockGoogle() {
     /** Scripted responses for drafts.send, consumed in order: "ok" (default), a status number, or "timeout-but-sent" / "timeout-not-sent". */
     sendScript: [] as (number | "ok" | "timeout-but-sent" | "timeout-not-sent")[],
     metadata: false,
+    /** Mailboxes whose drafts.list answers 500 (the backlog gate must then fail closed). */
+    failList: new Set<string>(),
+    /** Drafts a member wrote by hand: they are in the Drafts folder but are NOT JobSync-generated (never counted). */
+    handwritten: {} as Record<string, number>,
   };
   const sentLog: { mailbox: string; draftId: string; messageId: string; threadId: string; raw: string }[] = [];
   const sentDrafts = new Set<string>();
@@ -103,6 +108,16 @@ function mockGoogle() {
       const id = `draft-${drafts.length + 1}`;
       drafts.push({ mailbox: who as MemberId, id, raw, ...parseMime(raw) });
       return Response.json({ id, message: { threadId: `thread-${drafts.length}` } });
+    }
+    // drafts.list (what the backlog gate counts): ids of the drafts that are really in THIS mailbox's Drafts folder (sent ones are gone).
+    if (url.startsWith("https://gmail.googleapis.com/gmail/v1/users/me/drafts?") && (init?.method ?? "GET") === "GET") {
+      const who = (init?.headers as Record<string, string>).Authorization.replace("Bearer access-", "");
+      if (state.failList.has(who)) return new Response("boom", { status: 500 });
+      const all = [...drafts.filter((d) => d.mailbox === who && !sentDrafts.has(d.id)).map((d) => d.id), ...Array.from({ length: state.handwritten[who] ?? 0 }, (_, i) => `hand-${who}-${i}`)];
+      const params = new URL(url).searchParams;
+      const start = Number(params.get("pageToken") ?? 0);
+      const page = all.slice(start, start + 500);
+      return Response.json({ drafts: page.map((id) => ({ id })), ...(start + 500 < all.length ? { nextPageToken: String(start + 500) } : {}) });
     }
     const read = /\/drafts\/(draft-\d+)\?format=full$/.exec(url);
     if (read && (init?.method ?? "GET") === "GET") {
@@ -212,6 +227,7 @@ beforeEach(async () => {
   vi.stubEnv("GOOGLE_OAUTH_REDIRECT_URI", "http://localhost:3000/api/gmail/callback");
   vi.stubEnv("GMAIL_TOKEN_ENCRYPTION_KEY", randomBytes(32).toString("base64"));
   vi.stubEnv("NEMOTRON_API_KEY", "");
+  getDraftBacklogGate().invalidate(); // the process-wide gate caches its count: every test starts from a fresh one
   google = mockGoogle();
   vi.stubGlobal("fetch", google.fn);
   for (const m of MEMBERS) await connectGmail(m);
@@ -352,7 +368,11 @@ describe("resume attachment for all three members (mock Gmail; nothing is sent)"
   it("each saved draft is read back to verify the attachment; no send, delete or update call is ever made", async () => {
     await add("anni", FORM);
     await work();
-    const calls = google.urls.filter((u) => u.includes("gmail.googleapis.com"));
+    const all = google.urls.filter((u) => u.includes("gmail.googleapis.com"));
+    // The backlog gate counts the members' Drafts folders with read-only drafts.list calls (ids only); they are the only other Gmail calls.
+    const lists = all.filter((u) => /^GET https:\/\/gmail\.googleapis\.com\/gmail\/v1\/users\/me\/drafts\?maxResults=500&fields=/.test(u));
+    expect(lists.length).toBeGreaterThanOrEqual(3);
+    const calls = all.filter((u) => !lists.includes(u));
     expect(calls.filter((u) => u.startsWith("POST ")).length).toBe(3);
     expect(calls.filter((u) => u.startsWith("GET ")).length).toBe(3); // every attached draft is read back
     expect(calls.every((u) => /^(POST .*\/users\/me\/drafts|GET .*\/drafts\/draft-\d+\?format=full)$/.test(u))).toBe(true);
@@ -407,7 +427,7 @@ describe("resume attachment for all three members (mock Gmail; nothing is sent)"
 import { isGmailConnected } from "@/lib/gmail/drafts";
 import { readDraftLedger } from "@/lib/gmail/store";
 import { loadOutreachConfig } from "@/lib/outreach/config";
-import { realConnectionsPort, runOutreachCycle, type CycleDeps } from "@/lib/outreach/run";
+import { buildRealSendDeps, realConnectionsPort, runOutreachCycle, type CycleDeps } from "@/lib/outreach/run";
 import { TRACKING_TAB, COUNTERS_TAB } from "@/lib/outreach/types";
 import { masterRow, masterGrid, newOutreachSpreadsheet } from "../helpers/outreach";
 
@@ -581,7 +601,6 @@ import { readGmailAccounts, recordDraft } from "@/lib/gmail/store";
 import { updateConnection } from "@/lib/google-sheets/connections-service";
 import { runSendStep, type SendDeps } from "@/lib/outreach/send-workflow";
 import { computeCounters } from "@/lib/outreach/sync";
-import { DEFAULT_SEND_LIMITS } from "@/lib/outreach/limits";
 
 describe("send workflow with the real Gmail adapters (mock Gmail server)", () => {
   let outreach: ReturnType<typeof newOutreachSpreadsheet>;
@@ -624,7 +643,6 @@ describe("send workflow with the real Gmail adapters (mock Gmail server)", () =>
         if (cur) await recordDraft({ ...cur, status: "sent", checkedAt: clock.toISOString() });
       },
     },
-    limits: { ...DEFAULT_SEND_LIMITS, perRun: 20 },
     now: () => clock,
     timezone: "Asia/Kolkata",
     ...over,
@@ -688,12 +706,16 @@ describe("send workflow with the real Gmail adapters (mock Gmail server)", () =>
   it("quota (429): nothing sent, nothing counted, retried after the back-off; the success is recorded once", async () => {
     google.state.sendScript = [429];
     const r = await runSendStep(sendDeps());
-    expect(r).toMatchObject({ sent: 0, failed: 1, stoppedBecause: "rate-limited" });
-    expect(google.sentLog).toHaveLength(0);
+    // Gmail's quota applies to ONE member's account: that member pauses (nothing more is attempted from it), the other two keep sending.
+    expect(r).toMatchObject({ sent: 8, failed: 1, stoppedBecause: "rate-limited" });
     expect(ledgerRows()[0][3]).toBe("failed_transient");
+    const limited = ledgerRows()[0][4];
+    expect(google.sentLog.every((x) => x.mailbox !== limited)).toBe(true); // nothing was sent from the rate-limited account
+    expect(google.sentLog).toHaveLength(8);
+    expect(sendPosts()).toHaveLength(9); // 8 sends + the single refused attempt: the limited account was not hammered
     expect(new Date(ledgerRows()[0][17]).getTime()).toBe(clock.getTime() + 15 * 60_000);
     clock = new Date(clock.getTime() + 20 * 60_000);
-    expect((await runSendStep(sendDeps())).sent).toBe(12);
+    expect((await runSendStep(sendDeps())).sent).toBe(4); // cool-down over: the limited member's e-mails now go out
     expect(google.sentLog).toHaveLength(12);
   });
 
@@ -795,5 +817,252 @@ describe("send workflow with the real Gmail adapters (mock Gmail server)", () =>
     const again = await runOutreachCycle(cycle({ gate: true, send: () => runSendStep(sendDeps()) }));
     expect(again.send?.sent).toBe(0);
     expect(google.sentLog).toHaveLength(12);
+  });
+
+  describe("draft backlog protection in the full cycle (real Gmail adapters, mock Gmail server)", () => {
+    // What the production send wrapper does: after sending, the cached backlog count is dropped so the drafting step recounts.
+    const sendThenRecount = async () => {
+      try {
+        return await runSendStep(sendDeps());
+      } finally {
+        getDraftBacklogGate().invalidate();
+      }
+    };
+    const NEWCO = { ...FORM, name: "Late Person", email: "late@newco.example", company: "NewCo", companyUrl: "https://newco.com" };
+    const ledgerKeys = () => ledger().map((r) => r[0]);
+
+    it("with 100+ pending drafts: sending keeps priority and sends EVERY eligible draft, new drafting is paused, and it resumes below 100", async () => {
+      await seedPending(100); // 100 other unsent JobSync drafts in the members' Gmail, on top of the 12 real ones
+      const lateConn = await add("anni", NEWCO); // a new manual Connection is waiting for its drafts
+      getDraftBacklogGate().invalidate();
+      const draftsBefore = google.drafts.length;
+
+      const first = await runOutreachCycle(cycle({ gate: true, send: sendThenRecount }));
+      expect(first.send).toMatchObject({ status: "ran", sent: 12 }); // all twelve eligible drafts (4 Connections x 3 members) went out in this one call
+      expect(sendPosts()).toHaveLength(12);
+      expect(first.drafts).toMatchObject({ created: 0, paused: expect.stringMatching(/drafting paused: 100 unsent drafts/) }); // 112 - 12 = 100: still at the limit
+      expect(google.drafts).toHaveLength(draftsBefore); // no draft was created
+      expect(ledgerKeys().some((k) => k.includes(lateConn.connectionId))).toBe(false); // and nothing was recorded for the waiting Connection
+
+      // one more pending draft is gone from Gmail (sent by hand): 99 pending -> drafting resumes by itself on the next cron call
+      google.sentDrafts.add(google.drafts.find((d) => !google.sentDrafts.has(d.id) && d.subject === "seed")!.id);
+      getDraftBacklogGate().invalidate();
+      const second = await runOutreachCycle(cycle({ gate: true, send: sendThenRecount }));
+      expect(second.drafts).toMatchObject({ created: 3 });
+      expect((second.drafts as { paused?: string }).paused).toBeUndefined();
+      expect(ledgerKeys().filter((k) => k.includes(lateConn.connectionId))).toHaveLength(3); // all three members drafted for the late Connection
+    });
+
+    it("drafts that are not ready to send (flagged for review, e.g. no verified resume) stay untouched in Gmail while everything else drains", async () => {
+      const row = [...(await readDraftLedger({ fresh: true })).values()].find((d) => d.memberId === "lukky")!;
+      await recordDraft({ ...row, detail: "review: resume attachment could not be verified in the saved draft" });
+      const r = await runSendStep(sendDeps());
+      expect(r.sent).toBe(11);
+      expect(google.sentDrafts.has(row.gmailDraftId)).toBe(false); // not sent...
+      expect(google.drafts.some((d) => d.id === row.gmailDraftId)).toBe(true); // ...and still there, unchanged
+      expect(google.urls.some((u) => /^(DELETE|PUT|PATCH) /.test(u) || /trash|modify/.test(u))).toBe(false); // never deleted, edited or trashed
+      for (let i = 0; i < 3; i++) await runSendStep(sendDeps());
+      expect(sendPosts()).toHaveLength(11); // every later call leaves it alone too
+      expect((await readDraftLedger({ fresh: true })).get(row.draftKey)?.status).toBe("created");
+      getDraftBacklogGate().invalidate();
+      expect(await getDraftBacklogGate().check()).toMatchObject({ pending: 0 }); // needs a person: not part of the ELIGIBLE backlog...
+      expect(getDraftBacklogGate().last()).toMatchObject({ parked: 1 }); // ...but counted and reported, never discarded
+    });
+
+    it("EVERY unsent JobSync draft is found however old (no creation-date cutoff): sent from its own mailbox with its own resume, with no new draft created", async () => {
+      for (const r of sheets.dataRows("Connections")) r[10] = "2026-08-01T00:00:00.000Z"; // the Connections were created months ago
+      invalidateTableCache();
+      outreach = newOutreachSpreadsheet(masterGrid([])); // and nothing has ever tracked them
+      getDraftBacklogGate().invalidate();
+      const draftsBefore = google.drafts.length;
+      const out = await runOutreachCycle(cycle({ gate: true, send: sendThenRecount }));
+      expect(out.existing).toMatchObject({ adopted: 4, orphaned: 0 });
+      expect(out.send).toMatchObject({ status: "ran", sent: 12 });
+      expect(tracking().map((t) => t[2])).toEqual(Array(4).fill("existing-draft"));
+      for (const x of google.sentLog) {
+        const d = google.drafts.find((y) => y.id === x.draftId)!;
+        expect(d.mailbox).toBe(x.mailbox); // sent from the member whose draft it is
+        expect(d.files).toHaveLength(1);
+        expect(d.files[0].name).toMatch(x.mailbox === "anni" ? /^Aniket/ : x.mailbox === "lukky" ? /^Lakshya/ : /^Rishi/); // that member's own resume
+      }
+      expect(google.drafts).toHaveLength(draftsBefore); // nothing was re-drafted
+      expect(ledgerRows().every((l) => l[3] === "sent" && l[14].startsWith("msg-"))).toBe(true); // every send is in the durable ledger with Gmail's message id
+      const again = await runOutreachCycle(cycle({ gate: true, send: sendThenRecount }));
+      expect(again.send?.sent).toBe(0);
+      expect(sendPosts()).toHaveLength(12); // never twice
+    });
+
+    it("an unsendable draft is parked through the real wiring: only the ledger note changes, the Gmail draft stays exactly as it is, and it leaves the eligible backlog", async () => {
+      outreach.fake.tabs.set("Outreach Exclusions", [["Value", "Reason", "AddedAt", "AddedBy"], ["full@acme.example.com", "asked not to be contacted", "", "anni"]]);
+      const cfg = loadOutreachConfig({ OUTREACH_ENABLED: "true", OUTREACH_SPREADSHEET_ID: "outreach-test" } as unknown as NodeJS.ProcessEnv);
+      const r = await runSendStep(buildRealSendDeps(cfg, outreach.sheet, "Asia/Kolkata"));
+      expect(r.sent).toBe(9); // the other three Connections; the opted-out recipient got nothing from any member
+      expect(r.parkedChanges).toBe(3);
+      const parked = ledger().filter((x) => x[7].includes("parked:"));
+      expect(parked).toHaveLength(3);
+      expect(parked.every((x) => x[5] === "created" && /opted out.*asked not to be contacted/.test(x[7]))).toBe(true);
+      const stillThere = google.drafts.filter((d) => d.to === "full@acme.example.com");
+      expect(stillThere).toHaveLength(3);
+      expect(stillThere.every((d) => !google.sentDrafts.has(d.id))).toBe(true);
+      expect(google.urls.some((u) => /^(DELETE|PUT|PATCH) /.test(u) || /trash|modify/.test(u))).toBe(false);
+      getDraftBacklogGate().invalidate();
+      expect(await getDraftBacklogGate().check()).toMatchObject({ allowed: true, pending: 0 });
+      expect(getDraftBacklogGate().last()).toMatchObject({ parked: 3 });
+      expect((await runSendStep(buildRealSendDeps(cfg, outreach.sheet, "Asia/Kolkata"))).parkedChanges).toBe(0); // recorded once, not rewritten every call
+    });
+
+    it("READ BUDGET: a send step for 12 e-mails makes no per-call token refresh, almost no Gmail-account or resume-file reads, and far fewer Sheets reads than before (~190)", async () => {
+      const counts: Record<string, number> = {};
+      const wrap = (fake: { getValues(r: string): Promise<string[][]> }, prefix: string) => {
+        const orig = fake.getValues.bind(fake);
+        fake.getValues = async (range: string) => { const k = prefix + range.split("!")[0].replace(/'/g, ""); counts[k] = (counts[k] ?? 0) + 1; return orig(range); };
+      };
+      wrap(sheets, "");
+      wrap(outreach.fake, "OUTREACH:");
+      google.urls.length = 0;
+      const r = await runSendStep(sendDeps());
+      expect(r.sent).toBe(12);
+      const total = Object.values(counts).reduce((a, b) => a + b, 0);
+      expect(google.urls.filter((u) => u.includes("oauth2.googleapis.com/token")).length).toBeLessThanOrEqual(3); // at most one per member (was 24)
+      expect(counts["NF_GmailAccounts"] ?? 0).toBeLessThanOrEqual(6); // was 27
+      expect(counts["ChatFiles"] ?? 0).toBeLessThanOrEqual(6); // resume bytes: was 24
+      expect(total).toBeLessThanOrEqual(130); // was ~190 with the table cache switched off, as it is under test
+    });
+
+    it("a resume is downloaded once and reused for later checks, but a replaced file is always loaded afresh", async () => {
+      const { existingResumes } = await import("@/lib/network-finder/gateways");
+      const counts = { chat: 0 };
+      const orig = sheets.getValues.bind(sheets);
+      sheets.getValues = async (range: string) => { if (range.startsWith("ChatFiles")) counts.chat += 1; return orig(range); };
+      const first = await existingResumes("anni", "Software Engineer");
+      expect(first.status).toBe("attached");
+      const afterFirst = counts.chat;
+      const second = await existingResumes("anni", "Software Engineer");
+      expect(counts.chat).toBe(afterFirst); // no further download
+      expect(second.status === "attached" && first.status === "attached" && Buffer.from(second.attachment.bytes).equals(Buffer.from(first.attachment.bytes))).toBe(true);
+      // the member replaces the file (delete + upload under the same name): the next check must see the NEW bytes
+      const old = (await listResumes("anni"))!.find((x) => x.fileName === "Aniket_Raj_SDE.pdf")!;
+      await deleteResume("anni", old.recordId);
+      await addResume("anni", { bytes: pdfBytes("anni:replacement"), fileName: "Aniket_Raj_SDE.pdf", mimeType: "application/pdf" });
+      const third = await existingResumes("anni", "Software Engineer");
+      expect(third.status).toBe("attached");
+      if (third.status === "attached" && first.status === "attached") expect(Buffer.from(third.attachment.bytes).equals(Buffer.from(first.attachment.bytes))).toBe(false);
+      expect(counts.chat).toBeGreaterThan(afterFirst); // it was downloaded again
+    });
+
+    it("sending continues across subsequent cron calls, as time allows, until every eligible draft is drained", async () => {
+      const slices: number[] = [];
+      for (let call = 0; call < 6; call++) {
+        const before = google.sentLog.length;
+        const deps = sendDeps();
+        // each call only has time for 5 sends: the time budget (not a count limit) ends it
+        Object.defineProperty(deps, "deadline", { get: () => (google.sentLog.length - before >= 5 ? Date.now() - 1 : Date.now() + 60_000) });
+        const r = await runSendStep(deps);
+        slices.push(r.sent);
+        if (r.sent === 0) break;
+      }
+      expect(slices).toEqual([5, 5, 2, 0]);
+      expect(sendPosts()).toHaveLength(12); // each draft sent exactly once across all the calls
+      expect(new Set(google.sentLog.map((x) => x.draftId)).size).toBe(12);
+    });
+  });
+});
+
+// ---- Draft backlog protection with the REAL Gmail adapters: drafts.list is paged, counted per member, and fails closed ----------------
+
+/** n unsent JobSync-generated drafts spread over the three members: really in their (mock) Gmail Drafts folder AND recorded in the draft ledger. */
+async function seedPending(n: number, detail = "") {
+  for (let i = 0; i < n; i++) {
+    const member = MEMBERS[i % 3];
+    const id = `draft-${google.drafts.length + 1}`;
+    google.drafts.push({ mailbox: member, id, subject: "seed", to: `seed${i}@seed.example`, body: "seed", raw: "", files: [] });
+    await recordDraft({ draftKey: `contact:seed${i}:${member}`, memberId: member, itemType: "contact", itemId: `seed${i}`, gmailDraftId: id, status: "created", createdAt: new Date().toISOString(), detail });
+  }
+}
+
+describe("draft backlog gate with the real Gmail adapters (mock Gmail server)", () => {
+  const NEW = { ...FORM, name: "Pat Newman", email: "pat@newco.example", company: "NewCo", companyUrl: "https://newco.com" };
+  const postsToDrafts = () => google.urls.filter((u) => u === "POST https://gmail.googleapis.com/gmail/v1/users/me/drafts");
+  const listCalls = () => google.urls.filter((u) => u.startsWith("GET https://gmail.googleapis.com/gmail/v1/users/me/drafts?maxResults=500"));
+
+  it("99 pending drafts in Gmail: new drafting proceeds (the whole three-member fan-out)", async () => {
+    await seedPending(99);
+    const c = await add("anni", NEW);
+    const r = await work();
+    expect(r).toMatchObject({ checked: 1, created: 3 });
+    expect(r.paused).toBeUndefined();
+    expect(postsToDrafts()).toHaveLength(3);
+    expect(ledger().filter((x) => x[3] === c.connectionId && x[5] === "created")).toHaveLength(3);
+  });
+
+  it("100 pending drafts in Gmail: ALL new drafting pauses (nothing composed, no Gmail draft created, nothing recorded)", async () => {
+    await seedPending(100);
+    const c = await add("anni", NEW);
+    const r = await work();
+    expect(r).toMatchObject({ checked: 0, created: 0 });
+    expect(r.paused).toMatch(/drafting paused: 100 unsent drafts are waiting/);
+    expect(postsToDrafts()).toHaveLength(0);
+    expect(ledger().filter((x) => x[3] === c.connectionId)).toHaveLength(0);
+  });
+
+  it("the count is of REAL Gmail drafts: ledger rows whose draft is gone from Gmail (sent or deleted) do not count", async () => {
+    await seedPending(120);
+    for (const d of google.drafts.slice(0, 30)) google.sentDrafts.add(d.id); // 30 were sent / deleted in Gmail: the ledger still says "created"
+    await add("anni", NEW);
+    const r = await work(); // 90 really pending
+    expect(r).toMatchObject({ created: 3 });
+  });
+
+  it("drafts the members wrote by hand, however many, are not counted (only JobSync-generated drafts are)", async () => {
+    await seedPending(10);
+    google.state.handwritten = { anni: 1300, lukky: 700, rishii: 400 }; // 3 pages for anni: the list is paged, not truncated
+    await add("anni", NEW);
+    const r = await work();
+    expect(r).toMatchObject({ created: 3 });
+    expect(listCalls().length).toBeGreaterThanOrEqual(3 + 2 + 1); // anni 3 pages, lukky 2 pages, rishii 1 page (counted at least once)
+  });
+
+  it("a pending draft is found on a LATER page of a large Drafts folder (pagination is followed to the end)", async () => {
+    google.state.handwritten = { anni: 1400, lukky: 0, rishii: 0 };
+    await seedPending(100); // the JobSync drafts come after the 1,400 hand-written ones in listing order
+    await add("anni", NEW);
+    expect((await work()).paused).toMatch(/drafting paused: 100 unsent/);
+  });
+
+  it("FAIL CLOSED: if one member's Drafts folder cannot be listed, drafting pauses (and resumes as soon as Gmail answers again)", async () => {
+    google.state.failList.add("lukky");
+    const c = await add("anni", NEW);
+    const r = await work();
+    expect(r.paused).toMatch(/lukky's Gmail drafts could not be counted/);
+    expect(postsToDrafts()).toHaveLength(0);
+    expect(ledger().filter((x) => x[3] === c.connectionId)).toHaveLength(0);
+    google.state.failList.clear();
+    getDraftBacklogGate().invalidate(); // (a failed count is also retried by itself after a few seconds)
+    expect(await work()).toMatchObject({ created: 3 });
+  });
+
+  it("FAIL CLOSED: a Drafts folder too large to count reliably pauses drafting instead of guessing", async () => {
+    google.state.handwritten = { anni: 10_100, lukky: 0, rishii: 0 }; // more than 20 pages of 500
+    await add("anni", NEW);
+    const r = await work();
+    expect(r.paused).toMatch(/too many drafts to count/);
+    expect(postsToDrafts()).toHaveLength(0);
+  });
+
+  it("the count is per member: one Connection with three drafts is three pending drafts, tracked separately", async () => {
+    await seedPending(6);
+    const gate = getDraftBacklogGate();
+    gate.invalidate();
+    await gate.check();
+    expect(gate.last()).toMatchObject({ status: "ok", pending: 6, byMember: { anni: 2, lukky: 2, rishii: 2 } });
+  });
+
+  it("both workers are gated: the Network Finder cron's draft step and the Outreach cycle's draft step share the rule", async () => {
+    await seedPending(100);
+    await add("anni", NEW);
+    // the Network Finder cron calls runPendingDrafts(deps, { limit: 2 }); the Outreach cycle calls it with its own limit: same function, same gate
+    expect((await runPendingDrafts(workerDeps(), { limit: 2 })).paused).toBeDefined();
+    expect((await runPendingDrafts(workerDeps(), { limit: 10 })).paused).toBeDefined();
+    expect(postsToDrafts()).toHaveLength(0);
   });
 });
