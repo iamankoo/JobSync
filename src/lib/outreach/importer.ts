@@ -16,6 +16,7 @@ import { dateInTimezone, nowIso } from "@/lib/utils/time";
 import type { CreateConnectionInput } from "@/lib/validation/connections";
 import type { Connection } from "@/types/domain";
 import { FALLBACK_SALUTATION, firstInDuplicateGroups, importEligibility, importOrder, parseMasterRows, roleMapping, segmentOf } from "./contacts";
+import { resolvePriorityContacts } from "./priority";
 import type { OutreachSheet } from "./sheet";
 import { MAX_IMPORT_ATTEMPTS, emptyDrafts, emptySendFields, type OutreachContact, type TrackingRecord } from "./types";
 
@@ -27,7 +28,7 @@ export interface ConnectionsPort {
 }
 
 export interface ImportDeps {
-  sheet: Pick<OutreachSheet, "readMaster" | "readTracking" | "appendTracking" | "updateTracking">;
+  sheet: Pick<OutreachSheet, "readMaster" | "readTracking" | "appendTracking" | "updateTracking"> & Partial<Pick<OutreachSheet, "readPriority">>;
   connections: ConnectionsPort;
   now: () => Date;
   timezone: string;
@@ -54,6 +55,8 @@ export interface ImportResult {
   stoppedBecause: "daily-limit" | "run-limit" | "no-more-eligible" | "deadline" | "error" | "none";
   masterRejected: number;
   queueRemaining: number;
+  /** Contacts of the optional Priority Contacts tab still waiting to be imported (they are imported before the rest of the queue). */
+  priorityRemaining?: number;
   errors: string[];
 }
 
@@ -108,7 +111,7 @@ export async function runOutreachImport(deps: ImportDeps): Promise<ImportResult>
   const day = dateInTimezone(at, deps.timezone);
   const stamp = nowIso(at);
   const members = deps.members ?? MEMBER_IDS;
-  const res: ImportResult = { day, importedThisRun: 0, importedToday: 0, dailyLimit: deps.dailyLimit, resumed: 0, linkedExisting: 0, failed: 0, stoppedBecause: "none", masterRejected: 0, queueRemaining: 0, errors: [] };
+  const res: ImportResult = { day, importedThisRun: 0, importedToday: 0, dailyLimit: deps.dailyLimit, resumed: 0, linkedExisting: 0, failed: 0, stoppedBecause: "none", masterRejected: 0, queueRemaining: 0, priorityRemaining: 0, errors: [] };
 
   const tracking = await deps.sheet.readTracking();
   let nextRow = tracking.nextRow;
@@ -129,7 +132,9 @@ export async function runOutreachImport(deps: ImportDeps): Promise<ImportResult>
 
   const parsed = parseMasterRows(await deps.sheet.readMaster());
   res.masterRejected = parsed.rejected.length;
-  const byId = new Map(parsed.contacts.map((c) => [c.contactId, c]));
+  // The optional Priority Contacts tab (see priority.ts): imported BEFORE the rest of the queue. No tab = no priority list.
+  const priority = deps.sheet.readPriority ? resolvePriorityContacts(await deps.sheet.readPriority(), parsed) : { contacts: [] as typeof parsed.contacts };
+  const byId = new Map([...parsed.contacts, ...priority.contacts].map((c) => [c.contactId, c]));
   const connByEmail = indexConnectionsByEmail(await deps.connections.listFresh());
 
   // 1. Finish interrupted claims.
@@ -149,10 +154,16 @@ export async function runOutreachImport(deps: ImportDeps): Promise<ImportResult>
   const trackedIds = new Set(records.map((r) => r.contactId));
   const trackedEmails = new Set(records.map((r) => emailKey(r.email)));
   const firstInGroup = firstInDuplicateGroups(parsed.contacts);
-  const queue = parsed.contacts
-    .filter((c) => !trackedIds.has(c.contactId) && !trackedEmails.has(c.personEmail) && !connByEmail.has(c.personEmail) && importEligibility(c, firstInGroup).eligible)
-    .sort(importOrder);
+  const waiting = (c: OutreachContact) => !trackedIds.has(c.contactId) && !trackedEmails.has(c.personEmail) && !connByEmail.has(c.personEmail) && importEligibility(c, firstInGroup).eligible;
+  // Priority contacts keep the order of their tab (no re-sorting); the rest of Master Contacts follows in its usual best-identified-first order,
+  // without any contact that is already in the priority list. The existing eligibility, tracking and e-mail de-duplication rules apply to both.
+  const priorityQueue = priority.contacts.filter(waiting);
+  const inPriority = new Set(priority.contacts.map((c) => c.contactId));
+  const inPriorityEmail = new Set(priority.contacts.map((c) => c.personEmail));
+  const masterQueue = parsed.contacts.filter((c) => !inPriority.has(c.contactId) && !inPriorityEmail.has(c.personEmail) && waiting(c)).sort(importOrder);
+  const queue = [...priorityQueue, ...masterQueue];
   res.queueRemaining = queue.length;
+  res.priorityRemaining = priorityQueue.length;
 
   const work: { contact: OutreachContact; rec?: TrackingRecord }[] = [
     ...retry.flatMap((r) => (byId.has(r.contactId) ? [{ contact: byId.get(r.contactId)!, rec: r }] : [])),
@@ -234,5 +245,6 @@ export async function runOutreachImport(deps: ImportDeps): Promise<ImportResult>
   if (res.stoppedBecause === "none") res.stoppedBecause = work.length === 0 || started >= work.length ? "no-more-eligible" : "run-limit";
   res.importedToday = countedToday();
   res.queueRemaining = Math.max(0, queue.filter((c) => !trackedIds.has(c.contactId)).length);
+  res.priorityRemaining = Math.max(0, priorityQueue.filter((c) => !trackedIds.has(c.contactId)).length);
   return res;
 }

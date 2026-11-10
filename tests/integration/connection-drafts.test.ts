@@ -5,6 +5,7 @@
  */
 import { randomBytes } from "node:crypto";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { getDraftBacklogGate } from "@/lib/gmail/draft-backlog";
 import { NextRequest } from "next/server";
 
 vi.mock("@/lib/auth/session", async (orig) => ({ ...(await orig<typeof import("@/lib/auth/session")>()), getSession: vi.fn() }));
@@ -47,6 +48,11 @@ function mockGoogle() {
   const calls: string[] = [];
   const fn = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
     const url = String(input);
+    // drafts.list (read-only; what the draft-backlog gate counts): the ids of the drafts really in this mailbox. Not recorded as a call.
+    if (url.startsWith("https://gmail.googleapis.com/gmail/v1/users/me/drafts?") && (init?.method ?? "GET") === "GET") {
+      const who = (init?.headers as Record<string, string>).Authorization.replace("Bearer access-", "");
+      return Response.json({ drafts: drafts.map((d, i) => ({ d, i })).filter(({ d }) => d.mailbox === who).map(({ i }) => ({ id: `draft-${i + 1}` })) });
+    }
     calls.push(url.split("?")[0]);
     if (url === "https://oauth2.googleapis.com/token") {
       const p = new URLSearchParams(String(init?.body));
@@ -117,6 +123,7 @@ beforeEach(async () => {
   vi.stubEnv("NEMOTRON_API_KEY", ""); // built-in writer (Nemotron is covered by its own tests)
   google = mockGoogle();
   vi.stubGlobal("fetch", google.fn);
+  getDraftBacklogGate().invalidate(); // the process-wide backlog gate caches its count: start every test fresh
   for (const m of MEMBERS) await connectGmail(m);
   google.drafts.length = 0;
 });
@@ -211,7 +218,8 @@ describe("partial availability and retries", () => {
   it("a temporary Gmail failure is recorded and retried by the next run (one record per mailbox)", async () => {
     const c = await post("anni", { name: "Retry", company: "Acme", email: "r@acme.example" });
     const real = google.fn.getMockImplementation()!;
-    google.fn.mockImplementation(async (input, init) => (String(input).includes("gmail.googleapis.com") ? new Response("down", { status: 503 }) : real(input, init)));
+    // Draft CREATION is what fails here (Gmail answers 503 to drafts.create); the backlog gate's read-only drafts.list keeps working.
+    google.fn.mockImplementation(async (input, init) => (String(input).includes("gmail.googleapis.com") && init?.method === "POST" ? new Response("down", { status: 503 }) : real(input, init)));
     await work();
     expect(recordsFor(c.connectionId).map((r) => r[1])).toEqual(["failed", "failed", "failed"]);
     expect((await status(c.connectionId)).state).toBe("drafting");

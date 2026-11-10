@@ -1,6 +1,7 @@
 import "server-only";
 import { MEMBER_IDS, type MemberId } from "@/config/members";
 import { checkDraftState, createDraftFor, isGmailConnected } from "@/lib/gmail/drafts";
+import { getDraftBacklogGate } from "@/lib/gmail/draft-backlog";
 import { MAX_ATTACHMENT_BYTES, type ResumeLookup } from "@/lib/gmail/attachment";
 import { planResume } from "@/config/resume-map";
 import { onSheetsClientReset } from "@/lib/google-sheets/client";
@@ -59,6 +60,8 @@ export const existingJobs: JobsGateway = {
 /** Real wiring for the per-member Gmail draft step: each member's own Gmail + the NF_Drafts ledger. */
 export function existingDraftDeps(): DraftStepDeps {
   return {
+    // Backlog protection for EVERY production draft-creation path (Outreach cycle and Network Finder cron): see gmail/draft-backlog.ts.
+    backlog: getDraftBacklogGate(),
     createDraft: (memberId, msg) => createDraftFor(memberId, msg),
     isConnected: (memberId) => isGmailConnected(memberId),
     ledger: {

@@ -46,12 +46,14 @@ import { INTERNATIONAL_COUNTRIES, type CompanyCandidate, type EnrichedPerson, ty
  * Everything external is injected, so the same code runs against mocks (tests) and the real adapters.
  */
 export interface DraftStepDeps {
+  /** The draft-backlog gate. Production wiring (existingDraftDeps) always sets it; every draft-creation path passes through distributeDrafts, which checks it. */
+  backlog?: FanoutDeps["backlog"];
   members?: FanoutDeps["members"];
   createDraft: FanoutDeps["createDraft"];
   isConnected: FanoutDeps["isConnected"];
   ledger: FanoutDeps["ledger"];
-  /** Optional: the whole draft ledger in one read (lets the pending-draft scan avoid one read per key). */
-  snapshot?: () => Promise<ReadonlyMap<string, { status: string }>>;
+  /** Optional: the whole draft ledger in one read (lets the pending-draft scan avoid one read per key). `detail` lets it tell a valid pending draft from a parked one. */
+  snapshot?: () => Promise<ReadonlyMap<string, { status: string; detail?: string }>>;
 }
 
 /** One summary push to the team (each member's devices). Never throws. */
@@ -471,6 +473,7 @@ export async function draftForContact(deps: Pick<PipelineDeps, "config" | "brain
     { type: "contact", id: t.connectionId, ...(t.email ? { to: t.email } : {}) },
     {
       ...(deps.drafts!.members ? { members: deps.drafts!.members } : {}),
+      ...(deps.drafts!.backlog ? { backlog: deps.drafts!.backlog } : {}),
       createDraft: deps.drafts!.createDraft,
       isConnected: deps.drafts!.isConnected,
       ledger: deps.drafts!.ledger,
@@ -753,9 +756,15 @@ export const MANUAL_DRAFT_DAYS = 30;
  *  - a failure stays retryable on later runs.
  * Manual connections go first (so they are drafted within one or two runs), then today's selections, then the oldest.
  */
-export async function runPendingDrafts(deps: PipelineDeps, options: { days?: number; manualDays?: number; limit?: number; manualOnly?: boolean } = {}): Promise<{ checked: number; created: number; remaining: number }> {
-  const none = { checked: 0, created: 0, remaining: 0 };
+export async function runPendingDrafts(deps: PipelineDeps, options: { days?: number; manualDays?: number; limit?: number; manualOnly?: boolean } = {}): Promise<{ checked: number; created: number; remaining: number; paused?: string }> {
+  const none: { checked: number; created: number; remaining: number; paused?: string } = { checked: 0, created: 0, remaining: 0 };
   if (!deps.drafts) return none;
+  if (deps.drafts.backlog) {
+    // Backlog protection: while too many drafts wait unsent in the members' Gmail (or the count is unavailable) nothing new is drafted, and not even
+    // the Connections / Gmail-account / ledger reads are made. Sending (a separate step) is unaffected and drains the backlog.
+    const verdict = await deps.drafts.backlog.check().catch(() => ({ allowed: false, pending: null, reason: "draft backlog could not be checked" }));
+    if (!verdict.allowed) return { ...none, paused: verdict.reason };
+  }
   const members = deps.drafts.members ?? MEMBER_IDS;
   const connected = new Set<MemberId>();
   const loadConnected = async () => {
@@ -765,15 +774,19 @@ export async function runPendingDrafts(deps: PipelineDeps, options: { days?: num
   const at = now(deps).getTime();
   const cutoff = new Date(at - (options.days ?? 3) * 86_400_000).toISOString();
   const manualCutoff = new Date(at - (options.manualDays ?? MANUAL_DRAFT_DAYS) * 86_400_000).toISOString();
-  let snapshot: Map<string, { status: string }> | null = null;
+  let snapshot: Map<string, { status: string; detail?: string }> | null = null;
   const statusOf = async (connectionId: string, m: MemberId) => {
     const key = draftKey({ type: "contact", id: connectionId }, m);
     return (snapshot ? snapshot.get(key) : await deps.drafts!.ledger.get(key))?.status;
   };
+  /** member -> recipients that already have an unsent ("created", flagged or not) or sent draft from that member, on ANY Connection: never replaced. */
+  const drafted = new Map<MemberId, Set<string>>();
   /** This mailbox needs nothing more for now. */
-  const settled = async (connectionId: string, m: MemberId) => {
+  const settled = async (connectionId: string, m: MemberId, email?: string) => {
     const s = await statusOf(connectionId, m);
     if (s === "created" || s === "sent") return true;
+    // Never a replacement draft for a recipient who already has a valid pending (or sent) draft from this member, even under another Connection.
+    if (email && drafted.get(m)?.has(email)) return true;
     return !connected.has(m) && s !== undefined; // not connected: settled once it has a record (skipped)
   };
   const hasFailed = (connectionId: string) => (snapshot ? members.some((m) => snapshot?.get(draftKey({ type: "contact", id: connectionId }, m))?.status === "failed") : false);
@@ -781,11 +794,23 @@ export async function runPendingDrafts(deps: PipelineDeps, options: { days?: num
   const wanted = (c: Connection) =>
     c.status === "Not Connected" &&
     (isNetworkFinderEntry(c) ? !options.manualOnly && c.createdAt >= cutoff : Boolean(c.email?.trim()) && c.createdAt >= manualCutoff);
-  const recent = (await deps.connections.list()).filter(wanted);
+  const allConnections = await deps.connections.list();
+  const recent = allConnections.filter(wanted);
+  const emailById = new Map(allConnections.flatMap((c) => (c.email?.trim() ? ([[c.connectionId, c.email.trim().toLowerCase()]] as const) : [])));
   // Nothing to draft: no Gmail-account, draft-ledger or selection reads at all (a quiet cycle stays cheap).
   if (!recent.length) return none;
   await loadConnected();
   snapshot = deps.drafts.snapshot ? new Map(await deps.drafts.snapshot()) : null;
+  if (snapshot) {
+    for (const c of allConnections) {
+      const email = c.email?.trim().toLowerCase();
+      if (!email) continue;
+      for (const m of members) {
+        const e = snapshot.get(draftKey({ type: "contact", id: c.connectionId }, m));
+        if (e && (e.status === "sent" || e.status === "created")) (drafted.get(m) ?? drafted.set(m, new Set()).get(m)!).add(email);
+      }
+    }
+  }
   selectedIds = new Map((deps.selections ? await deps.selections.all() : []).map((s) => [s.connectionId, s]));
   const contacts = recent
     .sort(
@@ -799,7 +824,7 @@ export async function runPendingDrafts(deps: PipelineDeps, options: { days?: num
   const pending: Connection[] = [];
   for (const c of contacts) {
     for (const m of members) {
-      if (!(await settled(c.connectionId, m))) {
+      if (!(await settled(c.connectionId, m, c.email?.trim().toLowerCase()))) {
         pending.push(c);
         break;
       }
@@ -824,10 +849,20 @@ export async function runPendingDrafts(deps: PipelineDeps, options: { days?: num
       members,
       isConnected: async (m) => connected.has(m),
       ledger: {
-        get: async (key) => (snapshot ? snapshot.get(key) : deps.drafts!.ledger.get(key)),
+        get: async (key) => {
+          const own = snapshot ? snapshot.get(key) : await deps.drafts!.ledger.get(key);
+          if (own?.status === "created" || own?.status === "sent") return own;
+          // A recipient who already has a valid pending (or sent) draft from this member, on ANOTHER Connection (existing, or made earlier in this
+          // same run), gets no replacement: reported as already drafted, so nothing is composed, created or recorded for it.
+          const m = /^contact:(.+):([a-z]+)$/.exec(key);
+          const email = m ? emailById.get(m[1]) : undefined;
+          return email && drafted.get(m![2] as MemberId)?.has(email) ? { status: "created" } : own;
+        },
         record: async (e) => {
           await deps.drafts!.ledger.record(e);
-          snapshot?.set(e.draftKey, { status: e.status });
+          snapshot?.set(e.draftKey, { status: e.status, detail: e.detail });
+          const email = e.status === "created" ? emailById.get(e.itemId) : undefined;
+          if (email) (drafted.get(e.memberId) ?? drafted.set(e.memberId, new Set()).get(e.memberId)!).add(email);
         },
       },
     },
@@ -846,6 +881,11 @@ export async function runPendingDrafts(deps: PipelineDeps, options: { days?: num
           company: companyOf(c),
           ...(isNetworkFinderEntry(c) ? {} : { manual: { ...(c.notes ? { notes: c.notes } : {}), ...(c.message ? { message: c.message } : {}), ...(c.applyRole ? { applyRole: c.applyRole } : {}) } }),
         });
+    const paused = outcomes.find((o) => o.result === "paused_backlog");
+    if (paused) {
+      // The gate closed (the backlog reached the limit during this run): this contact was not started, so it is not counted as checked.
+      return { ...result, paused: paused.detail ?? "draft backlog" };
+    }
     result.checked += 1;
     result.remaining -= 1;
     result.created += outcomes.filter((o) => o.result === "created").length;

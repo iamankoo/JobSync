@@ -58,7 +58,7 @@ export async function runOutreachInBackground(d: BackgroundDeps = {}): Promise<B
     }
     const s = summarizeCycle(run);
     // Counts and statuses only: no names, e-mail addresses, companies, tokens or message text.
-    log(`[outreach] ${JSON.stringify({ status: "completed", ms: now() - started, rateLimited: sheetsRateLimitHits(), import: s.import && { imported: s.import.importedThisRun, today: s.import.importedToday, stop: s.import.stoppedBecause }, drafts: typeof s.drafts === "object" && s.drafts ? s.drafts : s.drafts, send: s.send && { status: s.send.status, sent: s.send.sent, review: s.send.needsReview, failed: s.send.failed, waiting: s.send.waiting, stop: s.send.stoppedBecause }, errors: s.errors.length })}`);
+    log(`[outreach] ${JSON.stringify({ status: "completed", ms: now() - started, rateLimited: sheetsRateLimitHits(), gmail: s.gmail && { lapsed: s.gmail.lapsed, expiring: s.gmail.expiring, alerted: s.gmail.alerted }, existing: s.existing && { adopted: s.existing.adopted, remaining: s.existing.remaining, orphaned: s.existing.orphaned, parked: s.existing.parked }, import: s.import && { imported: s.import.importedThisRun, today: s.import.importedToday, stop: s.import.stoppedBecause, priorityLeft: s.import.priorityRemaining ?? 0 }, drafts: typeof s.drafts === "object" && s.drafts ? s.drafts : s.drafts, send: s.send && { status: s.send.status, sent: s.send.sent, review: s.send.needsReview, failed: s.send.failed, waiting: s.send.waiting, stop: s.send.stoppedBecause }, errors: s.errors.length })}`);
     return { status: "completed" };
   } catch (err) {
     log(`[outreach] ${JSON.stringify({ status: "error", error: err instanceof Error ? err.name : "error" })}`);

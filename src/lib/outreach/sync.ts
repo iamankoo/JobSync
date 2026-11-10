@@ -46,7 +46,9 @@ export function deriveProcessing(connectionId: string, ledger: ReadonlyMap<strin
   const made = MEMBER_IDS.filter((m) => drafts[m].status === "created" || drafts[m].status === "sent");
   const failed = MEMBER_IDS.filter((m) => drafts[m].status === "failed");
   const relevant = connected.length ? connected : MEMBER_IDS;
-  const allSent = made.length > 0 && made.every((m) => drafts[m].status === "sent");
+  // "All sent" means every member who is expected to send has sent. It must NOT mean "every draft that exists so far has been sent": a member whose
+  // draft is skipped (Gmail was not connected), failed or not written yet still has an e-mail to send, and a contact marked "sent" is never looked at again.
+  const allSent = made.length > 0 && relevant.every((m) => drafts[m].status === "sent");
   let processing: ProcessingStatus;
   if (made.length === 0) processing = failed.length ? "failed" : "awaiting";
   else if (reviews.length) processing = "needs_review";

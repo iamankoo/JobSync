@@ -20,6 +20,10 @@ export const ACTIVE: readonly SendLedgerStatus[] = ["claimed", "sending", "sent"
 /** Needs a person (or a deliberate reset) before anything is sent to this key again. */
 export const BLOCKING: readonly SendLedgerStatus[] = ["needs_review", "failed_permanent"];
 export const MAX_SEND_ATTEMPTS = 3;
+/** The ledger reason of a send Gmail refused because of ITS OWN quota / rate limit. Nothing was sent, so it does not use up a recipient's attempts. */
+export const RATE_LIMIT_REASON = "Gmail rate limit / quota";
+/** Failed attempts that count against MAX_SEND_ATTEMPTS: a genuine Gmail rate limit is the platform's pacing, not a failure of this recipient. */
+export const countedFailures = (rows: readonly SendRecord[]) => rows.filter((r) => r.status === "failed_transient" && r.reason !== RATE_LIMIT_REASON).length;
 const HISTORY_MAX = 900;
 
 export const normalKey = (email: string) => email.trim().toLowerCase();
@@ -43,16 +47,13 @@ export function withHistory(history: string, at: string, event: string): string 
 export type ClaimResult =
   /** `ledger`: the ledger as read right AFTER this claim was appended (the caller can use it instead of reading the tab again). */
   | { won: true; record: SendRecord; ledger: SendRecord[] }
-  | { won: false; reason: "already_sent" | "in_flight" | "needs_review" | "failed_permanent" | "lost_race" | "too_many_attempts" | "limit_reached"; existing?: SendRecord };
+  | { won: false; reason: "already_sent" | "in_flight" | "needs_review" | "failed_permanent" | "lost_race" | "too_many_attempts"; existing?: SendRecord };
 
 export type ClaimInput = Pick<SendRecord, "sendKey" | "contactId" | "member" | "gmailAccount" | "connectionId" | "company" | "role" | "draftId" | "threadId" | "resumeFile" | "resumeSha256" | "resumeBytes" | "wordCount">;
 
 type LedgerSheet = Pick<OutreachSheet, "readSendLedger" | "appendSendRecord" | "updateSendRecord">;
 
-/** Evaluated against the ledger AFTER this claim was appended; a non-null result releases the claim (e.g. a concurrent worker used the last slot). */
-export type PostClaimCheck = (ledger: readonly SendRecord[], mine: SendRecord) => string | null;
-
-export async function claimSend(sheet: LedgerSheet, input: ClaimInput, day: string, now: Date, postCheck?: PostClaimCheck): Promise<ClaimResult> {
+export async function claimSend(sheet: LedgerSheet, input: ClaimInput, day: string, now: Date): Promise<ClaimResult> {
   const stamp = now.toISOString();
   const before = await sheet.readSendLedger();
   const mine = rowsFor(before.records, input.sendKey);
@@ -62,7 +63,7 @@ export async function claimSend(sheet: LedgerSheet, input: ClaimInput, day: stri
   if (live) return { won: false, reason: "in_flight", existing: live };
   const blocking = mine.find((r) => BLOCKING.includes(r.status));
   if (blocking) return { won: false, reason: blocking.status === "needs_review" ? "needs_review" : "failed_permanent", existing: blocking };
-  const failures = mine.filter((r) => r.status === "failed_transient").length;
+  const failures = countedFailures(mine);
   if (failures >= MAX_SEND_ATTEMPTS) return { won: false, reason: "too_many_attempts" };
 
   const claimId = randomUUID();
@@ -81,11 +82,6 @@ export async function claimSend(sheet: LedgerSheet, input: ClaimInput, day: stri
   if (!winner || winner.claimId !== claimId) {
     await sheet.updateSendRecord({ ...me, status: "superseded", reason: `lost the claim to row ${winner?.row ?? "?"}`, history: withHistory(me.history, now.toISOString(), "superseded"), updatedAt: now.toISOString() });
     return { won: false, reason: "lost_race", ...(winner ? { existing: winner } : {}) };
-  }
-  const over = postCheck?.(after.records, me) ?? null;
-  if (over) {
-    await sheet.updateSendRecord({ ...me, status: "released", reason: over, history: withHistory(me.history, now.toISOString(), `released (${over})`), updatedAt: now.toISOString() });
-    return { won: false, reason: "limit_reached" };
   }
   return { won: true, record: me, ledger: after.records };
 }

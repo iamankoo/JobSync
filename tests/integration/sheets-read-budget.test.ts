@@ -107,11 +107,10 @@ describe("Gmail access is remembered for 90 seconds, and only while nothing chan
 
 describe("contacts already in review are re-checked only occasionally, so they cannot use up every call", () => {
   const ALL = ["anni", "lukky", "rishii"] as const;
-  const BIG = { perRun: 30, perMemberDaily: 200, globalDaily: 600 };
   /** 5 OLD contacts whose drafts have no resume at all (they end up in review) followed by 3 NEWER good ones. */
   async function setup() {
     const specs: ContactSpec[] = Array.from({ length: 8 }, (_, i) => ({ email: `p${i}@c${i}.example.com`, name: `Pat Person${i}`, company: `Co${i}`, members: [...ALL] }));
-    const f = buildSendFixture(specs, BIG);
+    const f = buildSendFixture(specs);
     for (let i = 0; i < 5; i++) {
       for (const m of ALL) {
         const d = f.gmail.drafts.get(`draft_${i}_${m}`) as { status: "ok"; draft: { attachments: unknown[] } };
@@ -174,8 +173,9 @@ describe("contacts already in review are re-checked only occasionally, so they c
     const f = await scenario();
     expect((await runSendStep(withTime(f, { reviewRecheckEvery: 5 }))).sent).toBe(9);
     expect(f.gmail.sentMessages.every((m) => /^draft_[567]_/.test(m.draftId))).toBe(true);
+    // Even without rotation the good contacts are reached first now: contacts whose open drafts are recorded as unsendable are evaluated last in every mode.
     const control = await scenario();
-    expect((await runSendStep(withTime(control, {}))).sent).toBe(0); // default order: the whole call is spent on the old review contacts
+    expect((await runSendStep(withTime(control, {}))).sent).toBe(9);
   });
 
   it("a draft the member fixes while its contact is in review is sent within one rotation", async () => {
@@ -189,5 +189,67 @@ describe("contacts already in review are re-checked only occasionally, so they c
       await runSendStep(f.deps({ reviewRecheckEvery: 5 }));
     }
     expect(f.gmail.sentMessages.some((m) => m.draftId === "draft_2_anni")).toBe(true);
+  });
+});
+
+describe("contacts whose drafts are ALL recorded as unsendable (parked) are re-checked only occasionally, so they cannot use up every call", () => {
+  const ALL = ["anni", "lukky", "rishii"] as const;
+  /** 20 contacts whose lukky draft has no resume (so it is recorded as unsendable and every re-check costs a Gmail read) + 5 good ones. */
+  async function setup() {
+    const specs: ContactSpec[] = Array.from({ length: 25 }, (_, i) => ({ email: `p${i}@c${i}.example.com`, name: `Pat Person${i}`, company: `Co${i}`, members: [...ALL] }));
+    const f = buildSendFixture(specs);
+    for (let i = 0; i < 20; i++) {
+      for (const m of ALL) {
+        const d = f.gmail.drafts.get(`draft_${i}_${m}`) as { status: "ok"; draft: { attachments: unknown[] } };
+        f.gmail.drafts.set(`draft_${i}_${m}`, { status: "ok", draft: { ...d.draft, attachments: [] } } as never); // no resume at all: every member's draft is unsendable
+      }
+    }
+    await f.seed();
+    return f;
+  }
+  const readsOf = (f: Awaited<ReturnType<typeof setup>>) => f.gmail.calls.filter((c) => c.startsWith("read:")).length;
+
+  it("every call re-checks everything by default (unchanged behaviour)", async () => {
+    const f = await setup();
+    await runSendStep(f.deps());
+    const first = readsOf(f);
+    await runSendStep(f.deps());
+    expect(readsOf(f) - first).toBeGreaterThan(20); // the 20 unsendable contacts (60 drafts) are looked at again
+  });
+
+  it("with a rotation of 5, each recorded-unsendable contact is re-checked once per 5 calls, and eligible drafts are never delayed", async () => {
+    const f = await setup();
+    const first = await runSendStep(f.deps({ reviewRecheckEvery: 5 }));
+    expect(first.sent).toBe(15); // the 5 good contacts went out at once
+    // Warm-up: recording WHY each draft is unsendable is bounded (25 notes per call), so the first calls still look at some contacts every time.
+    for (let call = 0; call < 3; call++) {
+      f.clock.now = new Date(f.clock.now.getTime() + 120_000);
+      await runSendStep(f.deps({ reviewRecheckEvery: 5 }));
+    }
+    const perCall: number[] = [];
+    for (let call = 1; call <= 5; call++) {
+      f.clock.now = new Date(f.clock.now.getTime() + 120_000); // the next cron slot
+      const before = readsOf(f);
+      await runSendStep(f.deps({ reviewRecheckEvery: 5 }));
+      perCall.push(readsOf(f) - before);
+    }
+    const total = perCall.reduce((a, b) => a + b, 0);
+    expect(total).toBeGreaterThanOrEqual(55); // over 5 calls every contact (20 x 3 drafts) is re-checked about once...
+    expect(total).toBeLessThanOrEqual(75);
+    expect(Math.max(...perCall)).toBeLessThan(40); // ...but never all of them in one call (default would be 60 every call)
+    expect(f.gmail.sentMessages).toHaveLength(15);
+  });
+
+  it("a newly eligible draft (the member fixed it) is sent within one rotation", async () => {
+    const f = await setup();
+    await runSendStep(f.deps({ reviewRecheckEvery: 5 }));
+    const fixed = f.gmail.drafts.get("draft_3_anni") as { status: "ok"; draft: { attachments: unknown[] } };
+    const good = f.gmail.drafts.get("draft_24_anni") as { status: "ok"; draft: { attachments: unknown[] } };
+    f.gmail.drafts.set("draft_3_anni", { status: "ok", draft: { ...fixed.draft, attachments: good.draft.attachments } } as never);
+    for (let call = 0; call < 5; call++) {
+      f.clock.now = new Date(f.clock.now.getTime() + 120_000);
+      await runSendStep(f.deps({ reviewRecheckEvery: 5 }));
+    }
+    expect(f.gmail.sentMessages.some((m) => m.draftId === "draft_3_anni")).toBe(true);
   });
 });

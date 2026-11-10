@@ -55,7 +55,7 @@ entry, mappable role, first member of a possible-duplicate group. PersonName / C
 | 11 | no previous successful send for this contact/recipient (`no_prior_send`) | blocked |
 | 12 | the owner's resume is available and the draft carries exactly that file: one attachment, the expected name, the expected size (`resume`) | **review** |
 | 13 | Gmail authorisation valid (the draft can be read back with the owner's token) (`gmail_auth`) | auth |
-| 14 | daily/per-run limits not reached (`daily_limit`) | waits |
+| 14 | Gmail has not asked this member's account to slow down (`gmail_quota`): after a Gmail quota/rate-limit refusal that account waits out a growing cool-down (15, 30, 60 ... up to 240 min); other members keep sending. There is no JobSync sending cap. | waits |
 
 Checks 7, 8, 12 run on the **real saved Gmail draft** read back with `drafts.get`, not on what was intended. Checks run cheapest first;
 Gmail is read only after every local check passed.
@@ -179,19 +179,63 @@ summaries, jobs, applications, chat, calls and the scheduled messages behave exa
 | `OUTREACH_DAILY_LIMIT` | 200 | 200 | shared Connections **imported** per rolling 24 h, all members together |
 | `OUTREACH_IMPORT_PER_RUN` | 10 | 50 | contacts imported per cron call |
 | `OUTREACH_DRAFTS_PER_RUN` | 2 | 10 | contacts drafted per cron call |
-| `OUTREACH_SEND_PER_MEMBER_DAILY` | 200 | 200 | confirmed/in-flight sends per member's own Gmail per rolling 24 h |
-| `OUTREACH_SEND_GLOBAL_DAILY` | 600 | 600 (and <= 3 x per-member) | sends across all three accounts per rolling 24 h |
-| `OUTREACH_SEND_PER_RUN` | 10 | 30 | messages per cron execution |
 | `OUTREACH_MASTER_TAB` | `Master Contacts` | plain tab name | the tab contacts are read from (a separate tab lets a controlled test use its own contacts) |
 | `OUTREACH_OWNER` | unset (round-robin) | a member id | every imported Connection is owned by this member, so it is sent from that member's Gmail |
 | `OUTREACH_SEND_ONLY_TO` | unset (no allowlist) | - | comma-separated recipients that are the ONLY ones ever sent to; exact addresses or `local+jobsync*@domain` (hard safety net for tests) |
 | `OUTREACH_MANUAL_SINCE` | unset | ISO time | Connections members added by hand before this instant are ignored by the pipeline (so existing Connections are never auto-sent) |
 
-Values above a ceiling, negative, fractional or non-numeric are ignored (the default applies); `0` pauses sending. Unlimited sending is
-not expressible. The import limit says nothing about sending: importing/drafting is reversible, sending is not. Usage counts
-confirmed **and** in-flight/uncertain sends, so an unresolved send still consumes quota. Gmail's own limits are far higher; the defaults
-are deliberately conservative to protect each member's sender reputation. Raise them gradually, one setting at a time.
+Values above a ceiling, negative, fractional or non-numeric are ignored (the default applies).
+
+**Sending has no JobSync cap.** The old `OUTREACH_SEND_PER_MEMBER_DAILY` (200), `OUTREACH_SEND_GLOBAL_DAILY` (600) and `OUTREACH_SEND_PER_RUN` (10) settings
+were removed and are ignored if still set. Every eligible e-mail is sent until the queue is drained: a call sends as many as its time budget allows
+(20 s, or 28 s while drafting is paused by the backlog gate) and the next cron call continues. What still slows sending is genuine: Gmail's own quotas
+and rate limits (a refused account pauses with a growing cool-down, never blindly retried; refusals do not use up a recipient's attempts), the
+execution time budget, and the safety checks. The only numerical limit left is the **import** limit above (200 Connections from the Outreach
+Database per rolling 24 h, global); manually added Connections never use it up. To stop everything immediately, unset `OUTREACH_ENABLED`.
+
+**Draft backlog protection.** While 100 or more JobSync-generated drafts are sitting unsent in the three members' Gmail Drafts folders, no new
+draft is created anywhere (Outreach and Network Finder share one gate, checked once before a Connection's three-member fan-out). The count is of
+real Gmail drafts: one paged `drafts.list` per member (ids only), intersected with the draft ledger (`NF_Drafts`, status `created`); drafts that
+were sent or deleted, and drafts the members wrote themselves, are not counted. Existing (old) drafts count exactly like new ones: there is no
+creation-date cutoff. The count is of the ELIGIBLE backlog: a draft that needs a person (flagged `review:` when drafted, or `parked:` by the send step,
+see below) stays in Gmail untouched but is reported separately as `parked`, so drafts only a person can fix cannot pause drafting for ever.
+If the count cannot be obtained, drafting pauses (fail closed). Sending is never gated and drains the backlog; drafting resumes by itself below 100.
+
+**Draining every existing JobSync draft (no creation-date cutoff).** The send step works from the tracking tab, so a draft whose Connection had no
+tracking row (Network Finder drafts, manual Connections older than 30 days, drafts skipped by earlier runs) used to wait for ever. Each cron call now
+first registers (source `existing-draft`, at most 40 per call, oldest first) every Connection that still has an unsent JobSync draft in the draft
+ledger, however old; the normal send step then decides each member's draft on its merits, after reconciling any older uncertain send against Gmail:
+- eligible, in the intended member's own Gmail, with that member's own resume attached and verified -> sent and recorded in the Send Ledger with
+  Gmail's message id (the draft is then marked sent, and a durable ledger row makes a second send impossible);
+- missing / wrong / unreadable resume, failed content check, opted out, invalid recipient, duplicate recipient, Connection gone, Connection no longer
+  "Not Connected"/"Messaged" -> never sent, never edited or deleted in Gmail; the reason is recorded in the tracking row and as a `parked:` note on the
+  draft's ledger row (NF_Drafts.Detail). The note is lifted automatically when the reason goes away (e.g. the opt-out is removed);
+- an uncertain earlier send -> reconciled against Gmail first, never resent while unresolved (and not parked: it is still an unresolved pending draft).
+Drafts that are not in the draft ledger (anything a member wrote by hand) are never read, counted, sent or touched. The drafting worker never writes
+a second draft for a recipient who already has an unsent or sent draft from that member, on any Connection (also within one run).
+Drafts already recorded as unsendable are re-checked last each call, so they can never use up the time slice eligible drafts need. Processing continues on
+every cron call until every eligible draft is sent.
+The cron log shows `drafts.paused` with the reason. Master Contacts is never read for the count.
 Logs: one `[outreach]` line per call with counts and statuses only (no names, addresses, companies or tokens).
+
+### Priority contacts (import some contacts before the rest of the Outreach Database)
+An optional tab **Priority Contacts** in the Outreach Database (same columns as Master Contacts; not created automatically, so nothing changes until it exists)
+is a queue that the importer works through BEFORE the rest of Master Contacts, in sheet order. A row is either a full contact row (a contact that is not in
+Master Contacts) or an ID-only row (only `ContactID`), which promotes an existing Master Contacts row. Master Contacts is never edited and nothing is
+renumbered: ContactIDs are derived from the e-mail, de-duplication by ContactID / e-mail (tracking, Connections, the other tab) is unchanged, so no contact
+can be imported twice. Priority contacts are ordinary database imports: they are counted by, and limited by, the 200-per-rolling-24-hours import limit
+(the position in the queue is not a limit), they are eligible to send on the same rules as Master contacts, and they follow the shared-Connection workflow
+(three personalised e-mails, each from its member's own Gmail with that member's resume) and every opt-out / duplicate / quota safeguard.
+`scripts/outreach/priority-contacts.mts` builds the tab from a contact list: a DRY RUN by default (read-only; writes only report files), and `--apply` only
+together with `--i-have-owner-approval`; it refuses the production spreadsheet and a tab that already holds rows. The cron log shows `priorityLeft`.
+
+### Who still has an e-mail to send (per member, never per contact)
+One shared Connection produces up to three e-mails, one per member, and a member's draft can appear at any time (for example after their Gmail was
+reconnected). Whether a member still has work is therefore decided for THAT member from the two durable ledgers: the draft ledger (an unsent draft
+exists) and the send ledger (no confirmed send for that member and recipient). The contact-level `sent` flag is only a summary: it is set only when every
+connected member's draft is sent, it is never used to skip a member, and a contact flagged `sent` that still has an unsent draft (production had 153 such
+contacts) is picked up again. A confirmed send is never repeated (the send ledger), uncertain sends are reconciled first, and every check (member's own Gmail
+and resume, opt-out, recipient, duplicates) applies to a late draft exactly as to any other.
 
 ### Sheets request budget
 Google Sheets allows about 60 reads per minute per user for the whole app. The outreach cycle stays inside that by: remembering each member's Gmail access
@@ -199,10 +243,9 @@ Google Sheets allows about 60 reads per minute per user for the whole app. The o
 file (they were downloaded from the ChatFiles tab for every check); parsing the cached Master grid once (it was parsed three times a cycle) and computing the
 eligible-contact set once per cached grid; skipping Master and Connections entirely when the 24-hour import allowance is used up; letting the bookkeeping read
 of the draft ledger be up to 20 s old; reusing the ledger read the claim protocol has just made (no second read after a confirmed send); and re-checking
-contacts already marked "review" only about every 30 minutes (every 15th call, rotated by contact; contacts not in review are always looked at first), so
-hundreds of review contacts cannot use up every call's time. A disconnect made by another server instance reaches an instance that holds a cached token
-within 90 seconds; the send step re-checks every member's connection status fresh at the start of each call. Sending limits, import limits and all safety
-checks are unchanged.
+contacts that need a person (marked "review" or "blocked", or all of whose open drafts are recorded as unsendable) only about every 30 minutes (every 15th call,
+rotated by contact; the others are always looked at first), so hundreds of them cannot use up every call's time. A disconnect made by another server instance reaches an instance that holds a cached token
+within 90 seconds; the send step re-checks every member's connection status fresh at the start of each call. The import limit and every safety check are unchanged; sending has no JobSync cap.
 
 ## 9. Failure recovery
 | Symptom | What to do |
@@ -218,15 +261,15 @@ checks are unchanged.
 1. Deploy (done). Nothing changes while `OUTREACH_ENABLED` is unset.
 2. **Controlled test first, on labelled contacts only:** put ~10 labelled contacts in a separate tab of the Outreach Database and set
    `OUTREACH_MASTER_TAB` to it, `OUTREACH_OWNER` to the member whose Gmail should send, `OUTREACH_SEND_ONLY_TO` to the test inbox
-   (e.g. `me+jobsync*@gmail.com`), `OUTREACH_MANUAL_SINCE` to now, `OUTREACH_SEND_PER_RUN=10`, then `OUTREACH_ENABLED=true`,
+   (e.g. `me+jobsync*@gmail.com`), `OUTREACH_MANUAL_SINCE` to now, then `OUTREACH_ENABLED=true`,
    `OUTREACH_CRON_SECRET`, `OUTREACH_SPREADSHEET_ID`. Call `GET /api/cron/outreach` (Bearer secret) until the 10 contacts are imported,
    drafted and sent; verify the Connections, drafts, attachments, delivered messages, Sent counter and both milestone notifications.
 3. **Clean up** (`tests/live/outreach-test-tool.live.test.ts`, action `cleanup`): deletes the test Connections, Gmail drafts, tracking and
    ledger rows, milestone state and counters, and the test tab. Sent test messages stay in the Sent folder/inbox (delete by hand).
 4. **Real activation:** remove `OUTREACH_MASTER_TAB`, `OUTREACH_OWNER` and `OUTREACH_SEND_ONLY_TO`; keep `OUTREACH_MANUAL_SINCE`; set
-   `OUTREACH_DAILY_LIMIT=200` (max imports per day) and the conservative sending limits (defaults 10/member/day, 25/day, 3/run); create
-   the cron-job.org job (every 5-10 minutes, Bearer secret). Watch `SendsNeedingReview`, `FailedSends` and bounces daily; raise limits
-   gradually. To stop immediately: unset `OUTREACH_ENABLED` (or set `OUTREACH_SEND_PER_RUN=0`).
+   `OUTREACH_DAILY_LIMIT=200` (max imports per rolling 24 h; sending has no JobSync cap); create
+   the cron-job.org job (every 5-10 minutes, Bearer secret). Watch `SendsNeedingReview`, `FailedSends`, Gmail refusals and bounces daily.
+   To stop immediately: unset `OUTREACH_ENABLED`.
 
 ## 11. Operational risks
 - Two members could still send their own (non-owner) drafts by hand for the same contact; automation cannot edit or remove their drafts.
@@ -240,7 +283,7 @@ checks are unchanged.
 ## Shared-Connection workflow (live)
 One imported contact is ONE shared Connection. The drafting worker writes one personalised draft per member (own name, signature, resume); the
 send step sends each member's draft from that member's own Gmail. Idempotency key = `member|recipient` (the same recipient may receive one e-mail
-per member, never two from one account). Limits: 200 Connections per rolling 24 h (global); 200 sends per member and 600 combined per rolling 24 h.
+per member, never two from one account). Limits: 200 imported Connections per rolling 24 h (global; manual Connections are not counted); NO JobSync sending cap (only Gmail's own quotas). 100+ unsent drafts in Gmail pause new drafting.
 The tracking row is "sent" only when all three e-mails are confirmed; the Connection becomes "Messaged" then. A disconnected member is paused
 (`reauth_required`) until they reconnect through the normal OAuth flow; the others keep sending. Each cron call: send first (own time slice), then
 import, then drafting; Master Contacts is cached per instance for 20 minutes. Test-artefact removal: `POST /api/cron/outreach-cleanup` (inert unless

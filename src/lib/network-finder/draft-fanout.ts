@@ -22,11 +22,24 @@ export interface FanoutItem {
 
 export interface MemberDraftOutcome {
   memberId: MemberId;
-  result: "created" | "already_drafted" | "not_authorized" | "reauth_required" | "failed";
+  /** "paused_backlog": too many unsent drafts are waiting in the members' Gmail (or the count is unavailable); nothing was composed, created or recorded. */
+  result: "created" | "already_drafted" | "not_authorized" | "reauth_required" | "failed" | "paused_backlog";
   detail?: string;
 }
 
+/**
+ * The draft-backlog gate (see lib/gmail/draft-backlog.ts). `allowed: false` means NO new draft may be started, for any member. The check is
+ * made once, BEFORE the three-member fan-out of an item begins, so an item is never left half drafted by a pause. It must fail closed.
+ */
+export interface BacklogGatePort {
+  check(): Promise<{ allowed: boolean; pending: number | null; reason: string }>;
+  /** A draft was just created: counted at once (the next check does not wait for a fresh Gmail count). */
+  noteCreated(count?: number): void;
+}
+
 export interface FanoutDeps {
+  /** Present in production wiring for EVERY draft-creation path (Outreach and Network Finder both end in distributeDrafts). */
+  backlog?: BacklogGatePort;
   members?: readonly MemberId[];
   /** The member's own Gmail only (see lib/gmail/drafts.ts). */
   createDraft(memberId: MemberId, msg: { to?: string; subject: string; body: string; attachment?: DraftAttachment }): Promise<{ status: "created"; draftId: string; threadId?: string; attachment?: "verified" | "unverified" } | { status: "not_authorized" } | { status: "reauth_required" } | { status: "failed"; reason: string }>;
@@ -43,6 +56,11 @@ export const draftKey = (item: Pick<FanoutItem, "type" | "id">, memberId: Member
 
 export async function distributeDrafts(item: FanoutItem, deps: FanoutDeps): Promise<MemberDraftOutcome[]> {
   const outcomes: MemberDraftOutcome[] = [];
+  if (deps.backlog) {
+    // Fail closed: a gate that cannot answer (or throws) pauses drafting rather than risk growing the backlog.
+    const verdict = await deps.backlog.check().catch(() => ({ allowed: false, pending: null, reason: "draft backlog could not be checked" }));
+    if (!verdict.allowed) return (deps.members ?? MEMBER_IDS).map((memberId) => ({ memberId, result: "paused_backlog" as const, detail: verdict.reason }));
+  }
   for (const memberId of deps.members ?? MEMBER_IDS) {
     const key = draftKey(item, memberId);
     try {
@@ -67,6 +85,7 @@ export async function distributeDrafts(item: FanoutItem, deps: FanoutDeps): Prom
         const attachNote = content.attachment ? (res.attachment === "verified" ? `attached: ${content.attachment.fileName}` : "review: resume attachment could not be verified in the saved draft") : "";
         const detail = [content.review, content.note, attachNote].filter(Boolean).join("; ");
         await deps.ledger.record({ draftKey: key, memberId, itemType: item.type, itemId: item.id, gmailDraftId: res.draftId, ...(res.threadId ? { threadId: res.threadId } : {}), status: "created", detail });
+        deps.backlog?.noteCreated();
         outcomes.push({ memberId, result: "created" });
       } else if (res.status === "failed") {
         await deps.ledger.record({ draftKey: key, memberId, itemType: item.type, itemId: item.id, gmailDraftId: "", status: "failed", detail: res.reason });

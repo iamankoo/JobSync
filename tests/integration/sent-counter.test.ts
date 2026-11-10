@@ -77,12 +77,12 @@ afterEach(() => {
 describe("1. a successful JobSync send increments Sent by exactly one", () => {
   it("Draft goes 1 -> 0 and Sent 0 -> 1 for the sending member, once; the others are unchanged", async () => {
     expect(await countersFor("anni")).toEqual({ drafted: 2, sent: 0 }); // 2 contacts, anni has a draft for each
-    const r = await runSendStep(deps({ limits: { perMemberDaily: 10, globalDaily: 25, perRun: 1 } }));
-    expect(r.sent).toBe(1);
-    expect(f.gmail.sendCalls()).toEqual(["send:anni:draft_0_anni"]);
+    const r = await runSendStep(deps());
+    expect(r.sent).toBe(2); // no per-run cap: anni's contact AND lukky's contact go out in the one run
+    expect(f.gmail.sendCalls()).toEqual(["send:anni:draft_0_anni", "send:lukky:draft_1_lukky"]);
     expect(await countersFor("anni")).toEqual({ drafted: 1, sent: 1 });
-    expect(await countersFor("lukky")).toEqual({ drafted: 2, sent: 0 }); // lukky's own send has not happened
-    expect(await countersFor("rishii")).toEqual({ drafted: 2, sent: 0 });
+    expect(await countersFor("lukky")).toEqual({ drafted: 1, sent: 1 }); // lukky's own send, counted for lukky only
+    expect(await countersFor("rishii")).toEqual({ drafted: 2, sent: 0 }); // rishii sent nothing
   });
 
   it("running the workflow and the counter again does not add a second Sent for the same contact", async () => {
@@ -112,7 +112,7 @@ describe("3. failed or uncertain sends do not increment Sent", () => {
     for (const script of [{ status: "rate_limited" as const }, { status: "auth_failed" as const, reason: "x" }, { status: "rejected" as const, reason: "bad" }]) {
       f.gmail.sendScript = [script];
       f.clock.now = new Date(f.clock.now.getTime() + 24 * 3600_000);
-      await runSendStep(deps({ limits: { perMemberDaily: 10, globalDaily: 25, perRun: 1 } }));
+      await runSendStep(deps());
       expect(await countersFor("anni"), script.status).toEqual({ drafted: 2, sent: 0 });
     }
   });
@@ -120,7 +120,7 @@ describe("3. failed or uncertain sends do not increment Sent", () => {
   it("an uncertain result that cannot be proven: not counted (and not resent)", async () => {
     f.gmail.sendScript = [{ status: "uncertain", reason: "timeout" }];
     f.gmail.reconcileScript = [{ state: "unknown", reason: "metadata permission missing" }];
-    await runSendStep(deps({ limits: { perMemberDaily: 10, globalDaily: 25, perRun: 1 } }));
+    await runSendStep(deps());
     expect(await countersFor("anni")).toEqual({ drafted: 2, sent: 0 });
     expect((await f.sheet.readSendLedger()).records[0].status).toBe("uncertain");
   });
@@ -128,16 +128,16 @@ describe("3. failed or uncertain sends do not increment Sent", () => {
   it("an uncertain result that Gmail later PROVES sent is counted exactly once", async () => {
     f.gmail.sendScript = [{ status: "uncertain", reason: "timeout" }];
     f.gmail.reconcileScript = [{ state: "sent", messageId: "msg-proven" }];
-    await runSendStep(deps({ limits: { perMemberDaily: 10, globalDaily: 25, perRun: 1 } }));
+    await runSendStep(deps());
     expect(await countersFor("anni")).toEqual({ drafted: 1, sent: 1 });
-    await runSendStep(deps({ limits: { perMemberDaily: 10, globalDaily: 25, perRun: 1 } }));
+    await runSendStep(deps());
     expect((await countersFor("anni")).sent).toBe(1);
   });
 });
 
 describe("4. nothing is counted twice, whichever records mirror the send", () => {
   it("send recorded in the Send Ledger, the draft ledger AND the Connection -> one; draft-ledger update lost -> still one; tracker later catches up -> still one", async () => {
-    await runSendStep(deps({ limits: { perMemberDaily: 10, globalDaily: 25, perRun: 1 } }));
+    await runSendStep(deps());
     expect(await countersFor("anni")).toEqual({ drafted: 1, sent: 1 }); // all JobSync records agree
     // simulate the follow-up draft-ledger update having been lost
     const r = prod.rows("NF_Drafts").find((x) => x[0] === "contact:conn_0:anni")!;
@@ -158,7 +158,7 @@ describe("4. nothing is counted twice, whichever records mirror the send", () =>
   });
 
   it("the same contact sent by automation AND marked sent in the draft ledger -> one", async () => {
-    await runSendStep(deps({ limits: { perMemberDaily: 10, globalDaily: 25, perRun: 1 } }));
+    await runSendStep(deps());
     expect(prod.rows("NF_Drafts").find((x) => x[0] === "contact:conn_0:anni")![5]).toBe("sent");
     expect((await countersFor("anni")).sent).toBe(1);
   });
@@ -234,7 +234,7 @@ describe("6. page refresh and background reconciliation show the correct count",
   it("the endpoint (what the page asks on load and every 15 s) reflects a confirmed send as soon as the ledger does, and a refresh shows the same", async () => {
     as("anni");
     expect((await (await call()).json()).data).toMatchObject({ drafted: 2, sent: 0, memberId: "anni" });
-    await runSendStep(deps({ limits: { perMemberDaily: 10, globalDaily: 25, perRun: 1 } }));
+    await runSendStep(deps());
     expect((await (await call()).json()).data).toMatchObject({ drafted: 1, sent: 1 });
     invalidateTableCache();
     expect((await (await call()).json()).data).toMatchObject({ drafted: 1, sent: 1 });
@@ -242,12 +242,12 @@ describe("6. page refresh and background reconciliation show the correct count",
 
   it("an interrupted send is reconciled by the SEND workflow's own cron pass: only then does the (proven, message-id-carrying) send appear", async () => {
     f.gmail.sendScript = ["throw"]; // the process dies after submitting: ledger says 'sending'
-    await runSendStep(deps({ limits: { perMemberDaily: 10, globalDaily: 25, perRun: 1 } }));
+    await runSendStep(deps());
     as("anni");
     expect((await (await call()).json()).data).toMatchObject({ drafted: 2, sent: 0 }); // not counted while unconfirmed
     f.clock.now = new Date(f.clock.now.getTime() + 5 * 60_000);
     f.gmail.reconcileScript = [{ state: "sent", messageId: "msg-found" }];
-    await runSendStep(deps({ limits: { perMemberDaily: 10, globalDaily: 25, perRun: 1 } })); // the next cron pass reconciles
+    await runSendStep(deps()); // the next cron pass reconciles
     expect((await (await call()).json()).data).toMatchObject({ drafted: 1, sent: 1 });
     await runSendStep(deps());
     expect((await (await call()).json()).data.sent).toBe(1);
