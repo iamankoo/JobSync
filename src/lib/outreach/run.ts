@@ -18,7 +18,7 @@ import { runPendingDrafts } from "@/lib/network-finder/pipeline";
 import { resolveTimezone } from "@/lib/utils/time";
 import { createConnectionSchema } from "@/lib/validation/connections";
 import { loadOutreachConfig, type OutreachConfig } from "./config";
-import { firstInDuplicateGroups, importEligibility, parseMasterRows } from "./contacts";
+import { eligibleIdSet, parseMasterRows } from "./contacts";
 import { runOutreachImport, type ConnectionsPort, type ImportResult } from "./importer";
 import { registerManualConnections } from "./manual";
 import { OutreachSheet } from "./sheet";
@@ -30,6 +30,8 @@ import { SENDING_ENABLED, type DailyCounters } from "./types";
 
 /** Longer than the route's 60 s limit, so a run that is killed never holds the lock past the next call; a normal run releases it at once. */
 export const OUTREACH_LOCK_TTL_MS = 65_000;
+/** Contacts already in "review" are re-checked about every 30 minutes (every 15th call), not on every call (see SendDeps.reviewRecheckEvery). */
+export const REVIEW_RECHECK_EVERY = 15;
 /** When Google answers 429 this often within one run, drafting (the slowest step) yields for this run; sending and importing already ran. */
 export const DRAFT_YIELD_AFTER_RATE_LIMITS = 8;
 
@@ -110,8 +112,7 @@ export async function runOutreachCycle(deps: CycleDeps): Promise<CycleResult> {
       const { records: ledger } = await deps.sheet.readSendLedger();
       const parsed = parseMasterRows(await deps.sheet.readMaster());
       const tracked = new Set(records.map((r) => r.contactId));
-      const first = firstInDuplicateGroups(parsed.contacts);
-      const remaining = parsed.contacts.filter((c) => !tracked.has(c.contactId) && importEligibility(c, first).eligible).length;
+      const remaining = [...eligibleIdSet(parsed)].filter((id) => !tracked.has(id)).length;
       result.counters = computeCounters(records, todayOf(deps.now(), deps.timezone), remaining, { ledger, masterIds: new Set(parsed.contacts.map((c) => c.contactId)) });
       await deps.sheet.upsertCounters(result.counters, deps.now().toISOString());
     });
@@ -157,12 +158,14 @@ export function buildRealSendDeps(config: OutreachConfig, sheet: OutreachSheet, 
     drafts: {
       snapshot: async () => new Map([...(await readDraftLedger({ fresh: true })).entries()].map(([k, v]) => [k, { status: v.status, detail: v.detail, gmailDraftId: v.gmailDraftId, ...(v.threadId ? { threadId: v.threadId } : {}) }])),
       markSent: async (m, connectionId) => {
-        const current = (await readDraftLedger({ fresh: true })).get(`contact:${connectionId}:${m}`);
+        // The row is only used to carry the other columns over; recordDraft itself re-reads the tab fresh (under the write lock) to find the row.
+        const current = (await readDraftLedger()).get(`contact:${connectionId}:${m}`);
         if (current) await recordDraft({ ...current, status: "sent", checkedAt: new Date().toISOString() });
       },
     },
     limits: config.sendLimits,
     allowlist: config.sendAllowlist,
+    reviewRecheckEvery: REVIEW_RECHECK_EVERY,
     now: () => new Date(),
     timezone,
     ...(deadline ? { deadline } : {}),
@@ -182,7 +185,8 @@ export function buildRealCycleDeps(config: OutreachConfig = loadOutreachConfig()
     // The send step is only built when the compile-time gate is open. In the shipped state this is undefined.
     ...(gate ? { send: () => runSendStep(buildRealSendDeps(config, sheet, timezone, started + 20_000)) } : {}),
     connections: realConnectionsPort,
-    ledger: async () => new Map([...(await readDraftLedger({ fresh: true })).entries()].map(([k, v]) => [k, { status: v.status, detail: v.detail, gmailDraftId: v.gmailDraftId, ...(v.threadId ? { threadId: v.threadId } : {}) }])),
+    // The status sync is bookkeeping: a ledger up to 20 s old is fine (this instance's own writes invalidate it at once).
+    ledger: async () => new Map([...(await readDraftLedger({ allowStaleMs: 20_000 })).entries()].map(([k, v]) => [k, { status: v.status, detail: v.detail, gmailDraftId: v.gmailDraftId, ...(v.threadId ? { threadId: v.threadId } : {}) }])),
     connected: async () => {
       const out: MemberId[] = [];
       for (const m of MEMBER_IDS) if (await isGmailConnected(m)) out.push(m);

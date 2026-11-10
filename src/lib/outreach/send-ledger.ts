@@ -41,7 +41,8 @@ export function withHistory(history: string, at: string, event: string): string 
 }
 
 export type ClaimResult =
-  | { won: true; record: SendRecord }
+  /** `ledger`: the ledger as read right AFTER this claim was appended (the caller can use it instead of reading the tab again). */
+  | { won: true; record: SendRecord; ledger: SendRecord[] }
   | { won: false; reason: "already_sent" | "in_flight" | "needs_review" | "failed_permanent" | "lost_race" | "too_many_attempts" | "limit_reached"; existing?: SendRecord };
 
 export type ClaimInput = Pick<SendRecord, "sendKey" | "contactId" | "member" | "gmailAccount" | "connectionId" | "company" | "role" | "draftId" | "threadId" | "resumeFile" | "resumeSha256" | "resumeBytes" | "wordCount">;
@@ -86,7 +87,7 @@ export async function claimSend(sheet: LedgerSheet, input: ClaimInput, day: stri
     await sheet.updateSendRecord({ ...me, status: "released", reason: over, history: withHistory(me.history, now.toISOString(), `released (${over})`), updatedAt: now.toISOString() });
     return { won: false, reason: "limit_reached" };
   }
-  return { won: true, record: me };
+  return { won: true, record: me, ledger: after.records };
 }
 
 /** Claims that never reached "sending" (a crash before the Gmail call) are released: no request was made, so a new claim is safe. */

@@ -193,6 +193,17 @@ confirmed **and** in-flight/uncertain sends, so an unresolved send still consume
 are deliberately conservative to protect each member's sender reputation. Raise them gradually, one setting at a time.
 Logs: one `[outreach]` line per call with counts and statuses only (no names, addresses, companies or tokens).
 
+### Sheets request budget
+Google Sheets allows about 60 reads per minute per user for the whole app. The outreach cycle stays inside that by: remembering each member's Gmail access
+(account row + token) for 90 seconds (it used to read the accounts tab and refresh an OAuth token on every Gmail call); loading a resume's bytes once per
+file (they were downloaded from the ChatFiles tab for every check); parsing the cached Master grid once (it was parsed three times a cycle) and computing the
+eligible-contact set once per cached grid; skipping Master and Connections entirely when the 24-hour import allowance is used up; letting the bookkeeping read
+of the draft ledger be up to 20 s old; reusing the ledger read the claim protocol has just made (no second read after a confirmed send); and re-checking
+contacts already marked "review" only about every 30 minutes (every 15th call, rotated by contact; contacts not in review are always looked at first), so
+hundreds of review contacts cannot use up every call's time. A disconnect made by another server instance reaches an instance that holds a cached token
+within 90 seconds; the send step re-checks every member's connection status fresh at the start of each call. Sending limits, import limits and all safety
+checks are unchanged.
+
 ## 9. Failure recovery
 | Symptom | What to do |
 |---|---|

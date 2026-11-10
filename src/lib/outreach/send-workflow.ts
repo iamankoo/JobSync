@@ -19,7 +19,7 @@ import type { ResumeLookup } from "@/lib/gmail/attachment";
 import { normalizeEmail } from "@/lib/hr-master/normalize";
 import { dateInTimezone } from "@/lib/utils/time";
 import type { Connection } from "@/types/domain";
-import { importEligibility, firstInDuplicateGroups, parseMasterRows } from "./contacts";
+import { eligibleIdSet, parseMasterRows } from "./contacts";
 import { checkAttachment, checkDraft } from "./draft-check";
 import { isExcluded, matchesAllowlist } from "./exclusions";
 import { countsAgainstLimit, limitReason, usageRolling, type SendLimits } from "./limits";
@@ -62,6 +62,12 @@ export interface SendDeps {
   now: () => Date;
   timezone: string;
   deadline?: number;
+  /**
+   * A contact that is already marked "review" (a person must look at it) is re-checked only on every Nth call (a stateless rotation by contact), and
+   * contacts that are not in review are always looked at first, so hundreds of review contacts cannot use up every call's time and Sheets quota.
+   * 1 (default) = unchanged: every contact on every call, oldest first. Production sets 15 (about every 30 minutes).
+   */
+  reviewRecheckEvery?: number;
   /** When non-empty, ONLY these recipients may ever be sent to (see config OUTREACH_SEND_ONLY_TO). */
   allowlist?: readonly string[];
 }
@@ -229,6 +235,9 @@ async function refreshAggregate(deps: SendDeps, rec: TrackingRecord, ledger: rea
   if (all && conn && conn.status === "Not Connected") await deps.connections.markMessaged(conn).catch(() => undefined);
 }
 
+/** One cron call per slot (the cron runs every ~2 minutes); used to rotate which review contacts are re-checked. */
+const RUN_SLOT_MS = 120_000;
+const hashOf = (s: string) => [...s].reduce((n, ch) => (n * 31 + ch.charCodeAt(0)) >>> 0, 7);
 const RETRY_AFTER_TRANSIENT_MS = 10 * 60_000;
 const RETRY_AFTER_AUTH_MS = 60 * 60_000;
 const RETRY_AFTER_RATE_MS = 15 * 60_000;
@@ -272,8 +281,7 @@ export async function runSendStep(deps: SendDeps): Promise<SendRunResult> {
   await reconcileInFlight(deps, result, tracking, conns, ledgerAll);
 
   const parsed = parseMasterRows(await deps.sheet.readMaster());
-  const first = firstInDuplicateGroups(parsed.contacts);
-  const eligibleIds = new Set(parsed.contacts.filter((c) => importEligibility(c, first).eligible).map((c) => c.contactId));
+  const eligibleIds = eligibleIdSet(parsed); // computed once per cached Master grid, not on every call
   const exclusions = await deps.sheet.readExclusions();
   const drafts = await deps.drafts.snapshot();
   const addresses = new Map<MemberId, string | null>();
@@ -284,7 +292,12 @@ export async function runSendStep(deps: SendDeps): Promise<SendRunResult> {
     .filter((t) => t.importStatus === "added" && t.connectionId && t.sendStatus !== "sent")
     .sort((a, b) => (a.addedAt || a.claimedAt).localeCompare(b.addedAt || b.claimedAt));
 
+  const every = Math.max(1, deps.reviewRecheckEvery ?? 1);
+  const inReview = (t: TrackingRecord) => t.sendStatus === "review";
+  const slot = Math.floor(deps.now().getTime() / RUN_SLOT_MS);
+  if (every > 1) candidates.sort((a, b) => Number(inReview(a)) - Number(inReview(b))); // stable: oldest first inside each group
   outer: for (const rec of candidates) {
+    if (every > 1 && inReview(rec) && (hashOf(rec.contactId) + slot) % every !== 0) continue; // in review and not due for its periodic re-check
     if (result.sent >= deps.limits.perRun) { result.stoppedBecause = "per-run-limit"; break; }
     let worst: { status: SendStatus; reason: string; lastError?: string } | null = null;
     const note = (status: SendStatus, reason: string, lastError?: string) => { if (!worst || RANK[status] > RANK[worst.status]) worst = { status, reason: reason.slice(0, 480), ...(lastError ? { lastError } : {}) }; };
@@ -316,7 +329,7 @@ export async function runSendStep(deps: SendDeps): Promise<SendRunResult> {
           if (ahead.filter((r) => r.member === member).length + 1 > deps.limits.perMemberDaily) return `${member}'s rolling 24-hour sending limit reached (concurrent worker)`;
           return null;
         });
-        ledgerAll = (await deps.sheet.readSendLedger()).records;
+        ledgerAll = claim.won ? claim.ledger : (await deps.sheet.readSendLedger()).records; // a won claim has just read the ledger: no second read
         if (!claim.won) {
           if (claim.reason === "limit_reached") note("pending", `${member}: rolling 24-hour limit reached`);
           else result.duplicatesPrevented += 1;
@@ -368,7 +381,8 @@ export async function runSendStep(deps: SendDeps): Promise<SendRunResult> {
             result.needsReview += 1;
           }
         }
-        ledgerAll = (await deps.sheet.readSendLedger()).records;
+        // After a confirmed send the in-memory ledger already holds the updated row (it is the same object); anything else is re-read.
+        if (out.status !== "sent") ledgerAll = (await deps.sheet.readSendLedger()).records;
       } catch (err) {
         // An unexpected exception can never turn into a send: nothing here sends after a throw; the next call re-evaluates from the ledger.
         result.errors.push(err instanceof Error ? err.name : "error");

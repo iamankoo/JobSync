@@ -3,6 +3,7 @@ import { MEMBER_IDS, type MemberId } from "@/config/members";
 import { checkDraftState, createDraftFor, isGmailConnected } from "@/lib/gmail/drafts";
 import { MAX_ATTACHMENT_BYTES, type ResumeLookup } from "@/lib/gmail/attachment";
 import { planResume } from "@/config/resume-map";
+import { onSheetsClientReset } from "@/lib/google-sheets/client";
 import { listResumes, loadResume } from "@/lib/google-sheets/member-files-service";
 import { notifyMember } from "@/lib/push/notify";
 import { nowIso } from "@/lib/utils/time";
@@ -74,6 +75,16 @@ export function existingDraftDeps(): DraftStepDeps {
  * the file is matched by exact name, and zero or several matches, a non-PDF or an unreadable file is never attached. The bytes
  * are read, never changed.
  */
+/**
+ * The bytes of a resume are stored in the ChatFiles tab and are expensive to read (every send check used to download the whole PDF again: 24 reads
+ * for 12 checks). A loaded, validated resume is remembered for a few minutes, keyed by member, record id, name, size and upload time, so a replaced,
+ * renamed or re-uploaded file is never served stale. The member's file LIST is still read for every lookup (it is cached for seconds by the table layer).
+ */
+const RESUME_CACHE_TTL_MS = 10 * 60_000;
+const RESUME_CACHE_MAX = 24;
+const resumeCache = new Map<string, { at: number; fileName: string; bytes: Uint8Array }>();
+onSheetsClientReset(() => resumeCache.clear());
+
 export const existingResumes: ResumeLookup = async (member, roleTitle) => {
   const memberId = member as MemberId;
   let uploads;
@@ -87,10 +98,20 @@ export const existingResumes: ResumeLookup = async (member, roleTitle) => {
   const mine = uploads.filter((r) => r.fileName.toLowerCase() === plan.fileName.toLowerCase());
   if (mine.length !== 1) return { status: "unreadable", reason: `${plan.fileName} is not a single unambiguous upload` };
   try {
-    const { info, bytes } = await loadResume(memberId, mine[0].recordId);
+    const rec = mine[0];
+    const cacheKey = `${memberId}|${rec.recordId}|${rec.fileName}|${rec.sizeBytes}|${rec.uploadedAt}`;
+    const hit = resumeCache.get(cacheKey);
+    if (hit && Date.now() - hit.at < RESUME_CACHE_TTL_MS) {
+      return { status: "attached", kind: plan.kind, ...(plan.reason ? { note: plan.reason } : {}), attachment: { fileName: hit.fileName, mimeType: "application/pdf", bytes: hit.bytes } };
+    }
+    const { info, bytes } = await loadResume(memberId, rec.recordId);
     const head = Buffer.from(bytes).subarray(0, 5).toString("latin1");
     if (head !== "%PDF-" || bytes.length > MAX_ATTACHMENT_BYTES) return { status: "unreadable", reason: "the file is not a valid PDF" };
-    return { status: "attached", kind: plan.kind, ...(plan.reason ? { note: plan.reason } : {}), attachment: { fileName: info.fileName, mimeType: "application/pdf", bytes: new Uint8Array(bytes) } };
+    const valid = new Uint8Array(bytes);
+    // Only a validated file is remembered; the oldest entry goes when the memory is full.
+    if (resumeCache.size >= RESUME_CACHE_MAX) resumeCache.delete(resumeCache.keys().next().value as string);
+    resumeCache.set(cacheKey, { at: Date.now(), fileName: info.fileName, bytes: valid });
+    return { status: "attached", kind: plan.kind, ...(plan.reason ? { note: plan.reason } : {}), attachment: { fileName: info.fileName, mimeType: "application/pdf", bytes: valid } };
   } catch {
     return { status: "unreadable", reason: "the file could not be loaded" };
   }
