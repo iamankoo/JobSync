@@ -13,7 +13,8 @@
     "test:live": "vitest run --config vitest.live.config.mts",
     "test:prod-readonly": "vitest run --config vitest.prod-readonly.config.mts --reporter=verbose",
     "sheets:test-setup": "node --conditions=react-server --experimental-strip-types --no-warnings scripts/test-spreadsheet.mts",
-    "test:e2e:isolated": "playwright test --config playwright.isolated.config.ts"
+    "test:e2e:isolated": "playwright test --config playwright.isolated.config.ts",
+    "build:netlify": "node scripts/build-background.mjs && next build"
   },
   "dependencies": {
     "@googleapis/sheets": "^18.1.1",
@@ -38,6 +39,7 @@
     "@types/react-dom": "^19.3.0",
     "@types/web-push": "^3.6.4",
     "@vitejs/plugin-react": "^6.1.2",
+    "esbuild": "^0.28.2",
     "eslint": "^9.39.5",
     "eslint-config-next": "^16.4.0",
     "jsdom": "^29.1.1",

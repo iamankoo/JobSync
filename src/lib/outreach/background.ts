@@ -34,6 +34,11 @@ export interface BackgroundDeps {
 
 export interface BackgroundOutcome {
   status: "completed" | "busy" | "disabled" | "timed-out" | "error";
+  /**
+   * Only for "timed-out": resolves when the abandoned cycle finally settles. The hard stop cannot cancel it, so a long-lived caller (the background
+   * runner) must wait for this before starting another cycle; otherwise two cycles could overlap once the run lock has expired.
+   */
+  settled?: Promise<void>;
 }
 
 /** Never throws: it runs after the response, where an exception would only be lost. */
@@ -47,10 +52,11 @@ export async function runOutreachInBackground(d: BackgroundDeps = {}): Promise<B
     const cfg = loadOutreachConfig();
     if (!cfg.enabled) return { status: "disabled" };
     const deps = (d.build ?? ((budget: number) => buildRealCycleDeps(cfg, process.env, budget)))(CYCLE_BUDGET_MS);
-    const run = await withHardDeadline((d.run ?? runOutreachCycle)(deps), d.hardStopMs ?? HARD_STOP_MS);
+    const cycle = (d.run ?? runOutreachCycle)(deps);
+    const run = await withHardDeadline(cycle, d.hardStopMs ?? HARD_STOP_MS);
     if (run === "timed-out") {
       log(`[outreach] ${JSON.stringify({ status: "timed-out", rateLimited: sheetsRateLimitHits() })}`);
-      return { status: "timed-out" };
+      return { status: "timed-out", settled: cycle.then(() => undefined, () => undefined) };
     }
     if (!run.ran) {
       log(`[outreach] ${JSON.stringify({ status: run.reason ?? "disabled" })}`);
