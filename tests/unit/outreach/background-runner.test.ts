@@ -1,9 +1,9 @@
 /**
  * The background RUNNER (src/lib/outreach/runner.ts): one long-lived invocation that executes outreach cycles one after another.
- * Time is virtual (a fake clock the runner's sleeps advance), so a 12-minute run takes milliseconds. No Google, Gmail or network calls.
+ * Time is virtual (a fake clock the runner's sleeps advance), so an 11-minute run takes milliseconds. No Google, Gmail or network calls.
  */
 import { describe, expect, it, vi } from "vitest";
-import type { BackgroundOutcome } from "@/lib/outreach/background";
+import { HARD_STOP_MS, type BackgroundOutcome } from "@/lib/outreach/background";
 import {
   DEFAULT_CYCLE_INTERVAL_MS, MAX_CONSECUTIVE_FAILURES, MIN_CYCLE_GAP_MS, RUNNER_HEARTBEAT_MS, RUNNER_LOCK_TTL_MS, RUNNER_MAX_RUN_MS, SETTLE_GRACE_MS,
   cycleIntervalMs, runOutreachRunner, type RunnerDeps,
@@ -43,6 +43,7 @@ function setup(over: Partial<RunnerDeps> & { cycleMs?: number; outcomes?: Backgr
   const lock = lockOf();
   const log = vi.fn();
   const starts: number[] = [];
+  const noSend: boolean[] = [];
   const { cycleMs = 40_000, outcomes, ...rest } = over;
   const queue = [...(outcomes ?? [])];
   const deps: RunnerDeps = {
@@ -51,10 +52,10 @@ function setup(over: Partial<RunnerDeps> & { cycleMs?: number; outcomes?: Backgr
     sleep: w.sleep,
     heartbeat: (tick) => w.heartbeat(tick),
     log,
-    runCycle: async () => { starts.push(w.now()); w.advance(cycleMs); return queue.shift() ?? done(); },
+    runCycle: async (o) => { starts.push(w.now()); noSend.push(o.noSendFirst); w.advance(cycleMs); return queue.shift() ?? done(); },
     ...rest,
   };
-  return { w, lock, log, starts, deps };
+  return { w, lock, log, starts, noSend, deps };
 }
 
 describe("the runner lock: only one background runner at a time", () => {
@@ -82,7 +83,7 @@ describe("the runner lock: only one background runner at a time", () => {
 });
 
 describe("cadence: cycles at the old cron rhythm, bounded below the 15-minute function limit", () => {
-  it("starts a cycle every 2 minutes (counting from the START of the previous one) and stops starting new ones before 12 minutes", async () => {
+  it("starts a cycle every 2 minutes (counting from the START of the previous one) and stops starting new ones before 11 minutes", async () => {
     const { deps, starts, w } = setup({ cycleMs: 40_000 });
     const r = await runOutreachRunner(deps);
     expect(r.status).toBe("time-limit");
@@ -91,8 +92,8 @@ describe("cadence: cycles at the old cron rhythm, bounded below the 15-minute fu
     expect(r.completed).toBe(6);
     expect(w.sleeps.every((s) => s === DEFAULT_CYCLE_INTERVAL_MS - 40_000)).toBe(true);
     // the last cycle starts before the limit and ends long before 15 minutes
-    expect(starts.at(-1)! + 55_000 + SETTLE_GRACE_MS).toBeLessThan(15 * 60_000);
-    expect(RUNNER_MAX_RUN_MS + 55_000 + SETTLE_GRACE_MS).toBeLessThan(15 * 60_000);
+    expect(starts.at(-1)! + HARD_STOP_MS + SETTLE_GRACE_MS).toBeLessThan(15 * 60_000);
+    expect(RUNNER_MAX_RUN_MS + HARD_STOP_MS + SETTLE_GRACE_MS).toBeLessThan(15 * 60_000); // the 15-minute function limit, with the longest cycle at its hard stop
     expect(deps.lock.release).toHaveBeenCalledTimes(1);
   });
 
@@ -119,13 +120,13 @@ describe("cadence: cycles at the old cron rhythm, bounded below the 15-minute fu
 });
 
 describe("heartbeat: a live runner keeps its lock, a killed one lets it expire", () => {
-  it("renews the lock during cycles and during the waits between them, so it never lapses over a 12-minute run", async () => {
+  it("renews the lock during cycles and during the waits between them, so it never lapses over an 11-minute run", async () => {
     const { deps, lock, w } = setup({ cycleMs: 40_000 });
     await runOutreachRunner(deps);
     expect(w.now()).toBeGreaterThan(10 * 60_000);
     expect(lock.renew.mock.calls.length).toBe(Math.floor(w.now() / RUNNER_HEARTBEAT_MS)); // one beat per heartbeat period, with no gap
     expect(RUNNER_LOCK_TTL_MS).toBeGreaterThan(RUNNER_HEARTBEAT_MS * 2); // survives one missed beat
-    expect(RUNNER_LOCK_TTL_MS).toBeGreaterThan(55_000 + SETTLE_GRACE_MS); // and covers a cycle at its hard stop plus the settle grace
+    expect(RUNNER_LOCK_TTL_MS).toBeGreaterThan(HARD_STOP_MS + SETTLE_GRACE_MS + RUNNER_HEARTBEAT_MS); // and covers a cycle at its hard stop, the settle grace and a missed beat
   });
 
   it("stops (after the current cycle) when the renewal says the lock now belongs to someone else", async () => {

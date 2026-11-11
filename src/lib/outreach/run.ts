@@ -33,8 +33,8 @@ import { notifyEveryone, notifyMember } from "@/lib/push/notify";
 import { runSendStep, type SendDeps, type SendRunResult } from "./send-workflow";
 import { SENDING_ENABLED, type DailyCounters } from "./types";
 
-/** Longer than the route's 60 s limit, so a run that is killed never holds the lock past the next call; a normal run releases it at once. */
-export const OUTREACH_LOCK_TTL_MS = 65_000;
+/** Longer than a cycle's hard stop (see background.ts), so a killed cycle never holds the lock past the next call; a normal cycle releases it at once. */
+export const OUTREACH_LOCK_TTL_MS = 150_000;
 /** Contacts that need a person (review / blocked / recorded as unsendable) are re-checked about every 30 minutes (every 15th call), not on every call (see SendDeps.reviewRecheckEvery). */
 export const REVIEW_RECHECK_EVERY = 15;
 /** How long (from the start of the call) the send step may START new sends: the usual slice, and the longer one while drafting is paused by the backlog gate. */
@@ -43,8 +43,16 @@ export const SEND_SLICE_MS = 10_000;
 export const ADOPT_SLICE_MS = 6_000;
 export const ADOPT_BATCH = 8;
 export const SEND_SLICE_BACKLOG_MS = 16_000;
+/**
+ * Send-first mode: how long (from the start of the cycle) the send step may START new sends. One attempt takes about 13 s and may overrun the slice, and the
+ * wrap-up (park notes, status sync, counters) needs about 20 s, so this stays well inside the 110 s hard stop (see background.ts).
+ */
+export const SEND_FIRST_SLICE_MS = 60_000;
 /** When Google answers 429 this often within one run, drafting (the slowest step) yields for this run; sending and importing already ran. */
 export const DRAFT_YIELD_AFTER_RATE_LIMITS = 8;
+
+/** Send-first starts at this many saved drafts: the configured threshold, or 1 when every JobSync draft is to be sent (the mode then runs until none is left). */
+export const sendFirstThreshold = (c: Pick<OutreachConfig, "sendFirstAt" | "sendAllDrafts" | "sendFirstSuspended">) => (c.sendFirstSuspended ? 0 : c.sendAllDrafts ? 1 : c.sendFirstAt);
 
 export interface CycleDeps {
   config: OutreachConfig;
@@ -54,8 +62,13 @@ export interface CycleDeps {
   connected(): Promise<MemberId[]>;
   /** The existing drafting worker (same one the Network Finder cron runs). Absent = skip drafting this call. */
   draft?: (limit: number) => Promise<{ checked: number; created: number; remaining: number; paused?: string } | "busy">;
-  /** The send step. Only ever called when `gate` is true; the real wiring does not even construct it while the gate is closed. */
-  send?: () => Promise<SendRunResult>;
+  /** The send step. Only ever called when `gate` is true; the real wiring does not even construct it while the gate is closed. `sendFirst`: use the long slice. */
+  send?: (opts?: { sendFirst?: boolean }) => Promise<SendRunResult>;
+  /**
+   * How many real, eligible JobSync drafts are saved in the members' Gmail right now (the backlog gate's count), or null when it cannot be counted.
+   * At or above `config.sendFirstAt` the cycle runs in send-first mode. null never switches the mode on.
+   */
+  savedDrafts?: () => Promise<number | null>;
   /** Notes on a draft-ledger row why its draft cannot be sent (null clears it). Only the note changes; the Gmail draft is never touched. */
   parkDraft?: (draftKey: string, reason: string | null) => Promise<void>;
   /** Tells a member privately when their Gmail authorisation has lapsed or is about to (see gmail-health.ts). Absent = no alerts. */
@@ -74,6 +87,10 @@ export interface CycleDeps {
 export interface CycleResult {
   ran: boolean;
   reason?: "disabled" | "busy";
+  /** "send-first": the saved-draft backlog reached the threshold, so only sending (and its bookkeeping) ran in this cycle. */
+  mode?: "normal" | "send-first";
+  /** The saved-draft count that decided the mode (absent when it could not be counted). */
+  savedDrafts?: number;
   manual?: { registered: number; alreadyTracked: number; skipped: number };
   /** Unsent JobSync drafts of Connections that had no tracking row yet (any age), brought into the send workflow. */
   existing?: AdoptResult;
@@ -108,18 +125,29 @@ export async function runOutreachCycle(deps: CycleDeps): Promise<CycleResult> {
   };
   try {
     await deps.sheet.ensureTabs();
-    result.manual = await step("manual", () => registerManualConnections({ sheet: deps.sheet, connections: deps.connections, now: deps.now, since: deps.config.manualSince }));
-    // EVERY unsent JobSync draft in the members' Gmail, however old, must be looked at by the send step: register the Connections that have none yet.
-    result.existing = await step("existing-drafts", () => adoptExistingDrafts({ sheet: deps.sheet, connections: deps.connections, ledger: deps.ledger, now: deps.now, ...(deps.parkDraft ? { park: deps.parkDraft } : {}), deadline: Math.min(deps.deadline ?? Infinity, Date.now() + ADOPT_SLICE_MS), perRun: ADOPT_BATCH }));
-    // Sending runs FIRST with its own time slice, so slow drafting or Sheets back-off can never starve it.
     const gate: boolean = deps.gate ?? SENDING_ENABLED;
-    if (gate && deps.send) result.send = await step("send", deps.send);
+    // SEND-FIRST: with enough drafts already saved in Gmail, the only work is sending them. Nothing that creates more work (registering Connections, adopting
+    // old drafts, importing, drafting) runs until the backlog is below the threshold. A count that fails (null) never switches the mode on.
+    let sendFirst = false;
+    if (gate && deps.send && deps.savedDrafts && sendFirstThreshold(deps.config) > 0) {
+      const saved = (await step("saved-drafts", () => deps.savedDrafts!())) ?? null;
+      if (saved !== null) {
+        result.savedDrafts = saved;
+        sendFirst = saved >= sendFirstThreshold(deps.config);
+      }
+    }
+    result.mode = sendFirst ? "send-first" : "normal";
+    if (!sendFirst) result.manual = await step("manual", () => registerManualConnections({ sheet: deps.sheet, connections: deps.connections, now: deps.now, since: deps.config.manualSince }));
+    // EVERY unsent JobSync draft in the members' Gmail, however old, must be looked at by the send step: register the Connections that have none yet.
+    if (!sendFirst) result.existing = await step("existing-drafts", () => adoptExistingDrafts({ sheet: deps.sheet, connections: deps.connections, ledger: deps.ledger, now: deps.now, ...(deps.parkDraft ? { park: deps.parkDraft } : {}), deadline: Math.min(deps.deadline ?? Infinity, Date.now() + ADOPT_SLICE_MS), perRun: ADOPT_BATCH }));
+    // Sending runs FIRST with its own time slice, so slow drafting or Sheets back-off can never starve it.
+    if (gate && deps.send) result.send = await step("send", () => deps.send!({ sendFirst }));
     else result.send = { status: "disabled", sent: 0, blocked: 0, needsReview: 0, failed: 0, waiting: 0, duplicatesPrevented: 0, reconciled: 0, stoppedBecause: "none", errors: [] };
-    result.import = await step("import", () =>
+    if (!sendFirst) result.import = await step("import", () =>
       runOutreachImport({ sheet: deps.sheet, connections: deps.connections, now: deps.now, timezone: deps.timezone, dailyLimit: deps.config.dailyLimit, perRun: deps.config.perRun, ownerOverride: deps.config.ownerOverride, staleClaimMs: 120_000, ...(deps.deadline ? { deadline: deps.deadline } : {}) }),
     );
     const pressured = (deps.rateLimitHits?.() ?? 0) >= DRAFT_YIELD_AFTER_RATE_LIMITS;
-    result.drafts = deps.draft && !pressured ? ((await step("drafts", () => deps.draft!(deps.config.draftsPerRun))) ?? "skipped") : "skipped";
+    result.drafts = deps.draft && !pressured && !sendFirst ? ((await step("drafts", () => deps.draft!(deps.config.draftsPerRun))) ?? "skipped") : "skipped";
     const sync = () =>
       step("sync", async () => {
         const connections = await deps.connections.listFresh();
@@ -209,7 +237,9 @@ export function buildRealSendDeps(config: OutreachConfig, sheet: OutreachSheet, 
       },
     },
     allowlist: config.sendAllowlist,
-    reviewRecheckEvery: REVIEW_RECHECK_EVERY,
+    // Sending every JobSync draft: nothing is skipped as "needs a person", every contact is looked at on every call.
+    reviewRecheckEvery: config.sendAllDrafts ? 1 : REVIEW_RECHECK_EVERY,
+    relaxContentChecks: config.sendAllDrafts,
     now: () => new Date(),
     timezone,
     ...(deadline ? { deadline } : {}),
@@ -230,12 +260,12 @@ export function buildRealCycleDeps(config: OutreachConfig = loadOutreachConfig()
     // The send step is only built when the compile-time gate is open. In the shipped state this is undefined.
     ...(gate
       ? {
-          send: async () => {
+          send: async (opts) => {
             // Backlog priority: while drafting is paused (100+ unsent drafts in Gmail, or the count is unavailable) there is nothing else to spend the
             // time on, so sending gets a bigger slice of this call. Otherwise it keeps its usual slice and drafting/importing share the rest.
             const open = (await backlog.check().catch(() => ({ allowed: false }))).allowed;
             try {
-              return await runSendStep(buildRealSendDeps(config, sheet, timezone, started + (open ? SEND_SLICE_MS : SEND_SLICE_BACKLOG_MS)));
+              return await runSendStep(buildRealSendDeps(config, sheet, timezone, started + (opts?.sendFirst ? SEND_FIRST_SLICE_MS : open ? SEND_SLICE_MS : SEND_SLICE_BACKLOG_MS)));
             } finally {
               backlog.invalidate(); // sends just freed drafts: the drafting step must recount, not reuse the count from before
             }
@@ -243,6 +273,14 @@ export function buildRealCycleDeps(config: OutreachConfig = loadOutreachConfig()
         }
       : {}),
     connections: realConnectionsPort,
+    // The same real-draft count the 100-draft gate uses (cached 30 s). null = could not be counted = send-first stays off.
+    savedDrafts: async () => {
+      const verdict = await backlog.check().catch(() => ({ pending: null as number | null }));
+      if (verdict.pending === null || !config.sendAllDrafts) return verdict.pending;
+      // Sending every JobSync draft: the unsendable-by-the-usual-checks ("parked") ones count too, so the mode runs until NO JobSync draft is left in Gmail.
+      const counted = backlog.last();
+      return counted?.status === "ok" ? counted.pending + counted.parked : null;
+    },
     gmailHealth: {
       accounts: async () => (await readGmailAccounts()).map((a) => ({ memberId: a.memberId, status: a.status, connectedAt: a.connectedAt })),
       notifyMember: async (member, payload) => {
@@ -289,6 +327,8 @@ export function buildRealCycleDeps(config: OutreachConfig = loadOutreachConfig()
 export function summarizeCycle(r: CycleResult) {
   return {
     ran: r.ran,
+    mode: r.mode ?? null,
+    savedDrafts: r.savedDrafts ?? null,
     manual: r.manual ?? null,
     existing: r.existing ?? null,
     import: r.import ? { ...r.import } : null,
