@@ -10,9 +10,9 @@ import { createConnection } from "@/lib/google-sheets/connections-service";
 import { readConnectionsLocated } from "@/lib/google-sheets/repositories";
 import { isGmailConnected } from "@/lib/gmail/drafts";
 import { readDraftLedger, recordDraft, readGmailAccounts } from "@/lib/gmail/store";
-import { getDraftBacklogGate } from "@/lib/gmail/draft-backlog";
+import { getDraftBacklogGate, getDraftPresence } from "@/lib/gmail/draft-backlog";
 import { withParkedReason } from "@/lib/gmail/draft-flags";
-import { reconcileDraftSend, readDraftFor, sendDraftFor } from "@/lib/gmail/send";
+import { inspectDraftFor, reconcileDraftSend, readDraftFor, sendDraftFor } from "@/lib/gmail/send";
 import { existingResumes } from "@/lib/network-finder/gateways";
 import { updateConnection } from "@/lib/google-sheets/connections-service";
 import { buildRealDeps } from "@/lib/network-finder/run";
@@ -183,8 +183,11 @@ export function buildRealSendDeps(config: OutreachConfig, sheet: OutreachSheet, 
       address: async (m) => (await readGmailAccounts({ fresh: true })).find((a) => a.memberId === m && a.status === "connected")?.email ?? null,
       readDraft: (m, id) => readDraftFor(m, id),
       send: (m, id) => sendDraftFor(m, id),
-      reconcile: (m, id, thread) => reconcileDraftSend(m, id, thread),
+      reconcile: (m, id, thread, sinceMs) => reconcileDraftSend(m, id, thread, undefined, sinceMs),
+      inspect: (m, id, thread) => inspectDraftFor(m, id, thread),
     },
+    // The cached drafts.list (the same call the backlog gate makes): ledger drafts that are no longer in Gmail are skipped without a Gmail call or a claim.
+    presence: getDraftPresence(),
     resumes: existingResumes,
     connections: {
       listFresh: realConnectionsPort.listFresh,

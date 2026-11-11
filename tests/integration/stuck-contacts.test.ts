@@ -190,6 +190,7 @@ function onlyFor(f: Fx, members: MemberId[], connections?: Set<string>) {
     },
     send: (m: MemberId, id: string) => f.gmail.send(m, id),
     reconcile: (m: MemberId, id: string) => f.gmail.reconcile(m, id),
+    inspect: (m: MemberId, id: string) => f.gmail.inspect(m, id),
   };
 }
 

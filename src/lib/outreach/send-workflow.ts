@@ -10,11 +10,13 @@
  *   C  personalisation/validation    -> not sent; exact reason recorded; the draft stays; sendStatus "review"
  *   D  Gmail auth / quota / API fail -> nothing counted; error + retry time recorded; no duplicate message or draft
  *   E  uncertain result              -> never retried blindly; reconciled against Gmail; unprovable => manual review
+ *   F  already sent outside JobSync  -> Gmail's labels say the draft's message is SENT (or the id is not a draft at all): NOT sent again, NOT counted as
+ *                                       ours, parked with the reason, and the next draft/member is processed at once
  * Counters are derived from the confirmed rows this module writes.
  */
 import { createHash } from "node:crypto";
 import { MEMBER_IDS, type MemberId } from "@/config/members";
-import type { DraftReadback, Reconciliation, ReadResult, SendOutcome } from "@/lib/gmail/send";
+import type { DraftInspection, DraftReadback, Reconciliation, ReadResult, SendOutcome } from "@/lib/gmail/send";
 import type { ResumeLookup } from "@/lib/gmail/attachment";
 import { normalizeEmail } from "@/lib/hr-master/normalize";
 import { dateInTimezone } from "@/lib/utils/time";
@@ -41,7 +43,15 @@ export interface GmailPort {
   address(member: MemberId): Promise<string | null>;
   readDraft(member: MemberId, draftId: string): Promise<ReadResult>;
   send(member: MemberId, draftId: string): Promise<SendOutcome | { status: "no_access"; access: string }>;
-  reconcile(member: MemberId, draftId: string, threadId: string | undefined): Promise<Reconciliation>;
+  /** `sinceMs`: when this send attempt began; a SENT message older than that was sent outside JobSync. */
+  reconcile(member: MemberId, draftId: string, threadId: string | undefined, sinceMs?: number): Promise<Reconciliation>;
+  /** Read-only look at Gmail's real state of a draft id, used after Gmail answered "Message not a draft". */
+  inspect(member: MemberId, draftId: string, threadId: string | undefined): Promise<DraftInspection>;
+}
+
+/** Which ledger drafts still exist in the member's Gmail Drafts folder (the cached drafts.list the backlog gate uses). "unknown" never skips anything. */
+export interface DraftPresencePort {
+  has(member: MemberId, gmailDraftId: string): Promise<"present" | "absent" | "unknown">;
 }
 
 export interface DraftInfo {
@@ -56,6 +66,8 @@ export interface SendDeps {
   gate: boolean;
   sheet: Pick<OutreachSheet, "readTracking" | "updateTracking" | "readSendLedger" | "appendSendRecord" | "updateSendRecord" | "readExclusions" | "readMaster"> & Partial<Pick<OutreachSheet, "readPriority">>;
   gmail: GmailPort;
+  /** Optional cheap pre-filter: skips ledger drafts that are no longer in Gmail before any per-draft Gmail call or claim. Absent = every draft is read. */
+  presence?: DraftPresencePort;
   resumes: ResumeLookup;
   connections: { listFresh(): Promise<Connection[]>; markMessaged(c: Connection): Promise<void> };
   drafts: {
@@ -93,6 +105,10 @@ export interface SendRunResult {
   stoppedBecause: "none" | "rate-limited" | "deadline" | "error";
   /** Drafts newly recorded as "cannot be sent, needs a person" (parked) or released from that note in this call. */
   parkedChanges?: number;
+  /** Drafts skipped in this call because Gmail proved their message was already SENT outside JobSync (never counted in `sent`). */
+  externallySent?: number;
+  /** Drafts skipped in this call because they are no longer drafts in Gmail (not in the Drafts folder), without a claim or a send. */
+  staleSkipped?: number;
   errors: string[];
 }
 
@@ -104,7 +120,12 @@ type Evaluation =
   | { kind: "wait"; check: CheckId; reason: string }
   | { kind: "block"; check: CheckId; reason: string }
   | { kind: "review"; check: CheckId; reason: string }
-  | { kind: "auth"; check: CheckId; reason: string };
+  | { kind: "auth"; check: CheckId; reason: string }
+  /** The draft is no longer a sendable draft in Gmail. `sentOutside`: Gmail proved the message is SENT; otherwise it is simply not in the Drafts folder. Skipped, parked, never sent. */
+  | { kind: "stale"; check: CheckId; reason: string; sentOutside: boolean };
+
+const STALE_NOT_LISTED = "no longer in the member's Gmail Drafts (already sent or deleted outside JobSync)";
+const STALE_SENT = "already sent outside JobSync (Gmail marks this message SENT)";
 
 interface SendContext {
   member: MemberId;
@@ -147,6 +168,7 @@ async function evaluate(deps: SendDeps, rec: TrackingRecord, member: MemberId, e
   if (priorLedger?.status === "sent") return { kind: "done", check: "no_prior_send", reason: `${member}'s message to this recipient was already sent successfully` };
   if (priorLedger) return { kind: "block", check: "no_prior_send", reason: `another send to this recipient is ${priorLedger.status}` };
   if (rowsFor(env.ledger, key).some((r) => r.status === "needs_review" || r.status === "failed_permanent")) return { kind: "review", check: "no_prior_send", reason: "an earlier send attempt needs manual review" };
+  if (rowsFor(env.ledger, key).some((r) => r.status === "sent_outside")) return { kind: "stale", check: "not_already_received", sentOutside: true, reason: STALE_SENT };
   if (env.drafts.get(draftKeyFor(rec.connectionId, member))?.status === "sent") return { kind: "done", check: "not_already_received", reason: `${member} already sent this message from their own Gmail` };
   const emailKey = normalKey(email.email);
   // The same recipient on another record, already e-mailed BY THIS MEMBER (their draft there is sent): a member never e-mails the same address twice.
@@ -175,11 +197,25 @@ async function evaluate(deps: SendDeps, rec: TrackingRecord, member: MemberId, e
     .sort((a, b) => b.notBefore.localeCompare(a.notBefore))[0];
   if (cooling) return { kind: "wait", check: "gmail_quota", reason: `Gmail asked ${member}'s account to slow down; sending resumes after ${cooling.notBefore}` };
 
+  // Cheap pre-filter from the cached drafts.list: a ledger draft that is not in the member's Drafts folder is not a pending draft. No per-draft Gmail
+  // call, no claim and no send. Only a complete, successful listing can say "absent"; any doubt ("unknown") falls through to the full verification below.
+  if (deps.presence) {
+    const where = await deps.presence.has(member, draft.gmailDraftId).catch((): "unknown" => "unknown");
+    if (where === "absent") return { kind: "stale", check: "email_generated", sentOutside: false, reason: STALE_NOT_LISTED };
+  }
+
   // Gmail is read only now. The REAL saved draft is what gets verified.
   const read = await deps.gmail.readDraft(member, draft.gmailDraftId);
   if (read.status === "no_access") return { kind: "auth", check: "gmail_auth", reason: `Gmail authorisation for ${member} is not valid (${read.access})` };
   if (read.status === "not_found") return { kind: "block", check: "email_generated", reason: "the draft no longer exists in Gmail (deleted or already sent)" };
   if (read.status === "error") return { kind: "wait", check: "gmail_auth", reason: `Gmail could not be read (${read.reason})` };
+
+  // The labels of the saved message decide whether it can be sent AT ALL. Gmail keeps resolving the id of a draft that was already sent (labelled SENT),
+  // so "the draft was readable" proves nothing. drafts.send is only reached for a message that is labelled DRAFT and not SENT.
+  const labels = read.draft.labelIds;
+  if (!labels) return { kind: "wait", check: "gmail_auth", reason: "Gmail did not report the draft's labels; nothing is sent until it does" };
+  if (labels.includes("SENT")) return { kind: "stale", check: "not_already_received", sentOutside: true, reason: STALE_SENT };
+  if (!labels.includes("DRAFT")) return { kind: "stale", check: "email_generated", sentOutside: false, reason: `no longer a draft in Gmail (labels: ${labels.join(",") || "none"})` };
 
   const role = (conn.applyRole || rec.targetRole || "").trim();
   const check = checkDraft(read.draft, { member, recipientEmail: email.email, personName: conn.name, companyName: conn.company ?? "", applyRole: role });
@@ -285,11 +321,15 @@ async function reconcileInFlight(deps: SendDeps, result: SendRunResult, tracking
     if (nowMs - Date.parse(r.updatedAt || r.createdAt) < RECONCILE_AFTER_MS) continue;
     if (result.reconciled >= 5) break;
     const rec = trackingAll.find((t) => t.contactId === r.contactId);
-    const verdict = await deps.gmail.reconcile(r.member as MemberId, r.draftId, r.threadId || undefined).catch((): Reconciliation => ({ state: "unknown", reason: "reconcile failed" }));
+    const verdict = await deps.gmail.reconcile(r.member as MemberId, r.draftId, r.threadId || undefined, Date.parse(r.createdAt) || undefined).catch((): Reconciliation => ({ state: "unknown", reason: "reconcile failed" }));
     result.reconciled += 1;
     if (verdict.state === "sent") {
       await finishSent(deps, r, verdict.messageId ?? "", r.threadId || undefined, "confirmed by reconciliation");
       if (rec) await refreshAggregate(deps, rec, ledgerAll, conns.get(r.connectionId));
+    } else if (verdict.state === "external") {
+      await patchLedger(deps, r, { status: "sent_outside", reason: verdict.reason }, "reconciled: sent outside JobSync before this attempt; not counted as ours");
+      await deps.drafts.setParked?.(r.member as MemberId, r.connectionId, normalizeParkReason(STALE_SENT)).catch(() => undefined);
+      result.externallySent = (result.externallySent ?? 0) + 1;
     } else if (verdict.state === "not_sent") {
       await patchLedger(deps, r, { status: "failed_transient", notBefore: new Date(nowMs + RETRY_AFTER_TRANSIENT_MS).toISOString(), reason: "Gmail shows the send did not happen" }, "reconciled: not sent, safe to retry later");
     } else {
@@ -353,7 +393,7 @@ export async function runSendStep(deps: SendDeps): Promise<SendRunResult> {
     const d = drafts.get(key);
     if (!d || d.status !== "created" || hasReviewFlag(d.detail)) return; // not a pending draft, or already flagged by the drafting step
     let reason: string | null = null;
-    if (ev.kind === "review" || ev.kind === "done") reason = ev.reason;
+    if (ev.kind === "review" || ev.kind === "done" || ev.kind === "stale") reason = ev.reason;
     else if (ev.kind === "block" && !(ev.check === "no_prior_send" && /is (claimed|sending|uncertain)/.test(ev.reason)) && !/no longer exists/.test(ev.reason)) reason = ev.reason;
     const want = reason ? normalizeParkReason(reason) : null;
     if ((parkedReasonOf(d.detail) ?? null) === want) return;
@@ -379,6 +419,12 @@ export async function runSendStep(deps: SendDeps): Promise<SendRunResult> {
         const ev = await evaluate(deps, rec, member, { connections: conns, drafts, ledger: ledgerAll, tracking, exclusions, eligibleIds: parsed.contacts.length + priority.contacts.length ? eligibleIds : null, addresses });
         if (ev.kind !== "send") await syncParked(member, rec, ev);
         if (ev.kind !== "send") {
+          // A stale draft costs nothing: no claim, no send, no ledger row. The next member / contact is processed straight away.
+          if (ev.kind === "stale") {
+            if (ev.sentOutside) result.externallySent = (result.externallySent ?? 0) + 1;
+            else result.staleSkipped = (result.staleSkipped ?? 0) + 1;
+            continue;
+          }
           if (ev.kind === "done") { result.duplicatesPrevented += 1; continue; } // this member's own e-mail is already sent: nothing more to do for them
           if (ev.kind === "block" && ev.check === "no_prior_send" && /is uncertain/.test(ev.reason)) { note("uncertain", `${member}: ${ev.reason}`, "uncertain"); continue; } // waits for a person; never resent
           if (ev.check === "no_prior_send") result.duplicatesPrevented += 1;
@@ -397,6 +443,7 @@ export async function runSendStep(deps: SendDeps): Promise<SendRunResult> {
         ledgerAll = claim.won ? claim.ledger : (await deps.sheet.readSendLedger()).records; // a won claim has just read the ledger: no second read
         if (!claim.won) {
           result.duplicatesPrevented += 1;
+          if (claim.reason === "sent_outside") result.externallySent = (result.externallySent ?? 0) + 1;
           if (claim.reason === "needs_review" || claim.reason === "failed_permanent" || claim.reason === "too_many_attempts") note("review", `${member}: [no_prior_send] ${claim.reason.replace(/_/g, " ")}`);
           continue;
         }
@@ -423,6 +470,19 @@ export async function runSendStep(deps: SendDeps): Promise<SendRunResult> {
           await patchLedger(deps, row, { status: "failed_transient", notBefore: new Date(now.getTime() + RETRY_AFTER_AUTH_MS).toISOString(), reason }, "authorisation failure; nothing was sent");
           note("failed", `${member}: [gmail_auth] ${reason}`, "auth");
           result.failed += 1;
+        } else if (out.status === "not_a_draft") {
+          // Gmail refused: the id is not a draft any more, so this request sent NOTHING. Ask Gmail what the message is. Never retried, never assumed.
+          const seen = await deps.gmail.inspect(ctx.member, ctx.draft.gmailDraftId, row.threadId || undefined).catch((): DraftInspection => ({ state: "unknown", reason: "Gmail could not be queried" }));
+          if (seen.state === "sent_outside") {
+            await patchLedger(deps, row, { status: "sent_outside", gmailMessageId: seen.messageId, reason: STALE_SENT }, "Gmail: message not a draft and already SENT outside JobSync; nothing was sent by this system");
+            await syncParked(member, rec, { kind: "stale", check: "not_already_received", sentOutside: true, reason: STALE_SENT });
+            result.externallySent = (result.externallySent ?? 0) + 1;
+          } else {
+            const why = seen.state === "pending_draft" ? "Gmail refused the send as \"Message not a draft\" although the message is labelled DRAFT" : `Gmail refused the send as "Message not a draft" and its state could not be confirmed (${seen.reason})`;
+            await patchLedger(deps, row, { status: "needs_review", reason: why.slice(0, 200) }, "not a draft; state unconfirmed; left for review, not retried");
+            note("review", `${member}: [email_generated] ${why}`, "not_a_draft");
+            result.needsReview += 1;
+          }
         } else if (out.status === "rejected") {
           await patchLedger(deps, row, { status: "failed_permanent", reason: out.reason }, "rejected by Gmail; will not be retried");
           note("review", `${member}: [valid_email] Gmail rejected the message: ${out.reason}`, "rejected");
@@ -431,11 +491,15 @@ export async function runSendStep(deps: SendDeps): Promise<SendRunResult> {
           // uncertain (timeout, 5xx, unconfirmed 2xx, or "draft missing" which may mean it was already sent): reconcile NOW, never resend.
           row = (await deps.sheet.readSendLedger()).records.find((r) => r.claimId === row.claimId) ?? row;
           await patchLedger(deps, row, { status: "uncertain", reason: out.status === "uncertain" ? out.reason : "draft not found after the send request" }, "uncertain send result; reconciling");
-          const verdict = await deps.gmail.reconcile(ctx.member, ctx.draft.gmailDraftId, row.threadId || undefined).catch((): Reconciliation => ({ state: "unknown", reason: "reconcile failed" }));
+          const verdict = await deps.gmail.reconcile(ctx.member, ctx.draft.gmailDraftId, row.threadId || undefined, Date.parse(row.createdAt) || undefined).catch((): Reconciliation => ({ state: "unknown", reason: "reconcile failed" }));
           result.reconciled += 1;
           if (verdict.state === "sent") {
             await finishSent(deps, row, verdict.messageId ?? "", row.threadId || undefined, "confirmed by reconciliation");
             result.sent += 1;
+          } else if (verdict.state === "external") {
+            await patchLedger(deps, row, { status: "sent_outside", reason: verdict.reason }, "reconciled: sent outside JobSync before this attempt; not counted as ours");
+            await syncParked(member, rec, { kind: "stale", check: "not_already_received", sentOutside: true, reason: STALE_SENT });
+            result.externallySent = (result.externallySent ?? 0) + 1;
           } else if (verdict.state === "not_sent") {
             await patchLedger(deps, row, { status: "failed_transient", notBefore: new Date(now.getTime() + RETRY_AFTER_TRANSIENT_MS).toISOString(), reason: "Gmail shows the send did not happen" }, "reconciled: not sent, safe to retry later");
             note("failed", `${member}: [gmail_auth] the send did not go through; it will be retried`, "transient");

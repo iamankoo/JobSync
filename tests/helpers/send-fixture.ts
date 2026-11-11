@@ -5,7 +5,7 @@
 import type { MemberId } from "@/config/members";
 import { getMember } from "@/config/members";
 import type { ResumeLookup, ResumeResult } from "@/lib/gmail/attachment";
-import type { DraftReadback, Reconciliation, ReadResult, SendOutcome } from "@/lib/gmail/send";
+import type { DraftInspection, DraftReadback, Reconciliation, ReadResult, SendOutcome } from "@/lib/gmail/send";
 import { contactIdFor } from "@/lib/hr-master/ids";
 
 import type { DraftInfo, GmailPort, SendDeps } from "@/lib/outreach/send-workflow";
@@ -39,6 +39,17 @@ export class FakeGmail implements GmailPort {
   /** Scripted send outcomes, consumed in order; default = a confirmed send. */
   sendScript: (SendOutcome | { status: "no_access"; access: string } | "throw")[] = [];
   reconcileScript: Reconciliation[] = [];
+  /** Scripted answers to inspect() (used after Gmail answered "Message not a draft"); default = cannot be determined. */
+  inspectScript: (DraftInspection | "throw")[] = [];
+  /** Marks a draft as already SENT outside JobSync: Gmail still resolves the id, but the message is labelled SENT (this is what Gmail really does). */
+  markSentOutside(draftId: string) {
+    const d = this.drafts.get(draftId);
+    if (d?.status === "ok") this.drafts.set(draftId, { status: "ok", draft: { ...d.draft, labelIds: ["SENT"] } });
+  }
+  /** The member deleted the draft by hand: Gmail answers 404. */
+  deleteDraft(draftId: string) {
+    this.drafts.delete(draftId);
+  }
   sentMessages: { member: MemberId; draftId: string }[] = [];
   async address(m: MemberId) {
     this.calls.push(`address:${m}`);
@@ -59,6 +70,12 @@ export class FakeGmail implements GmailPort {
   async reconcile(m: MemberId, id: string): Promise<Reconciliation> {
     this.calls.push(`reconcile:${m}:${id}`);
     return this.reconcileScript.shift() ?? { state: "unknown", reason: "no script" };
+  }
+  async inspect(m: MemberId, id: string): Promise<DraftInspection> {
+    this.calls.push(`inspect:${m}:${id}`);
+    const next = this.inspectScript.shift();
+    if (next === "throw") throw new Error("gmail down");
+    return next ?? { state: "unknown", reason: "no script" };
   }
   sendCalls = () => this.calls.filter((c) => c.startsWith("send:"));
 }
@@ -97,7 +114,7 @@ export function buildSendFixture(specs: ContactSpec[] = [{ email: "jane@acme.exa
       draftLedger.set(draftKeyFor(connectionId, m), { status: "created", detail: `attached: ${resumeFile(m)}`, gmailDraftId: draftId, threadId: `thr_${i}_${m}` });
       gmail.drafts.set(draftId, {
         status: "ok",
-        draft: { to: s.email, from: gmail.addresses[m] ?? "", subject: `Application for ${role} — ${s.company ?? "your company"}`, body: draftBody({ member: m, ...(first ? { first } : {}), ...(s.company ? { company: s.company } : {}), role }), attachments: [{ filename: resumeFile(m), size: resumeBytes(m).length }], threadId: `thr_${i}_${m}` } satisfies DraftReadback,
+        draft: { to: s.email, from: gmail.addresses[m] ?? "", subject: `Application for ${role} — ${s.company ?? "your company"}`, body: draftBody({ member: m, ...(first ? { first } : {}), ...(s.company ? { company: s.company } : {}), role }), attachments: [{ filename: resumeFile(m), size: resumeBytes(m).length }], labelIds: ["DRAFT"], threadId: `thr_${i}_${m}` } satisfies DraftReadback,
       });
     }
     tracking.push({

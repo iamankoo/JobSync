@@ -33,7 +33,7 @@ const lastCol = (tab: string) => columnLetter(HEADERS[tab].length);
 const IMPORT_STATUSES: readonly ImportStatus[] = ["importing", "added", "import_failed"];
 const PROCESSING: readonly ProcessingStatus[] = ["awaiting", "drafting", "drafted", "needs_review", "failed", "sent"];
 const SEND_STATUSES: readonly SendStatus[] = ["disabled", "pending", "blocked", "review", "claimed", "sent", "uncertain", "failed"];
-const LEDGER_STATUSES: readonly SendLedgerStatus[] = ["claimed", "sending", "sent", "uncertain", "failed_transient", "failed_permanent", "needs_review", "superseded", "released"];
+const LEDGER_STATUSES: readonly SendLedgerStatus[] = ["claimed", "sending", "sent", "sent_outside", "uncertain", "failed_transient", "failed_permanent", "needs_review", "superseded", "released"];
 const SEGMENTS: readonly Segment[] = ["person-and-company", "company-only", "person-only", "neither"];
 
 export function serializeTracking(r: TrackingRecord): string[] {

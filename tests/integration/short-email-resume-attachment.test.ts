@@ -124,12 +124,12 @@ function mockGoogle() {
       const d = drafts.find((x) => x.id === read[1]);
       if (!d || sentDrafts.has(d.id)) return new Response("nope", { status: 404 });
       const parts = [{ mimeType: "text/plain", filename: "", body: { size: d.body.length, data: Buffer.from(d.body, "utf8").toString("base64url") } }, ...(state.hideAttachmentOnRead ? [] : d.files.map((f) => ({ mimeType: f.type, filename: f.name, body: { attachmentId: `att-${d.id}`, size: f.bytes.length } })))];
-      return Response.json({ id: d.id, message: { threadId: `thread-${drafts.indexOf(d) + 1}`, payload: { mimeType: "multipart/mixed", filename: "", headers: [{ name: "To", value: d.to }, { name: "Subject", value: d.subject }], parts } } });
+      return Response.json({ id: d.id, message: { threadId: `thread-${drafts.indexOf(d) + 1}`, labelIds: ["DRAFT"], payload: { mimeType: "multipart/mixed", filename: "", headers: [{ name: "To", value: d.to }, { name: "Subject", value: d.subject }], parts } } });
     }
     const minimal = /\/drafts\/(draft-\d+)\?format=minimal$/.exec(url);
     if (minimal && (init?.method ?? "GET") === "GET") {
       const d = drafts.find((x) => x.id === minimal[1]);
-      return !d || sentDrafts.has(d.id) ? new Response("gone", { status: 404 }) : Response.json({ id: d.id });
+      return !d || sentDrafts.has(d.id) ? new Response("gone", { status: 404 }) : Response.json({ id: d.id, message: { id: `msg-${d.id}`, labelIds: ["DRAFT"] } });
     }
     const thread = /\/threads\/(thread-\d+)\?format=minimal$/.exec(url);
     if (thread && (init?.method ?? "GET") === "GET") {
@@ -596,7 +596,7 @@ describe("company wording and research for imported contacts", () => {
 
 // ---- Part 3: the send workflow with the REAL Gmail adapters against a MOCK Gmail server (nothing real is contacted or sent) ---------------
 
-import { reconcileDraftSend, readDraftFor, sendDraftFor } from "@/lib/gmail/send";
+import { inspectDraftFor, reconcileDraftSend, readDraftFor, sendDraftFor } from "@/lib/gmail/send";
 import { readGmailAccounts, recordDraft } from "@/lib/gmail/store";
 import { updateConnection } from "@/lib/google-sheets/connections-service";
 import { runSendStep, type SendDeps } from "@/lib/outreach/send-workflow";
@@ -633,6 +633,7 @@ describe("send workflow with the real Gmail adapters (mock Gmail server)", () =>
       readDraft: (m, id) => readDraftFor(m, id),
       send: (m, id) => sendDraftFor(m, id),
       reconcile: (m, d, t) => reconcileDraftSend(m, d, t),
+      inspect: (m, d, t) => inspectDraftFor(m, d, t),
     },
     resumes: existingResumes,
     connections: { listFresh: realConnectionsPort.listFresh, markMessaged: async (c) => { await updateConnection(c.memberId, c.connectionId, { status: "Messaged" }); } },
