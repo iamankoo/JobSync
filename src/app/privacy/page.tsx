@@ -34,7 +34,7 @@ export default function PrivacyPage() {
         <p>A member may connect their <strong>own</strong> Google account to JobSync. Each member connects only their own account, through Google&apos;s consent screen. JobSync requests these permissions:</p>
         <ul>
           <li><strong>OpenID / email address</strong> to know which Gmail address was connected.</li>
-          <li><strong>Gmail: compose</strong> (<code>gmail.compose</code>) to create email drafts in the member&apos;s Gmail, to send the drafts JobSync itself created, and to count and clean up those JobSync-created drafts.</li>
+          <li><strong>Gmail: compose</strong> (<code>gmail.compose</code>) to create email drafts in the member&apos;s Gmail, to send the drafts JobSync itself created, and to list the member&apos;s drafts (identifiers only) so JobSync can count how many of its own drafts are waiting. JobSync never deletes or edits drafts or emails.</li>
           <li><strong>Gmail: metadata</strong> (<code>gmail.metadata</code>), read-only, to check the labels of the conversation of a draft JobSync created, so it can tell whether that draft was sent or deleted. JobSync does not read message bodies.</li>
         </ul>
         <p><strong>How the data is used.</strong> JobSync prepares a personalised email for each eligible contact and saves it as a draft in the member&apos;s own Gmail with that member&apos;s own résumé attached. Depending on the team&apos;s configured workflow, the drafts JobSync created are then sent automatically from that same member&apos;s Gmail account. Before each send JobSync checks that the draft is one it created, that the correct résumé is attached, that the recipient has not opted out, and that it has not already been sent.</p>
@@ -57,7 +57,7 @@ export default function PrivacyPage() {
       </LegalSection>
 
       <LegalSection title="Retention and deletion">
-        <p>Records are kept while the team uses JobSync. Old job listings are removed after a retention period. Disconnecting Gmail deletes that member&apos;s stored Google token immediately. A member may ask for their personal data to be corrected or deleted, and the team will do so unless a record must be kept (for example an opt-out, so the person is not emailed again).</p>
+        <p>Records are kept while the team uses JobSync. JobSync includes a retention routine that can remove job listings older than 30 days; contact, draft and send records are kept so that nothing is emailed twice. Disconnecting Gmail deletes that member&apos;s stored Google token immediately. A member may ask for their personal data to be corrected or deleted, and the team will do so unless a record must be kept (for example an opt-out, so the person is not emailed again).</p>
       </LegalSection>
 
       <LegalSection title="Security">
