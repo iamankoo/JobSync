@@ -48,3 +48,6 @@ AGENTS.md
 # Third-party contact lists and their generated outputs: personal data, never committed (the Outreach Database sheet is the store)
 /Mail-Data/
 /data/
+
+# Netlify local state / build output
+.netlify

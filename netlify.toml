@@ -1,0 +1,8 @@
+# Netlify deployment. The Next.js app is built by Netlify's built-in OpenNext adapter (no plugin entry needed).
+# The outreach / Network Finder cycles are NOT Netlify scheduled functions (those stop at 30 s; the cycle needs up to 55 s).
+# They are triggered by cron-job.org calling GET /api/cron/* with a Bearer secret, exactly as before.
+[build]
+  command = "npm run build"
+
+[build.environment]
+  NODE_VERSION = "24"
