@@ -7,7 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { GET } from "@/app/api/cron/outreach/route";
 import { setSheetsRetryDeadline, sheetsRateLimitHits, resetSheetsRateLimitHits, withRetry } from "@/lib/google-sheets/client";
 import { SheetsError } from "@/lib/google-sheets/errors";
-import { HARD_STOP_MS, ROUTE_MAX_DURATION_S, runOutreachInBackground as realRun } from "@/lib/outreach/background";
+import { HARD_STOP_MS, runOutreachInBackground as realRun } from "@/lib/outreach/background";
 import { loadOutreachConfig } from "@/lib/outreach/config";
 import { DRAFT_YIELD_AFTER_RATE_LIMITS, OUTREACH_LOCK_TTL_MS, runOutreachCycle, type CycleDeps } from "@/lib/outreach/run";
 import { manyContacts, masterGrid, newOutreachSpreadsheet } from "../../helpers/outreach";
@@ -76,7 +76,6 @@ describe("the HTTP endpoint authenticates and hands over to the background funct
   });
 
   it("the cycle's own time budget still fits inside its lock TTL (a killed cycle frees its lock by itself)", () => {
-    expect(HARD_STOP_MS).toBeLessThan(ROUTE_MAX_DURATION_S * 1000);
     expect(OUTREACH_LOCK_TTL_MS).toBeGreaterThan(HARD_STOP_MS);
   });
 });
@@ -167,7 +166,7 @@ describe("interruption recovery, overlap and yielding", () => {
     const later = new Date(T0.getTime() + OUTREACH_LOCK_TTL_MS + 1000);
     const next = await runOutreachCycle(deps(o, { now: () => later }));
     expect(next.ran).toBe(true);
-    expect(OUTREACH_LOCK_TTL_MS).toBeGreaterThan(ROUTE_MAX_DURATION_S * 1000); // a killed run never holds the lock past the next call
+    expect(OUTREACH_LOCK_TTL_MS).toBeGreaterThan(HARD_STOP_MS); // a killed run never holds the lock past the next call
   });
 
   it("sending and importing run BEFORE drafting, so a slow or failing draft step cannot starve them", async () => {

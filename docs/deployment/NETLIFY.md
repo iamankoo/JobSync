@@ -28,6 +28,9 @@ functions are limited to 30 s as well, so cron-job.org stays the trigger. `after
   and the absence of a send cap are unchanged: they live in the cycle, which this change does not touch.
 - **Logs:** `netlify logs --function outreach-background` / the Netlify UI show `[outreach-runner] {...}` (runner) and `[outreach] {...}` (each cycle).
 
+- **Send-first mode:** when 50 or more real, eligible (not parked) JobSync drafts are saved in the members' Gmail (the backlog gate's count; `OUTREACH_SEND_FIRST_AT`, 0 = off), a cycle only sends: no manual registration, no adoption, no import, no drafting. It uses a 60 s send slice and cycles follow each other after a 10 s pause. If two such cycles send nothing, the runner returns to normal work for the rest of its run. A count that cannot be obtained never switches the mode on. The separate 100-draft rule for drafting and the 200-imports-per-24-hours limit are unchanged.
+- **Cycle limits:** hard stop 110 s, per-cycle lock 150 s, runner lock 200 s, runner stops starting cycles after 11 minutes.
+
 ## Environment variables (names; values are in the Netlify dashboard, never in Git)
-Same as the Vercel setup (`.env.example`), plus: `LEGAL_CONTACT_EMAIL` (public contact on /privacy and /terms), optional `OUTREACH_CYCLE_INTERVAL_S`,
+Same as the Vercel setup (`.env.example`), plus: `LEGAL_CONTACT_EMAIL` (public contact on /privacy and /terms), optional `OUTREACH_CYCLE_INTERVAL_S`, optional `OUTREACH_SEND_FIRST_AT`,
 optional `OUTREACH_BACKGROUND_URL` (override of the background function address). On the Free plan variables cannot be marked secret or scoped.

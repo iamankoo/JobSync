@@ -12,20 +12,23 @@
  */
 import { resetSheetsRateLimitHits, setSheetsRetryDeadline, sheetsRateLimitHits } from "@/lib/google-sheets/client";
 import { withHardDeadline } from "@/lib/network-finder/run";
-import { loadOutreachConfig } from "./config";
+import { loadOutreachConfig, type OutreachConfig } from "./config";
 import { buildRealCycleDeps, runOutreachCycle, summarizeCycle, type CycleDeps, type CycleResult } from "./run";
 
-/** Vercel `maxDuration` of the cron route. The work must finish (and release its lock) well inside it. */
-export const ROUTE_MAX_DURATION_S = 60;
 /** The cycle plans its steps inside this budget (send ~20 s, import ~36 s, drafting ~44 s). */
 export const CYCLE_BUDGET_MS = 44_000;
 /** Sheets retry sleeping stops here, so a 429 storm cannot hold the run past the budget. */
-export const RETRY_DEADLINE_MS = 50_000;
-/** Absolute stop (the lock then expires by itself). */
-export const HARD_STOP_MS = 55_000;
+export const RETRY_DEADLINE_MS = 100_000;
+/**
+ * Absolute stop (the lock then expires by itself). It only matters for a cycle that overruns: a normal cycle takes about 45 s and a send-first cycle
+ * (a 60 s send slice plus about 30 s of wrap-up) about 90 s. The background function lives for 15 minutes, so this is no longer bound by a route limit.
+ */
+export const HARD_STOP_MS = 110_000;
 
 export interface BackgroundDeps {
-  build?: (budgetMs: number) => CycleDeps;
+  build?: (budgetMs: number, config: OutreachConfig) => CycleDeps;
+  /** Run this cycle in normal mode even if the saved-draft backlog is above the send-first threshold (the runner sets it when send-first stops making progress). */
+  noSendFirst?: boolean;
   run?: (deps: CycleDeps) => Promise<CycleResult>;
   log?: (line: string) => void;
   now?: () => number;
@@ -34,6 +37,9 @@ export interface BackgroundDeps {
 
 export interface BackgroundOutcome {
   status: "completed" | "busy" | "disabled" | "timed-out" | "error";
+  /** For "completed": which mode the cycle ran in, and how many e-mails it confirmed (the runner uses both). */
+  mode?: "normal" | "send-first";
+  sent?: number;
   /**
    * Only for "timed-out": resolves when the abandoned cycle finally settles. The hard stop cannot cancel it, so a long-lived caller (the background
    * runner) must wait for this before starting another cycle; otherwise two cycles could overlap once the run lock has expired.
@@ -49,9 +55,9 @@ export async function runOutreachInBackground(d: BackgroundDeps = {}): Promise<B
   setSheetsRetryDeadline(started + RETRY_DEADLINE_MS);
   resetSheetsRateLimitHits();
   try {
-    const cfg = loadOutreachConfig();
+    const cfg = { ...loadOutreachConfig(), ...(d.noSendFirst ? { sendFirstAt: 0 } : {}) };
     if (!cfg.enabled) return { status: "disabled" };
-    const deps = (d.build ?? ((budget: number) => buildRealCycleDeps(cfg, process.env, budget)))(CYCLE_BUDGET_MS);
+    const deps = (d.build ?? ((budget: number, c: OutreachConfig) => buildRealCycleDeps(c, process.env, budget)))(CYCLE_BUDGET_MS, cfg);
     const cycle = (d.run ?? runOutreachCycle)(deps);
     const run = await withHardDeadline(cycle, d.hardStopMs ?? HARD_STOP_MS);
     if (run === "timed-out") {
@@ -64,8 +70,8 @@ export async function runOutreachInBackground(d: BackgroundDeps = {}): Promise<B
     }
     const s = summarizeCycle(run);
     // Counts and statuses only: no names, e-mail addresses, companies, tokens or message text.
-    log(`[outreach] ${JSON.stringify({ status: "completed", ms: now() - started, rateLimited: sheetsRateLimitHits(), gmail: s.gmail && { lapsed: s.gmail.lapsed, expiring: s.gmail.expiring, alerted: s.gmail.alerted }, existing: s.existing && { adopted: s.existing.adopted, remaining: s.existing.remaining, orphaned: s.existing.orphaned, parked: s.existing.parked }, import: s.import && { imported: s.import.importedThisRun, today: s.import.importedToday, stop: s.import.stoppedBecause, priorityLeft: s.import.priorityRemaining ?? 0 }, drafts: typeof s.drafts === "object" && s.drafts ? s.drafts : s.drafts, send: s.send && { status: s.send.status, sent: s.send.sent, outside: s.send.externallySent ?? 0, stale: s.send.staleSkipped ?? 0, review: s.send.needsReview, failed: s.send.failed, waiting: s.send.waiting, stop: s.send.stoppedBecause }, errors: s.errors.length })}`);
-    return { status: "completed" };
+    log(`[outreach] ${JSON.stringify({ status: "completed", mode: run.mode ?? "normal", saved: run.savedDrafts ?? null, ms: now() - started, rateLimited: sheetsRateLimitHits(), gmail: s.gmail && { lapsed: s.gmail.lapsed, expiring: s.gmail.expiring, alerted: s.gmail.alerted }, existing: s.existing && { adopted: s.existing.adopted, remaining: s.existing.remaining, orphaned: s.existing.orphaned, parked: s.existing.parked }, import: s.import && { imported: s.import.importedThisRun, today: s.import.importedToday, stop: s.import.stoppedBecause, priorityLeft: s.import.priorityRemaining ?? 0 }, drafts: typeof s.drafts === "object" && s.drafts ? s.drafts : s.drafts, send: s.send && { status: s.send.status, sent: s.send.sent, outside: s.send.externallySent ?? 0, stale: s.send.staleSkipped ?? 0, review: s.send.needsReview, failed: s.send.failed, waiting: s.send.waiting, stop: s.send.stoppedBecause }, errors: s.errors.length })}`);
+    return { status: "completed", mode: run.mode ?? "normal", sent: run.send?.sent ?? 0 };
   } catch (err) {
     log(`[outreach] ${JSON.stringify({ status: "error", error: err instanceof Error ? err.name : "error" })}`);
     return { status: "error" };

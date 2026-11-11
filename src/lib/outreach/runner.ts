@@ -20,16 +20,21 @@ import { openOutreachSheet } from "./run";
 import { RUNNER_LOCK_KEY, type OutreachSheet } from "./sheet";
 
 /** A killed runner frees the runner lock after this long; it must outlast one cycle (55 s hard stop + settle grace) plus a missed heartbeat. */
-export const RUNNER_LOCK_TTL_MS = 120_000;
+export const RUNNER_LOCK_TTL_MS = 200_000;
 export const RUNNER_HEARTBEAT_MS = 40_000;
 /** The runner starts no new cycle after this; the one in flight finishes (<= HARD_STOP + SETTLE_GRACE), staying under the 15-minute function limit. */
-export const RUNNER_MAX_RUN_MS = 12 * 60_000;
+export const RUNNER_MAX_RUN_MS = 11 * 60_000;
 /** Cycles start at least this far apart (the old cron cadence). Override with OUTREACH_CYCLE_INTERVAL_S (60-600). */
 export const DEFAULT_CYCLE_INTERVAL_MS = 120_000;
 export const MIN_CYCLE_GAP_MS = 10_000;
 /** How long the runner waits for a cycle that passed its hard stop to finish on its own before giving up on the whole run. */
 export const SETTLE_GRACE_MS = 30_000;
 export const MAX_CONSECUTIVE_FAILURES = 3;
+/**
+ * Send-first cycles in a row that send nothing before the runner stops using send-first mode for the rest of its run (normal work resumes). It prevents a
+ * backlog that cannot be sent (every remaining draft blocked by a content or résumé check) from keeping imports and drafting off forever.
+ */
+export const SEND_FIRST_IDLE_LIMIT = 2;
 
 export interface RunnerLock {
   acquire(): Promise<boolean>;
@@ -40,8 +45,8 @@ export interface RunnerLock {
 
 export interface RunnerDeps {
   lock: RunnerLock;
-  /** One outreach cycle (the existing time-boxed wrapper). Never expected to throw. */
-  runCycle: () => Promise<BackgroundOutcome>;
+  /** One outreach cycle (the existing time-boxed wrapper). Never expected to throw. `noSendFirst`: run it in normal mode. */
+  runCycle: (opts: { noSendFirst: boolean }) => Promise<BackgroundOutcome>;
   now?: () => number;
   sleep?: (ms: number) => Promise<void>;
   log?: (line: string) => void;
@@ -58,6 +63,9 @@ export interface RunnerResult {
   status: RunnerStop;
   cycles: number;
   completed: number;
+  /** Cycles that ran in send-first mode, and whether the runner gave up on that mode because it stopped making progress. */
+  sendFirstCycles: number;
+  sendFirstSuspended: boolean;
 }
 
 const realSleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
@@ -71,10 +79,10 @@ export async function runOutreachRunner(deps: RunnerDeps): Promise<RunnerResult>
   const maxRunMs = deps.maxRunMs ?? RUNNER_MAX_RUN_MS;
   const settleGraceMs = deps.settleGraceMs ?? SETTLE_GRACE_MS;
   const started = now();
-  const out: RunnerResult = { status: "time-limit", cycles: 0, completed: 0 };
+  const out: RunnerResult = { status: "time-limit", cycles: 0, completed: 0, sendFirstCycles: 0, sendFirstSuspended: false };
   const finish = (status: RunnerStop) => {
     out.status = status;
-    log(`[outreach-runner] ${JSON.stringify({ status, cycles: out.cycles, completed: out.completed, ms: now() - started })}`);
+    log(`[outreach-runner] ${JSON.stringify({ status, cycles: out.cycles, completed: out.completed, sendFirst: out.sendFirstCycles, sendFirstSuspended: out.sendFirstSuspended, ms: now() - started })}`);
     return out;
   };
 
@@ -98,12 +106,13 @@ export async function runOutreachRunner(deps: RunnerDeps): Promise<RunnerResult>
     }, deps.heartbeatMs ?? RUNNER_HEARTBEAT_MS);
 
     let failures = 0;
+    let idleSendFirst = 0;
     for (;;) {
       if (lost || now() - lastBeat >= RUNNER_LOCK_TTL_MS) return finish("lock-lost");
       if (now() - started >= maxRunMs) return finish("time-limit");
       const cycleStart = now();
       out.cycles += 1;
-      const outcome = await deps.runCycle();
+      const outcome = await deps.runCycle({ noSendFirst: out.sendFirstSuspended });
       if (outcome.status === "disabled") return finish("disabled");
       if (outcome.status === "timed-out") {
         const settled = outcome.settled ? await Promise.race([outcome.settled.then(() => true), sleep(settleGraceMs).then(() => false)]) : false;
@@ -113,13 +122,19 @@ export async function runOutreachRunner(deps: RunnerDeps): Promise<RunnerResult>
         }
       }
       if (outcome.status === "completed") out.completed += 1;
+      if (outcome.mode === "send-first") {
+        out.sendFirstCycles += 1;
+        idleSendFirst = (outcome.sent ?? 0) > 0 ? 0 : idleSendFirst + 1;
+        if (idleSendFirst >= SEND_FIRST_IDLE_LIMIT) out.sendFirstSuspended = true;
+      }
       if (outcome.status === "error") {
         failures += 1;
         if (failures >= MAX_CONSECUTIVE_FAILURES) return finish("repeated-errors");
       } else if (outcome.status !== "timed-out") {
         failures = 0;
       }
-      const wait = Math.max(MIN_CYCLE_GAP_MS, intervalMs - (now() - cycleStart));
+      // While draining a backlog, cycles follow each other with only a short pause; otherwise they keep the 2-minute cadence.
+      const wait = outcome.mode === "send-first" ? MIN_CYCLE_GAP_MS : Math.max(MIN_CYCLE_GAP_MS, intervalMs - (now() - cycleStart));
       if (now() - started + wait >= maxRunMs) return finish("time-limit");
       await sleep(wait);
     }
@@ -153,7 +168,7 @@ export function buildRealRunnerDeps(env: NodeJS.ProcessEnv = process.env): Runne
   if (!cfg.enabled) return null;
   return {
     lock: sheetRunnerLock(openOutreachSheet(cfg)),
-    runCycle: () => runOutreachInBackground(),
+    runCycle: (o) => runOutreachInBackground({ noSendFirst: o.noSendFirst }),
     intervalMs: cycleIntervalMs(env),
   };
 }

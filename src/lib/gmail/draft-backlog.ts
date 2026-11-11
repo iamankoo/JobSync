@@ -167,6 +167,8 @@ export function realBacklogPorts(injected?: FetchLike): BacklogPorts {
           return { status: "unavailable", reason: "Gmail unavailable" };
         }
         if (!res.ok) return { status: "unavailable", reason: `Gmail answered ${res.status}` };
+        // Gmail answers 204 (no content, no body) for a Drafts folder with no drafts at all: that is a complete, empty listing, not an unreadable answer.
+        if (res.status === 204) return { status: "ok", ids };
         const body = (await res.json().catch(() => null)) as { drafts?: { id?: string }[]; nextPageToken?: string } | null;
         if (!body) return { status: "unavailable", reason: "unreadable Gmail answer" };
         for (const d of body.drafts ?? []) if (d.id) ids.add(d.id);
