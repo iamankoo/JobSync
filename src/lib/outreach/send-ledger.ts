@@ -47,7 +47,7 @@ export function withHistory(history: string, at: string, event: string): string 
 export type ClaimResult =
   /** `ledger`: the ledger as read right AFTER this claim was appended (the caller can use it instead of reading the tab again). */
   | { won: true; record: SendRecord; ledger: SendRecord[] }
-  | { won: false; reason: "already_sent" | "in_flight" | "needs_review" | "failed_permanent" | "lost_race" | "too_many_attempts"; existing?: SendRecord };
+  | { won: false; reason: "already_sent" | "sent_outside" | "in_flight" | "needs_review" | "failed_permanent" | "lost_race" | "too_many_attempts"; existing?: SendRecord };
 
 export type ClaimInput = Pick<SendRecord, "sendKey" | "contactId" | "member" | "gmailAccount" | "connectionId" | "company" | "role" | "draftId" | "threadId" | "resumeFile" | "resumeSha256" | "resumeBytes" | "wordCount">;
 
@@ -59,6 +59,8 @@ export async function claimSend(sheet: LedgerSheet, input: ClaimInput, day: stri
   const mine = rowsFor(before.records, input.sendKey);
   const sent = mine.find((r) => r.status === "sent");
   if (sent) return { won: false, reason: "already_sent", existing: sent };
+  const outside = mine.find((r) => r.status === "sent_outside");
+  if (outside) return { won: false, reason: "sent_outside", existing: outside };
   const live = mine.find((r) => ACTIVE.includes(r.status) && !(r.status === "claimed" && now.getTime() - Date.parse(r.updatedAt || r.createdAt) >= CLAIM_TTL_MS));
   if (live) return { won: false, reason: "in_flight", existing: live };
   const blocking = mine.find((r) => BLOCKING.includes(r.status));

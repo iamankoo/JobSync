@@ -178,6 +178,63 @@ export function realBacklogPorts(injected?: FetchLike): BacklogPorts {
   };
 }
 
+/**
+ * Which ledger drafts still exist as real drafts in the member's Gmail, from the SAME `drafts.list` call the backlog gate uses (ids only, one paged call
+ * per member). The send step asks this BEFORE reading or claiming a draft: a ledger draft that is not in the listing is not a pending draft (sent or
+ * deleted outside JobSync), so it is skipped without a single further Gmail call and without spending the send time slice.
+ *
+ * It only ever says "absent" for a complete, successful listing. Any failure (HTTP error, timeout, no permission, too many pages, member not connected)
+ * is "unknown", and "unknown" never skips anything: the normal, fully verified path runs instead. A listing is reused for `ttlMs`; a failure is not.
+ */
+export const PRESENCE_TTL_MS = 45_000;
+export type DraftPresenceAnswer = "present" | "absent" | "unknown";
+export interface DraftPresence {
+  has(member: MemberId, gmailDraftId: string): Promise<DraftPresenceAnswer>;
+  invalidate(): void;
+}
+
+export function createDraftPresence(opts: { list: (member: MemberId) => Promise<MemberDrafts>; ttlMs?: number; now?: () => number }): DraftPresence {
+  const ttl = opts.ttlMs ?? PRESENCE_TTL_MS;
+  const now = opts.now ?? Date.now;
+  const memo = new Map<MemberId, { at: number; ids: ReadonlySet<string> | null }>();
+  const inflight = new Map<MemberId, Promise<ReadonlySet<string> | null>>();
+  const idsOf = async (member: MemberId): Promise<ReadonlySet<string> | null> => {
+    const hit = memo.get(member);
+    if (hit && now() - hit.at < (hit.ids ? ttl : FAILURE_TTL_MS)) return hit.ids;
+    let running = inflight.get(member);
+    if (!running) {
+      running = (async () => {
+        let listed: MemberDrafts;
+        try {
+          listed = await opts.list(member);
+        } catch {
+          listed = { status: "unavailable", reason: "Gmail could not be read" };
+        }
+        const ids = listed.status === "ok" ? listed.ids : null;
+        memo.set(member, { at: now(), ids });
+        return ids;
+      })().finally(() => inflight.delete(member));
+      inflight.set(member, running);
+    }
+    return running;
+  };
+  return {
+    async has(member, gmailDraftId) {
+      const ids = await idsOf(member);
+      return ids === null ? "unknown" : ids.has(gmailDraftId) ? "present" : "absent";
+    },
+    invalidate() {
+      memo.clear();
+    },
+  };
+}
+
+let sharedPresence: DraftPresence | undefined;
+/** The process-wide presence check used by the production send step. */
+export function getDraftPresence(): DraftPresence {
+  return (sharedPresence ??= createDraftPresence({ list: (m) => realBacklogPorts().gmailDraftIds(m) }));
+}
+
 let shared: DraftBacklogGate | undefined;
 /** The process-wide gate used by the production wiring (one count shared by the Outreach cycle and the Network Finder in the same instance). */
 export function getDraftBacklogGate(): DraftBacklogGate {

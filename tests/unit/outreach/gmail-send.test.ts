@@ -14,7 +14,7 @@ vi.mock("@/lib/gmail/drafts", () => ({
 }));
 vi.mock("@/lib/gmail/store", () => ({ updateGmailStatus: (...a: unknown[]) => updateGmailStatus(...(a as [])) }));
 
-import { classifySendResponse, parseDraftReadback, readDraftFor, reconcileDraftSend, sendDraftFor } from "@/lib/gmail/send";
+import { classifySendResponse, inspectDraftFor, parseDraftReadback, readDraftFor, reconcileDraftSend, sendDraftFor } from "@/lib/gmail/send";
 
 const json = (status: number, body: unknown, headers: Record<string, string> = {}) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json", ...headers } });
 const METADATA = "https://www.googleapis.com/auth/gmail.metadata";
@@ -44,6 +44,25 @@ describe("classifySendResponse", () => {
     expect(classifySendResponse(404, {}).status).toBe("draft_missing");
     expect(classifySendResponse(500, {}).status).toBe("uncertain");
     expect(classifySendResponse(503, {}).status).toBe("uncertain");
+  });
+});
+
+describe("Gmail's 'Message not a draft' is its own outcome, not a generic 400", () => {
+  it("is recognised by its message (any case) on a 400 only", () => {
+    expect(classifySendResponse(400, { error: { code: 400, message: "Message not a draft", status: "FAILED_PRECONDITION" } })).toEqual({ status: "not_a_draft" });
+    expect(classifySendResponse(400, { error: { message: "MESSAGE NOT A DRAFT" } })).toEqual({ status: "not_a_draft" });
+    expect(classifySendResponse(422, { error: { message: "Message not a draft" } }).status).toBe("rejected"); // only the specific 400
+    expect(classifySendResponse(500, { error: { message: "Message not a draft" } }).status).toBe("uncertain");
+  });
+  it("every other 400 stays a plain rejection with Gmail's own words", () => {
+    expect(classifySendResponse(400, { error: { message: "Invalid To header" } })).toEqual({ status: "rejected", reason: "Invalid To header" });
+    expect(classifySendResponse(400, {})).toEqual({ status: "rejected", reason: "invalid request" });
+    expect(classifySendResponse(400, { error: { message: "Recipient address required" } }).status).toBe("rejected");
+  });
+  it("sendDraftFor returns it as not_a_draft (and the member's authorisation is untouched)", async () => {
+    const fetchFn = vi.fn(async () => json(400, { error: { message: "Message not a draft" } })) as unknown as typeof fetch;
+    expect(await sendDraftFor("lukky", "r123", fetchFn)).toEqual({ status: "not_a_draft" });
+    expect(updateGmailStatus).not.toHaveBeenCalled();
   });
 });
 
@@ -113,6 +132,13 @@ describe("readDraftFor / parseDraftReadback", () => {
     });
     expect(parseDraftReadback({})).toBeNull();
   });
+  it("keeps Gmail's labels exactly as reported, and leaves them undefined when Gmail reported none (that is not proof of a draft)", () => {
+    expect(parseDraftReadback({ ...full, message: { ...full.message, labelIds: ["DRAFT"] } })?.labelIds).toEqual(["DRAFT"]);
+    expect(parseDraftReadback({ ...full, message: { ...full.message, labelIds: ["SENT", "CATEGORY_UPDATES"] } })?.labelIds).toEqual(["SENT", "CATEGORY_UPDATES"]);
+    expect(parseDraftReadback({ ...full, message: { ...full.message, labelIds: ["DRAFT", 7, null] } })?.labelIds).toEqual(["DRAFT"]);
+    expect(parseDraftReadback(full)?.labelIds).toBeUndefined();
+    expect(parseDraftReadback({ ...full, message: { ...full.message, labelIds: "DRAFT" } })?.labelIds).toBeUndefined();
+  });
   it("404 -> not_found, 403 -> no_access, 500 -> error, 200 -> ok", async () => {
     const run = (res: Response) => readDraftFor("anni", "d1", vi.fn(async () => res) as unknown as typeof fetch);
     expect((await run(json(404, {}))).status).toBe("not_found");
@@ -131,13 +157,47 @@ describe("reconcileDraftSend: never guesses", () => {
       return v.clone();
     }) as unknown as typeof fetch;
 
-  it("draft still exists -> NOT sent (safe to send again)", async () => {
-    expect(await reconcileDraftSend("anni", "d1", "t1", route({ "/drafts/d1": json(200, { id: "d1" }) }))).toEqual({ state: "not_sent" });
+  it("draft still exists AND is labelled DRAFT -> NOT sent (safe to send again)", async () => {
+    expect(await reconcileDraftSend("anni", "d1", "t1", route({ "/drafts/d1": json(200, { id: "d1", message: { id: "m1", labelIds: ["DRAFT"] } }) }))).toEqual({ state: "not_sent" });
+  });
+  it("the id resolves but Gmail reports NO labels -> unknown: never assumed to be a draft (and so never 'safe to send again')", async () => {
+    expect((await reconcileDraftSend("anni", "d1", "t1", route({ "/drafts/d1": json(200, { id: "d1" }) }))).state).toBe("unknown");
+    expect((await reconcileDraftSend("anni", "d1", "t1", route({ "/drafts/d1": json(200, { id: "d1", message: { id: "m1" } }) }))).state).toBe("unknown");
+  });
+  const sentAt = (iso: string) => route({ "/drafts/d1": json(200, { id: "d1", message: { id: "m7", labelIds: ["SENT"], internalDate: String(Date.parse(iso)) } }) });
+  it("the id resolves, the message is SENT, and Gmail's own time is at or after the moment the attempt's request began -> this attempt's send", async () => {
+    expect(await reconcileDraftSend("anni", "d1", "t1", sentAt("2026-11-11T19:27:00Z"), Date.parse("2026-11-11T19:26:00Z"))).toEqual({ state: "sent", messageId: "m7" });
+    // exactly at the start is not earlier than it
+    expect(await reconcileDraftSend("anni", "d1", "t1", sentAt("2026-11-11T19:27:00Z"), Date.parse("2026-11-11T19:27:00Z"))).toEqual({ state: "sent", messageId: "m7" });
+  });
+  it("a SENT message even ONE millisecond older than the attempt was sent outside JobSync -> external, never counted as ours (no slack)", async () => {
+    expect(await reconcileDraftSend("lukky", "d1", "t1", sentAt("2026-11-11T09:10:22Z"), Date.parse("2026-11-11T19:27:10Z"))).toMatchObject({ state: "external" });
+    const start = Date.parse("2026-11-11T19:27:10Z");
+    const justBefore = route({ "/drafts/d1": json(200, { id: "d1", message: { id: "m7", labelIds: ["SENT"], internalDate: String(start - 1) } }) });
+    expect((await reconcileDraftSend("lukky", "d1", "t1", justBefore, start)).state).toBe("external");
+  });
+  it("a SENT message with NO attempt start, or with no timestamp, is attributed to nobody -> unknown (a pre-existing SENT message can never become a JobSync send)", async () => {
+    expect(await reconcileDraftSend("anni", "d1", "t1", sentAt("2026-11-11T19:27:00Z"))).toMatchObject({ state: "unknown", reason: expect.stringMatching(/cannot be shown to come from this attempt/) });
+    const noTime = route({ "/drafts/d1": json(200, { id: "d1", message: { id: "m7", labelIds: ["SENT"] } }) });
+    expect((await reconcileDraftSend("anni", "d1", "t1", noTime, Date.parse("2026-11-11T19:26:00Z"))).state).toBe("unknown");
+  });
+  it("draft id gone, thread holds an OLD sent message and this attempt's newer one -> the newer one is the attempt's (the old one never is)", async () => {
+    state.scopes = [...state.scopes, METADATA];
+    const t = (a: string, b: string) => route({ "/drafts/d1": json(404, {}), "/threads/t1": json(200, { messages: [{ id: "old", labelIds: ["SENT"], internalDate: String(Date.parse(a)) }, { id: "new", labelIds: ["SENT"], internalDate: String(Date.parse(b)) }] }) });
+    const since = Date.parse("2026-11-11T19:27:10Z");
+    expect(await reconcileDraftSend("anni", "d1", "t1", t("2026-11-09T10:00:00Z", "2026-11-11T19:27:12Z"), since)).toEqual({ state: "sent", messageId: "new" });
+    // only the old one exists -> external, not ours
+    expect((await reconcileDraftSend("anni", "d1", "t1", t("2026-11-09T10:00:00Z", "2026-11-09T11:00:00Z"), since)).state).toBe("external");
+  });
+  it("the id resolves but the message is neither DRAFT nor SENT -> unknown", async () => {
+    expect((await reconcileDraftSend("anni", "d1", "t1", route({ "/drafts/d1": json(200, { id: "d1", message: { id: "m1", labelIds: ["TRASH"] } }) }))).state).toBe("unknown");
   });
   it("draft gone + thread has a SENT message (metadata permission) -> sent, with the message id", async () => {
     state.scopes = [...state.scopes, METADATA];
     const f = route({ "/drafts/d1": json(404, {}), "/threads/t1": json(200, { messages: [{ id: "m9", labelIds: ["SENT"] }] }) });
-    expect(await reconcileDraftSend("anni", "d1", "t1", f)).toEqual({ state: "sent", messageId: "m9" });
+    expect(await reconcileDraftSend("anni", "d1", "t1", f)).toMatchObject({ state: "unknown" }); // no attempt start / no message time -> cannot be attributed
+    const timed = route({ "/drafts/d1": json(404, {}), "/threads/t1": json(200, { messages: [{ id: "m9", labelIds: ["SENT"], internalDate: String(Date.parse("2026-11-11T19:27:30Z")) }] }) });
+    expect(await reconcileDraftSend("anni", "d1", "t1", timed, Date.parse("2026-11-11T19:27:10Z"))).toEqual({ state: "sent", messageId: "m9" });
   });
   it("draft gone + thread shows no sent message -> unknown (deleted?), never 'not sent'", async () => {
     state.scopes = [...state.scopes, METADATA];
@@ -154,5 +214,48 @@ describe("reconcileDraftSend: never guesses", () => {
     expect((await reconcileDraftSend("anni", "d1", "t1", route({ "/drafts/d1": "throw" }))).state).toBe("unknown");
     state.access = "reauth_required";
     expect((await reconcileDraftSend("anni", "d1", "t1", route({}))).state).toBe("unknown");
+  });
+});
+
+describe("inspectDraftFor: what Gmail itself says after 'Message not a draft' (read-only)", () => {
+  const route = (map: Record<string, Response | "throw">) =>
+    vi.fn(async (url: string | URL | Request) => {
+      const key = Object.keys(map).find((k) => String(url).includes(k));
+      const v = key ? map[key] : json(500, {});
+      if (v === "throw") throw new Error("net");
+      return v.clone();
+    }) as unknown as typeof fetch;
+  const live = (labelIds?: string[]) => route({ "/drafts/d1": json(200, { id: "d1", message: { id: "m5", ...(labelIds ? { labelIds } : {}) } }) });
+
+  it("a message labelled SENT is sent outside JobSync (this system's request sent nothing)", async () => {
+    expect(await inspectDraftFor("lukky", "d1", "t1", live(["SENT"]))).toEqual({ state: "sent_outside", messageId: "m5" });
+  });
+  it("a message still labelled DRAFT is a pending draft", async () => {
+    expect(await inspectDraftFor("lukky", "d1", "t1", live(["DRAFT"]))).toEqual({ state: "pending_draft" });
+  });
+  it("no labels, or labels that prove neither -> unknown (never assumed sent, never assumed deleted)", async () => {
+    expect((await inspectDraftFor("lukky", "d1", "t1", live())).state).toBe("unknown");
+    expect((await inspectDraftFor("lukky", "d1", "t1", live(["TRASH"]))).state).toBe("unknown");
+  });
+  it("draft id gone: the thread's SENT message proves it (needs the metadata permission); otherwise unknown", async () => {
+    state.scopes = [...state.scopes, METADATA];
+    expect(await inspectDraftFor("lukky", "d1", "t1", route({ "/drafts/d1": json(404, {}), "/threads/t1": json(200, { messages: [{ id: "m9", labelIds: ["SENT"] }] }) }))).toEqual({ state: "sent_outside", messageId: "m9" });
+    expect((await inspectDraftFor("lukky", "d1", "t1", route({ "/drafts/d1": json(404, {}), "/threads/t1": json(200, { messages: [{ id: "m1", labelIds: ["DRAFT"] }] }) }))).state).toBe("unknown");
+    state.scopes = ["https://www.googleapis.com/auth/gmail.compose"];
+    expect(await inspectDraftFor("lukky", "d1", "t1", route({ "/drafts/d1": json(404, {}) }))).toMatchObject({ state: "unknown", reason: expect.stringMatching(/metadata permission/) });
+  });
+  it("Gmail unavailable, rate-limited, erroring or unauthorised -> unknown, never a guess", async () => {
+    expect((await inspectDraftFor("lukky", "d1", "t1", route({ "/drafts/d1": "throw" }))).state).toBe("unknown");
+    expect((await inspectDraftFor("lukky", "d1", "t1", route({ "/drafts/d1": json(429, {}) }))).state).toBe("unknown");
+    expect((await inspectDraftFor("lukky", "d1", "t1", route({ "/drafts/d1": json(503, {}) }))).state).toBe("unknown");
+    state.access = "reauth_required";
+    expect((await inspectDraftFor("lukky", "d1", "t1", live(["SENT"]))).state).toBe("unknown");
+  });
+  it("only ever reads: no POST, no send", async () => {
+    const calls: string[] = [];
+    const f = vi.fn(async (url: string | URL | Request, init?: RequestInit) => { calls.push(`${init?.method ?? "GET"} ${String(url)}`); return json(200, { id: "d1", message: { id: "m5", labelIds: ["SENT"] } }); }) as unknown as typeof fetch;
+    await inspectDraftFor("lukky", "d1", "t1", f);
+    expect(calls.every((c) => c.startsWith("GET "))).toBe(true);
+    expect(calls.some((c) => /\/send/.test(c))).toBe(false);
   });
 });

@@ -108,7 +108,12 @@ export interface TrackingRecord {
 /** disabled = sending off; pending = eligible, waiting its turn; blocked = a check failed (see SendBlockReason); review = a person must look; sent = Gmail confirmed. */
 export type SendStatus = "disabled" | "pending" | "blocked" | "review" | "claimed" | "sent" | "uncertain" | "failed";
 
-export type SendLedgerStatus = "claimed" | "sending" | "sent" | "uncertain" | "failed_transient" | "failed_permanent" | "needs_review" | "superseded" | "released";
+/**
+ * "sent_outside": Gmail proved this member's message to this recipient was ALREADY SENT outside JobSync (the draft's message is labelled SENT, or Gmail
+ * refused the send as "Message not a draft" and the message is SENT). Nothing was sent by this system, so it is never counted as an automated send; it only
+ * stops the recipient being attempted again. Earlier rows are never rewritten into this status.
+ */
+export type SendLedgerStatus = "claimed" | "sending" | "sent" | "sent_outside" | "uncertain" | "failed_transient" | "failed_permanent" | "needs_review" | "superseded" | "released";
 
 export interface SendRecord {
   row: number;
