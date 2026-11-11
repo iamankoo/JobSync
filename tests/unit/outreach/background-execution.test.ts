@@ -1,70 +1,83 @@
 /**
- * The cron endpoint must answer within seconds (the scheduler gives up after 30 s) while the cycle keeps running as platform-supported
- * background work; interrupted or overlapping runs must stay safe. No Google, Gmail or network calls here.
+ * The cron endpoint must answer within seconds (the scheduler gives up after 30 s) and hand the cycle to the Netlify Background Function;
+ * interrupted or overlapping cycles must stay safe. No Google, Gmail or network calls here (the hand-off `fetch` is stubbed).
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-const hoisted = vi.hoisted(() => ({ afterCallbacks: [] as Array<() => unknown>, runInBackground: vi.fn() }));
-vi.mock("next/server", () => ({ after: (cb: () => unknown) => { hoisted.afterCallbacks.push(cb); } }));
-vi.mock("@/lib/outreach/background", async (orig) => ({ ...(await orig<typeof import("@/lib/outreach/background")>()), runOutreachInBackground: hoisted.runInBackground }));
-
-import { GET, maxDuration } from "@/app/api/cron/outreach/route";
+import { GET } from "@/app/api/cron/outreach/route";
 import { setSheetsRetryDeadline, sheetsRateLimitHits, resetSheetsRateLimitHits, withRetry } from "@/lib/google-sheets/client";
 import { SheetsError } from "@/lib/google-sheets/errors";
-import { HARD_STOP_MS, ROUTE_MAX_DURATION_S } from "@/lib/outreach/background";
+import { HARD_STOP_MS, ROUTE_MAX_DURATION_S, runOutreachInBackground as realRun } from "@/lib/outreach/background";
 import { loadOutreachConfig } from "@/lib/outreach/config";
 import { DRAFT_YIELD_AFTER_RATE_LIMITS, OUTREACH_LOCK_TTL_MS, runOutreachCycle, type CycleDeps } from "@/lib/outreach/run";
 import { manyContacts, masterGrid, newOutreachSpreadsheet } from "../../helpers/outreach";
 
-const realRun = (await vi.importActual<typeof import("@/lib/outreach/background")>("@/lib/outreach/background")).runOutreachInBackground;
-
 const SECRET = "test-secret-value";
 const req = (auth?: string) => new Request("https://x.test/api/cron/outreach", { headers: auth ? { authorization: auth } : {} });
 const env = (o: Record<string, string | undefined>) => { for (const [k, v] of Object.entries(o)) { if (v === undefined) delete process.env[k]; else process.env[k] = v; } };
+const handOff = vi.fn();
 
 beforeEach(() => {
-  hoisted.afterCallbacks.length = 0;
-  hoisted.runInBackground.mockReset();
-  env({ OUTREACH_CRON_SECRET: SECRET, OUTREACH_ENABLED: "true", OUTREACH_SPREADSHEET_ID: "outreach-test" });
+  handOff.mockReset();
+  vi.stubGlobal("fetch", handOff);
+  env({ OUTREACH_CRON_SECRET: SECRET, OUTREACH_ENABLED: "true", OUTREACH_SPREADSHEET_ID: "outreach-test", OUTREACH_BACKGROUND_URL: undefined });
 });
-afterEach(() => { env({ OUTREACH_CRON_SECRET: undefined, OUTREACH_ENABLED: undefined, OUTREACH_SPREADSHEET_ID: undefined }); setSheetsRetryDeadline(null); });
+afterEach(() => { vi.unstubAllGlobals(); env({ OUTREACH_CRON_SECRET: undefined, OUTREACH_ENABLED: undefined, OUTREACH_SPREADSHEET_ID: undefined }); setSheetsRetryDeadline(null); });
 
-describe("the HTTP endpoint answers immediately", () => {
-  it("returns 202 well inside 5 seconds while the slow cycle has not even started; the work is handed to after()", async () => {
-    let finishCycle: () => void = () => undefined;
-    hoisted.runInBackground.mockImplementation(() => new Promise<void>((resolve) => { finishCycle = resolve; })); // a cycle that takes "forever"
+describe("the HTTP endpoint authenticates and hands over to the background function", () => {
+  it("returns 202 within a second and forwards ONE authenticated POST to the background function; no cycle runs in the request", async () => {
+    handOff.mockResolvedValue(new Response(null, { status: 202 })); // what a Netlify background function answers
     const t0 = Date.now();
     const res = await GET(req(`Bearer ${SECRET}`));
     expect(Date.now() - t0).toBeLessThan(1000);
     expect(res.status).toBe(202);
-    expect(await res.json()).toEqual({ data: { accepted: true } });
-    expect(hoisted.runInBackground).not.toHaveBeenCalled(); // nothing ran inside the request
-    expect(hoisted.afterCallbacks).toHaveLength(1);
-    const pending = hoisted.afterCallbacks[0]() as Promise<void>; // the platform runs this after the response, keeping the invocation alive
-    expect(hoisted.runInBackground).toHaveBeenCalledTimes(1);
-    finishCycle();
-    await pending;
+    expect(await res.json()).toEqual({ data: { accepted: true, dispatched: true } });
+    expect(handOff).toHaveBeenCalledTimes(1);
+    const [url, init] = handOff.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe("https://x.test/.netlify/functions/outreach-background");
+    expect(init.method).toBe("POST");
+    expect((init.headers as Record<string, string>).authorization).toBe(`Bearer ${SECRET}`);
   });
 
-  it("the route's segment config is a literal number (Next.js rejects imported constants in the production build)", async () => {
+  it("does not use Next.js after() and no longer exports a route duration: the long work is not inside this route at all", async () => {
     const { readFileSync } = await import("node:fs");
-    const src = readFileSync("src/app/api/cron/outreach/route.ts", "utf8");
-    expect(src).toMatch(new RegExp(`export const maxDuration = ${ROUTE_MAX_DURATION_S};`));
+    const src = readFileSync("src/app/api/cron/outreach/route.ts", "utf8").replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, ""); // code only, not comments
+    expect(src).not.toMatch(/\bafter\b\s*\(/);
+    expect(src).not.toMatch(/from "next\/server"/);
+    expect(src).not.toMatch(/runOutreachInBackground|runOutreachCycle/);
+    expect(src).not.toMatch(/maxDuration/);
   });
 
-  it("the route allows the background work to live for the documented limit", () => {
-    expect(maxDuration).toBe(ROUTE_MAX_DURATION_S);
-    expect(HARD_STOP_MS).toBeLessThan(ROUTE_MAX_DURATION_S * 1000);
+  it("an explicit OUTREACH_BACKGROUND_URL overrides the derived address", async () => {
+    handOff.mockResolvedValue(new Response(null, { status: 202 }));
+    env({ OUTREACH_BACKGROUND_URL: "https://other.test/.netlify/functions/outreach-background" });
+    await GET(req(`Bearer ${SECRET}`));
+    expect(handOff.mock.calls[0][0]).toBe("https://other.test/.netlify/functions/outreach-background");
   });
 
-  it("starts no work for a missing/wrong secret, an unset secret, or when outreach is switched off", async () => {
+  it("answers 502 (and tells the scheduler) when the background function cannot be reached or refuses; the secret is never echoed", async () => {
+    handOff.mockRejectedValueOnce(new Error("network down"));
+    const down = await GET(req(`Bearer ${SECRET}`));
+    expect(down.status).toBe(502);
+    handOff.mockResolvedValueOnce(new Response(null, { status: 404 }));
+    const missing = await GET(req(`Bearer ${SECRET}`));
+    expect(missing.status).toBe(502);
+    expect(JSON.stringify(await missing.json())).not.toContain(SECRET);
+  });
+
+  it("starts nothing for a missing/wrong secret, an unset secret, or when outreach is switched off", async () => {
     expect((await GET(req())).status).toBe(401);
     expect((await GET(req("Bearer nope"))).status).toBe(401);
     env({ OUTREACH_CRON_SECRET: undefined });
     expect((await GET(req(`Bearer ${SECRET}`))).status).toBe(503);
     env({ OUTREACH_CRON_SECRET: SECRET, OUTREACH_ENABLED: "false" });
     expect((await GET(req(`Bearer ${SECRET}`))).status).toBe(503);
-    expect(hoisted.afterCallbacks).toHaveLength(0);
+    expect(handOff).not.toHaveBeenCalled();
+  });
+
+  it("the cycle's own time budget still fits inside its lock TTL (a killed cycle frees its lock by itself)", () => {
+    expect(HARD_STOP_MS).toBeLessThan(ROUTE_MAX_DURATION_S * 1000);
+    expect(OUTREACH_LOCK_TTL_MS).toBeGreaterThan(HARD_STOP_MS);
   });
 });
 

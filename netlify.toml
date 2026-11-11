@@ -1,8 +1,17 @@
 # Netlify deployment. The Next.js app is built by Netlify's built-in OpenNext adapter (no plugin entry needed).
-# The outreach / Network Finder cycles are NOT Netlify scheduled functions (those stop at 30 s; the cycle needs up to 55 s).
-# They are triggered by cron-job.org calling GET /api/cron/* with a Bearer secret, exactly as before.
+#
+# The outreach pipeline runs in a Netlify BACKGROUND FUNCTION (15-minute limit, source: netlify/background-src/outreach-background.ts, bundled by
+# scripts/build-background.mjs into netlify/functions/outreach-background.mjs). Ordinary functions and Netlify scheduled functions stop at about
+# 30 s, but one outreach cycle needs up to 55 s. cron-job.org keeps calling GET /api/cron/outreach (Bearer secret); that route only
+# authenticates and hands over to the background function.
 [build]
-  command = "npm run build"
+  command = "npm run build:netlify"
 
 [build.environment]
   NODE_VERSION = "24"
+
+[functions]
+  directory = "netlify/functions"
+
+[functions."outreach-background"]
+  background = true

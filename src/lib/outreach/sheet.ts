@@ -264,37 +264,66 @@ export class OutreachSheet {
     return out;
   }
 
-  private lockId = "";
+  /** Claim ids this instance holds, per lock key ("run-lock" = one cycle at a time; "bg-runner" = one background runner at a time). */
+  private lockIds = new Map<string, string>();
 
   /**
-   * One outreach worker at a time, safe against simultaneous callers. Sheets has no transactions, so this uses ordered appends (like the send
-   * ledger): if no live lock exists the caller appends a claim row `run-lock | <expiry>:<id>`, re-reads the tab, and the FIRST live claim wins; a
+   * One worker per lock KEY at a time, safe against simultaneous callers. Sheets has no transactions, so this uses ordered appends (like the send
+   * ledger): if no live lock exists the caller appends a claim row `<key> | <expiry>:<id>`, re-reads the tab, and the FIRST live claim wins; a
    * loser writes nothing more and stands down. The lock expires by itself after `ttlMs`, so a crashed or killed run never blocks later ones.
-   * The winner removes expired claim rows so the tab does not grow.
+   * The winner removes expired claim rows so the tab does not grow. The default key is the per-cycle "run-lock" (behaviour unchanged).
    */
-  async acquireLock(now: number, ttlMs: number): Promise<boolean> {
+  async acquireLock(now: number, ttlMs: number, key = RUN_LOCK_KEY): Promise<boolean> {
     const parse = (r: string[]) => ({ key: (r[0] ?? "").trim(), expiry: Number(String(r[1] ?? "").split(":")[0]) || 0, id: String(r[1] ?? "").split(":")[1] ?? "" });
-    const live = (grid: string[][]) => grid.map((r, i) => ({ i, ...parse(r) })).filter((r) => r.i > 0 && r.key === "run-lock" && r.expiry > now);
+    const live = (grid: string[][]) => grid.map((r, i) => ({ i, ...parse(r) })).filter((r) => r.i > 0 && r.key === key && r.expiry > now);
     if (live(await this.client.getValues(`${q(STATE_TAB)}!A:C`)).length) return false;
     const id = randomUUID();
-    await this.client.appendValues(`${q(STATE_TAB)}!A:C`, [["run-lock", `${now + ttlMs}:${id}`, new Date(now).toISOString()]]);
+    await this.client.appendValues(`${q(STATE_TAB)}!A:C`, [[key, `${now + ttlMs}:${id}`, new Date(now).toISOString()]]);
     const after = await this.client.getValues(`${q(STATE_TAB)}!A:C`);
     if (live(after)[0]?.id !== id) return false; // an earlier claim won
-    this.lockId = id;
+    this.lockIds.set(key, id);
     // housekeeping (only the holder deletes, so row numbers cannot shift under another caller's claim): expired claims and the legacy single row
-    const stale = after.map((r, i) => ({ i, ...parse(r) })).filter((r) => r.i > 0 && r.key === "run-lock" && r.expiry <= now).map((r) => r.i + 1);
+    const stale = after.map((r, i) => ({ i, ...parse(r) })).filter((r) => r.i > 0 && r.key === key && r.expiry <= now).map((r) => r.i + 1);
     if (stale.length) await this.client.deleteRows(STATE_TAB, stale).catch(() => undefined);
     return true;
   }
 
-  async releaseLock(now: number): Promise<void> {
-    if (!this.lockId) return;
+  /**
+   * Extends a lock this instance holds (a heartbeat, for long-running holders). Returns false when the claim is gone, has expired, or is no
+   * longer the first live claim of its key, i.e. somebody else owns the lock now and the caller must stop. A holder that stops renewing simply
+   * lets the lock expire, which is how a killed run frees it.
+   */
+  async renewLock(now: number, ttlMs: number, key = RUN_LOCK_KEY): Promise<boolean> {
+    const id = this.lockIds.get(key);
+    if (!id) return false;
     const grid = await this.client.getValues(`${q(STATE_TAB)}!A:C`);
-    const at = grid.findIndex((r, i) => i > 0 && (r[0] ?? "").trim() === "run-lock" && String(r[1] ?? "").endsWith(`:${this.lockId}`));
-    if (at >= 0) await this.client.updateValues(`${q(STATE_TAB)}!A${at + 1}:C${at + 1}`, [["run-lock", `0:${this.lockId}`, new Date(now).toISOString()]]);
-    this.lockId = "";
+    const rows = grid.map((r, i) => ({ i, k: (r[0] ?? "").trim(), expiry: Number(String(r[1] ?? "").split(":")[0]) || 0, id: String(r[1] ?? "").split(":")[1] ?? "" })).filter((r) => r.i > 0 && r.k === key);
+    const mine = rows.find((r) => r.id === id);
+    if (!mine || mine.expiry <= now) {
+      this.lockIds.delete(key); // expired: another claimant may already hold it, so this instance no longer owns it
+      return false;
+    }
+    if (rows.find((r) => r.expiry > now)?.id !== id) {
+      this.lockIds.delete(key);
+      return false;
+    }
+    await this.client.updateValues(`${q(STATE_TAB)}!A${mine.i + 1}:C${mine.i + 1}`, [[key, `${now + ttlMs}:${id}`, new Date(now).toISOString()]]);
+    return true;
+  }
+
+  async releaseLock(now: number, key = RUN_LOCK_KEY): Promise<void> {
+    const id = this.lockIds.get(key);
+    if (!id) return;
+    const grid = await this.client.getValues(`${q(STATE_TAB)}!A:C`);
+    const at = grid.findIndex((r, i) => i > 0 && (r[0] ?? "").trim() === key && String(r[1] ?? "").endsWith(`:${id}`));
+    if (at >= 0) await this.client.updateValues(`${q(STATE_TAB)}!A${at + 1}:C${at + 1}`, [[key, `0:${id}`, new Date(now).toISOString()]]);
+    this.lockIds.delete(key);
   }
 }
+
+/** The per-cycle lock (65 s TTL) and the lock of the single background runner that executes cycles one after another. */
+export const RUN_LOCK_KEY = "run-lock";
+export const RUNNER_LOCK_KEY = "bg-runner";
 
 export const memberOf = (id: string): id is MemberId => (MEMBER_IDS as readonly string[]).includes(id);
 
