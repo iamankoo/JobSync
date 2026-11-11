@@ -29,6 +29,7 @@ import { MAX_SEND_ATTEMPTS, RATE_LIMIT_REASON, claimSend, countedFailures, norma
 import type { OutreachSheet } from "./sheet";
 import { draftKeyFor } from "./sync";
 import { hasReviewFlag, normalizeParkReason, parkedReasonOf } from "@/lib/gmail/draft-flags";
+import { MEMBER_RESUME_FILES } from "@/config/resume-map";
 import type { SendRecord, SendStatus, TrackingRecord } from "./types";
 
 /** The fourteen pre-send validations, in the order they are reported (evaluation order is cheap-first, see `evaluate`). */
@@ -66,6 +67,11 @@ export interface SendDeps {
   gate: boolean;
   sheet: Pick<OutreachSheet, "readTracking" | "updateTracking" | "readSendLedger" | "appendSendRecord" | "updateSendRecord" | "readExclusions" | "readMaster"> & Partial<Pick<OutreachSheet, "readPriority">>;
   gmail: GmailPort;
+  /**
+   * The owner's explicit instruction (config sendAllDrafts): send every JobSync draft that carries the member's own resume even when it fails the content checks. Only the
+   * content checks are relaxed (word limit, wording, review/parked flags, resume size/role choice); recipient, other-member, label, opt-out, duplicate and identity checks stay.
+   */
+  relaxContentChecks?: boolean;
   /** Optional cheap pre-filter: skips ledger drafts that are no longer in Gmail before any per-draft Gmail call or claim. Absent = every draft is read. */
   presence?: DraftPresencePort;
   resumes: ResumeLookup;
@@ -182,7 +188,7 @@ async function evaluate(deps: SendDeps, rec: TrackingRecord, member: MemberId, e
   if (draft.status !== "created") return { kind: "block", check: "email_generated", reason: `the member's draft is "${draft.status}"` };
   if (!draft.gmailDraftId) return { kind: "wait", check: "email_generated", reason: "the member's draft has no Gmail id yet" };
   const flagged = draft.detail.split("; ").filter((p) => p.startsWith("review:")).map((p) => p.slice(7).trim());
-  if (flagged.length) return { kind: "review", check: /resume|attachment/i.test(flagged.join(" ")) ? "resume" : "content_supported", reason: flagged.join(" | ") };
+  if (flagged.length && !deps.relaxContentChecks) return { kind: "review", check: /resume|attachment/i.test(flagged.join(" ")) ? "resume" : "content_supported", reason: flagged.join(" | ") };
 
   // A transient failure is retried only after its back-off, and only a limited number of times.
   const mine = rowsFor(env.ledger, key);
@@ -219,6 +225,19 @@ async function evaluate(deps: SendDeps, rec: TrackingRecord, member: MemberId, e
 
   const role = (conn.applyRole || rec.targetRole || "").trim();
   const check = checkDraft(read.draft, { member, recipientEmail: email.email, personName: conn.name, companyName: conn.company ?? "", applyRole: role });
+  if (deps.relaxContentChecks) {
+    // Only identity-level failures survive: the wrong recipient, or text about another member. Word limit, wording, placeholders etc. are the owner's call.
+    const hard = check.failures.filter((x) => x.check === "recipient" || /another member/.test(x.reason));
+    if (hard.length) return { kind: "review", check: hard[0].check === "recipient" ? "valid_email" : "content_supported", reason: hard.map((x) => x.reason).join(" | ") };
+    // The resume must be in the draft and be THIS member's own (by file name); the stale-version size check and the role-based choice are not applied.
+    const own = new Set(Object.values(MEMBER_RESUME_FILES[member] ?? {}).map((n) => (n as string).toLowerCase()));
+    const foreign = new Set(MEMBER_IDS.filter((m) => m !== member).flatMap((m) => Object.values(MEMBER_RESUME_FILES[m] ?? {}).map((n) => (n as string).toLowerCase())).filter((n) => !own.has(n)));
+    const attached = read.draft.attachments;
+    if (attached.some((a) => foreign.has(a.filename.toLowerCase()))) return { kind: "review", check: "resume", reason: "the draft carries another member's resume" };
+    const mine = attached.find((a) => own.has(a.filename.toLowerCase()));
+    if (!mine) return { kind: "review", check: "resume", reason: "the draft has none of this member's resumes attached" };
+    return { kind: "send", ctx: { member, connection: conn, draft, readback: read.draft, address, role, resume: { fileName: mine.filename, bytes: mine.size, sha256: "draft-attachment" }, words: check.words } };
+  }
   if (!check.ok) {
     const f = check.failures[0];
     return { kind: "review", check: f.check === "word_limit" ? "word_limit" : f.check === "recipient" ? "valid_email" : "content_supported", reason: check.failures.map((x) => x.reason).join(" | ") };

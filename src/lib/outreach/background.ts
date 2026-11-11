@@ -55,7 +55,7 @@ export async function runOutreachInBackground(d: BackgroundDeps = {}): Promise<B
   setSheetsRetryDeadline(started + RETRY_DEADLINE_MS);
   resetSheetsRateLimitHits();
   try {
-    const cfg = { ...loadOutreachConfig(), ...(d.noSendFirst ? { sendFirstAt: 0 } : {}) };
+    const cfg = { ...loadOutreachConfig(), ...(d.noSendFirst ? { sendFirstAt: 0, sendFirstSuspended: true } : {}) };
     if (!cfg.enabled) return { status: "disabled" };
     const deps = (d.build ?? ((budget: number, c: OutreachConfig) => buildRealCycleDeps(c, process.env, budget)))(CYCLE_BUDGET_MS, cfg);
     const cycle = (d.run ?? runOutreachCycle)(deps);

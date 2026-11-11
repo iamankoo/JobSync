@@ -234,7 +234,7 @@ describe("the 'contacts still waiting' counter includes priority contacts that a
     const m = parseMasterRows(masterGrid(master));
     await setup(master, [fresh("only1@fresh1.example.com"), fresh("only2@fresh2.example.com"), idOnly(m.contacts[4].contactId)]);
     const result = await runOutreachCycle({
-      config: { enabled: true, spreadsheetId: "x", dailyLimit: 200, perRun: 1, draftsPerRun: 2, masterTab: "Master Contacts", ownerOverride: null, sendAllowlist: [], manualSince: "", sendFirstAt: 0 },
+      config: { enabled: true, spreadsheetId: "x", dailyLimit: 200, perRun: 1, draftsPerRun: 2, masterTab: "Master Contacts", ownerOverride: null, sendAllowlist: [], manualSince: "", sendFirstAt: 0, sendAllDrafts: false },
       sheet: outreach.sheet, connections: realConnectionsPort, ledger: async () => new Map(), connected: async () => [], gate: false, now: () => clock, timezone: "Asia/Kolkata",
     });
     expect(result.errors).toEqual([]);
