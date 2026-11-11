@@ -98,16 +98,16 @@ describe("D. Gmail answers 'Message not a draft' to drafts.send (the id looked f
     const f = buildSendFixture(people(1));
     await f.seed();
     // Anni sends normally; Lukky's send is refused as "not a draft" (race: it was sent between the readback and the send); Rishii sends normally
-    const original = f.gmail.send.bind(f.gmail);
-    f.gmail.send = async (m, id) => (m === "lukky" ? (f.gmail.calls.push(`send:${m}:${id}`), { status: "not_a_draft" as const }) : original(m, id));
+    f.gmail.refuseAsNotADraftFor.add("lukky");
     f.gmail.inspectScript = [{ state: "sent_outside", messageId: "msg-by-hand" }];
     const r = await runSendStep(f.deps());
     expect(r.sent).toBe(2); // Anni + Rishii
     expect(r.externallySent).toBe(1);
     const row = f.ledger().find((x) => x[MEMBER] === "lukky")!;
     expect(row[STATUS]).toBe("sent_outside");
-    expect(row[MSGID]).toBe("msg-by-hand");
+    expect(row[MSGID]).toBe(""); // never stored where a reader that looks only at the message id could mistake it for a send
     expect(row[REASON]).toMatch(OUTSIDE);
+    expect(row[REASON]).toContain("msg-by-hand");
     expect(f.ledger().filter((x) => x[STATUS] === "failed_permanent")).toHaveLength(0); // NOT the old generic-400 handling
     expect(f.calls.markSent.some((c) => c.startsWith("lukky:"))).toBe(false);
     expect(f.calls.parked.some((p) => p.startsWith("lukky:") && OUTSIDE.test(p))).toBe(true);
@@ -126,8 +126,7 @@ describe("D. Gmail answers 'Message not a draft' to drafts.send (the id looked f
     it(`when ${name}: left for review (needs_review), never assumed sent or deleted, never retried`, async () => {
       const f = buildSendFixture(people(1));
       await f.seed();
-      const original = f.gmail.send.bind(f.gmail);
-      f.gmail.send = async (m, id) => (m === "lukky" ? (f.gmail.calls.push(`send:${m}:${id}`), { status: "not_a_draft" as const }) : original(m, id));
+      f.gmail.refuseAsNotADraftFor.add("lukky");
       f.gmail.inspectScript = [answer as never];
       const r = await runSendStep(f.deps());
       expect(r.sent).toBe(2);
@@ -286,8 +285,7 @@ describe("I. concurrent runs and duplicate protection", () => {
   it("a refused 'not a draft' attempt that races with another worker is still recorded once", async () => {
     const f = buildSendFixture(people(2));
     await f.seed();
-    const original = f.gmail.send.bind(f.gmail);
-    f.gmail.send = async (m, id) => (m === "lukky" ? (f.gmail.calls.push(`send:${m}:${id}`), { status: "not_a_draft" as const }) : original(m, id));
+    f.gmail.refuseAsNotADraftFor.add("lukky");
     f.gmail.inspectScript = Array.from({ length: 8 }, () => ({ state: "sent_outside" as const, messageId: "m-x" }));
     await Promise.all([runSendStep(f.deps()), runSendStep(f.deps()), runSendStep(f.deps())]);
     const lukky = f.ledger().filter((x) => x[MEMBER] === "lukky" && x[STATUS] !== "superseded"); // a worker that loses the claim race leaves an inert "superseded" row (existing behaviour)
@@ -322,5 +320,207 @@ describe("J. history is preserved and the sent_outside status blocks claims", ()
     await f.sheet.updateSendRecord({ ...first.record, status: "sent_outside", gmailMessageId: "m-x", reason: "already sent outside JobSync", updatedAt: NOW.toISOString() } as SendRecord);
     const second = await claimSend(f.sheet, input, "2026-11-06", new Date(NOW.getTime() + 3600_000));
     expect(second).toMatchObject({ won: false, reason: "sent_outside" });
+  });
+});
+
+// =====================================================================================================================================================
+// Review pass: sent_outside compatibility, the final pre-send check, attempt-start attribution, parking and production compatibility.
+// =====================================================================================================================================================
+import { attemptStartOf } from "@/lib/outreach/send-workflow";
+import { confirmedSendCount } from "@/lib/outreach/announce";
+import { computeCounters } from "@/lib/outreach/sync";
+import { parseSendRecord, serializeSendRecord } from "@/lib/outreach/sheet";
+
+describe("K. the final label check happens right before drafts.send, whatever the cached listing said", () => {
+  it("listing says PRESENT and the readback says DRAFT, but the message was sent a moment later: the final check stops the send (no drafts.send, no 'sending' state)", async () => {
+    const f = buildSendFixture(people(2));
+    await f.seed();
+    // Lukky sends contact 0's draft by hand right after JobSync has read it back (the world changes between the readback and the send)
+    f.gmail.onRead = (m, id) => { if (m === "lukky" && id === draftOf(0, "lukky")) f.gmail.markSentOutside(id); };
+    const r = await runSendStep(f.deps({ presence: { has: async () => "present" } }));
+    expect(f.gmail.sendCalls()).not.toContain(`send:lukky:${draftOf(0, "lukky")}`);
+    const row = f.ledger().find((x) => x[DRAFT] === draftOf(0, "lukky"))!;
+    expect(row[STATUS]).toBe("sent_outside");
+    expect(row[MSGID]).toBe("");
+    expect(row[REASON]).toMatch(OUTSIDE);
+    expect(r.externallySent).toBe(1);
+    expect(String(row[21])).not.toMatch(/\d{2}:\d{2}:\d{2}\.\d{3}Z sending(;|$)/); // its history never contains a "sending" event: the Gmail request was never made
+    expect(r.sent).toBe(5); // everything else went out: Anni 2, Rishii 2, Lukky's contact 1
+  });
+
+  it("the order for every send is: readback, then (after the claim) the final check, then drafts.send", async () => {
+    const f = buildSendFixture(people(1));
+    await f.seed();
+    await runSendStep(f.deps());
+    for (const m of ALL) {
+      const id = draftOf(0, m);
+      const calls = f.gmail.calls;
+      expect(calls.indexOf(`read:${m}:${id}`)).toBeGreaterThanOrEqual(0);
+      expect(calls.indexOf(`inspect:${m}:${id}`)).toBeGreaterThan(calls.indexOf(`read:${m}:${id}`));
+      expect(calls.indexOf(`send:${m}:${id}`)).toBeGreaterThan(calls.indexOf(`inspect:${m}:${id}`));
+    }
+  });
+
+  it("when the final check cannot reach Gmail, NOTHING is sent and the claim is released (safe to retry): never assumed to be a draft, sent or deleted", async () => {
+    const f = buildSendFixture(people(1));
+    await f.seed();
+    f.gmail.inspectDown = true;
+    const r = await runSendStep(f.deps());
+    expect(r.sent).toBe(0);
+    expect(f.gmail.sendCalls()).toHaveLength(0);
+    expect(f.ledger().every((x) => x[STATUS] === "released")).toBe(true);
+    expect(f.ledger().every((x) => /nothing was sent/.test(String(x[REASON])))).toBe(true);
+    f.gmail.inspectDown = false; // Gmail is back: the same drafts are sent, once each
+    f.clock.now = new Date(NOW.getTime() + 3 * 60_000);
+    expect((await runSendStep(f.deps())).sent).toBe(3);
+    expect(new Set(f.gmail.sendCalls()).size).toBe(3);
+  });
+});
+
+describe("L. the attempt start used to attribute a SENT message is the moment the Gmail request began", () => {
+  it("is taken after the claim, the final check and the 'sending' write, NOT at the start of the run (which is what the claim row's CreatedAt holds)", async () => {
+    const f = buildSendFixture(people(1));
+    await f.seed();
+    let advanced = false;
+    f.gmail.onInspect = () => { if (!advanced) { advanced = true; f.clock.now = new Date(NOW.getTime() + 7_000); } }; // 7 s pass between the claim and the send
+    f.gmail.sendScript = [{ status: "uncertain", reason: "timeout" }];
+    f.gmail.reconcileScript = [{ state: "unknown", reason: "Gmail answered 503" }];
+    await runSendStep(f.deps());
+    expect(f.gmail.reconcileSince[0]).toBe(NOW.getTime() + 7_000);
+    expect(f.gmail.reconcileSince[0]).not.toBe(NOW.getTime());
+    const row = f.ledger().find((x) => x[STATUS] === "uncertain")!;
+    expect(Date.parse(String(row[22]))).toBe(NOW.getTime()); // CreatedAt = run start: it must NOT be used as the attempt start
+  });
+
+  it("a later run reconciling an interrupted attempt uses the 'sending' time from the row's own history", async () => {
+    const f = buildSendFixture(people(1));
+    await f.seed();
+    f.gmail.sendScript = ["throw"]; // crash right after 'sending' was written
+    await runSendStep(f.deps());
+    f.clock.now = new Date(NOW.getTime() + 3 * 60_000);
+    f.gmail.reconcileScript = [{ state: "unknown", reason: "still unknown" }];
+    await runSendStep(f.deps());
+    expect(f.gmail.reconcileSince).toContain(NOW.getTime());
+    expect(f.gmail.reconcileSince.every((s) => s !== undefined)).toBe(true);
+  });
+
+  it("attemptStartOf reads the LAST 'sending' event of the history, survives truncation, and is undefined when there is none (then nothing can be attributed)", () => {
+    expect(attemptStartOf("2026-11-11T19:27:10.503Z claimed (attempt 1); 2026-11-11T19:27:21.768Z sending; 2026-11-11T19:27:23.200Z uncertain send result; reconciling")).toBe(Date.parse("2026-11-11T19:27:21.768Z"));
+    expect(attemptStartOf("2026-11-11T10:00:00.000Z sending; 2026-11-11T10:20:00.000Z released; 2026-11-11T11:00:00.000Z sending")).toBe(Date.parse("2026-11-11T11:00:00.000Z"));
+    expect(attemptStartOf("…ed (attempt 2); 2026-11-11T19:27:21.768Z sending")).toBe(Date.parse("2026-11-11T19:27:21.768Z"));
+    expect(attemptStartOf("2026-11-11T19:27:10.503Z claimed (attempt 1)")).toBeUndefined();
+    expect(attemptStartOf("")).toBeUndefined();
+    expect(attemptStartOf("2026-11-11T19:27:21.768Z sending now")).toBeUndefined(); // not the exact event
+  });
+});
+
+describe("M. sent_outside is never mistaken for sent, sending or a retryable failure", () => {
+  const withStatus = async (status: SendRecord["status"], extra: Partial<SendRecord> = {}) => {
+    const f = buildSendFixture(people(1));
+    await f.seed();
+    await runSendStep(f.deps());
+    const base = (await f.sheet.readSendLedger()).records.find((r) => r.member === "anni")!;
+    return { f, rec: { ...base, status, ...extra } as SendRecord };
+  };
+  it("counters, the 'N emails sent' milestone and the failure count ignore it, EVEN IF a message id were present on the row", async () => {
+    const { f, rec } = await withStatus("sent_outside", { gmailMessageId: "msg-123" });
+    const tracking = (await f.sheet.readTracking()).records;
+    const only = [rec];
+    expect(confirmedSendCount(only)).toBe(0);
+    const c = computeCounters(tracking, "2026-11-06", 0, { ledger: only });
+    expect(c.emailsSent).toBe(0);
+    expect(c.sentToday).toBe(0);
+    expect(c.failedSends).toBe(0); // not a failure either
+    expect(confirmedSendCount([{ ...rec, status: "sent" }])).toBe(1); // the same row as a real send IS counted: the status is the filter
+  });
+  it("is never a retryable failure, never in flight, and never reconciled again", async () => {
+    const { f, rec } = await withStatus("sent_outside");
+    const { countedFailures, ACTIVE, BLOCKING } = await import("@/lib/outreach/send-ledger");
+    expect(countedFailures([rec])).toBe(0);
+    expect(ACTIVE).not.toContain("sent_outside");
+    expect(BLOCKING).not.toContain("sent_outside");
+    await f.sheet.updateSendRecord({ ...rec, updatedAt: "2026-01-01T00:00:00.000Z" });
+    f.clock.now = new Date(NOW.getTime() + 24 * 3600_000);
+    const before = f.gmail.calls.filter((c) => c.startsWith("reconcile:")).length;
+    await runSendStep(f.deps());
+    expect(f.gmail.calls.filter((c) => c.startsWith("reconcile:")).length).toBe(before); // only 'sending' / 'uncertain' rows are reconciled
+  });
+  it("a contact is never marked fully sent because of it, and its Connection is not marked Messaged", async () => {
+    const f = buildSendFixture(people(2));
+    await f.seed();
+    for (let i = 0; i < 2; i++) f.gmail.markSentOutside(draftOf(i, "lukky"));
+    await runSendStep(f.deps());
+    expect(f.track().some((t) => t[21] === "sent")).toBe(false);
+    expect(f.calls.markMessaged).toHaveLength(0);
+  });
+});
+
+describe("N. parking failures and the 25-note limit", () => {
+  it("a failed Sheets write while parking changes nothing about sending: no claim, no send for the stale draft, now or on any later call", async () => {
+    const f = buildSendFixture(people(3));
+    await f.seed();
+    for (let i = 0; i < 3; i++) f.gmail.markSentOutside(draftOf(i, "lukky"));
+    const deps = f.deps();
+    deps.drafts.setParked = async () => { throw new Error("Sheets 429"); };
+    const r = await runSendStep(deps);
+    expect(r.parkedChanges ?? 0).toBe(0);
+    expect(r.sent).toBe(6);
+    for (let k = 1; k <= 3; k++) { f.clock.now = new Date(NOW.getTime() + k * 3 * 60_000); await runSendStep(deps); }
+    expect(f.gmail.sendCalls().filter((c) => c.startsWith("send:lukky"))).toHaveLength(0);
+    expect(f.ledger().filter((x) => x[MEMBER] === "lukky")).toHaveLength(0);
+  });
+
+  it("parking runs AFTER the sends, so it can never use up the time they need", async () => {
+    const f = buildSendFixture(people(12));
+    await f.seed();
+    for (let i = 0; i < 12; i++) f.gmail.markSentOutside(draftOf(i, "lukky"));
+    const events: string[] = [];
+    const orig = f.gmail.send.bind(f.gmail);
+    f.gmail.send = async (m, id) => { events.push("send"); return orig(m, id); };
+    const deps = f.deps();
+    const park = deps.drafts.setParked!;
+    deps.drafts.setParked = async (m, c, r) => { events.push("park"); await new Promise((res) => setTimeout(res, 20)); return park(m, c, r); };
+    const r = await runSendStep(deps);
+    expect(r.sent).toBe(24);
+    expect(events.lastIndexOf("send")).toBeLessThan(events.indexOf("park"));
+    expect(events.filter((e) => e === "park")).toHaveLength(12);
+  });
+
+  it("at most 25 notes per call, but every call makes progress, so the stale backlog drains completely over a few calls while valid sends are unaffected", async () => {
+    const f = buildSendFixture(people(60));
+    await f.seed();
+    for (let i = 0; i < 60; i++) f.gmail.markSentOutside(draftOf(i, "lukky"));
+    const parkedAfter: number[] = [];
+    let sent = 0;
+    for (let k = 0; k < 4; k++) {
+      f.clock.now = new Date(NOW.getTime() + k * 3 * 60_000);
+      const r = await runSendStep(f.deps());
+      sent += r.sent;
+      parkedAfter.push(f.calls.parked.length);
+    }
+    expect(parkedAfter).toEqual([25, 50, 60, 60]); // 25 per call until none are left
+    expect(sent).toBe(120); // Anni + Rishii, all sent in the first call; nothing waited behind the stale drafts
+    expect(f.gmail.sendCalls().filter((c) => c.startsWith("send:lukky"))).toHaveLength(0);
+  }, 120_000);
+});
+
+describe("O. production compatibility: older rows need no migration", () => {
+  it("every pre-existing ledger status still parses unchanged, the new one round-trips, and an unknown status is still ignored", async () => {
+    const f = buildSendFixture(people(1));
+    await f.seed();
+    await runSendStep(f.deps());
+    const base = (await f.sheet.readSendLedger()).records[0];
+    const OLD = ["claimed", "sending", "sent", "uncertain", "failed_transient", "failed_permanent", "needs_review", "superseded", "released"] as const;
+    for (const status of [...OLD, "sent_outside" as const]) {
+      const cells = serializeSendRecord({ ...base, status });
+      expect(parseSendRecord(cells, 5)?.status).toBe(status);
+    }
+    expect(parseSendRecord(serializeSendRecord({ ...base, status: "bogus" as never }), 5)).toBeNull();
+  });
+  it("the Send Ledger has the same columns: nothing about the sheet layout changed", async () => {
+    const { SEND_LEDGER_HEADERS } = await import("@/lib/outreach/headers");
+    expect(SEND_LEDGER_HEADERS).toHaveLength(24);
+    expect(SEND_LEDGER_HEADERS[3]).toBe("Status");
+    expect(SEND_LEDGER_HEADERS[14]).toBe("GmailMessageID");
   });
 });

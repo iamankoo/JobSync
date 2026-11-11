@@ -164,18 +164,30 @@ describe("reconcileDraftSend: never guesses", () => {
     expect((await reconcileDraftSend("anni", "d1", "t1", route({ "/drafts/d1": json(200, { id: "d1" }) }))).state).toBe("unknown");
     expect((await reconcileDraftSend("anni", "d1", "t1", route({ "/drafts/d1": json(200, { id: "d1", message: { id: "m1" } }) }))).state).toBe("unknown");
   });
-  it("the id resolves but the message is labelled SENT -> sent, with the message id (this is how Gmail answers for a draft that went out)", async () => {
-    const f = route({ "/drafts/d1": json(200, { id: "d1", message: { id: "m7", labelIds: ["SENT"], internalDate: String(Date.parse("2026-11-11T19:27:00Z")) } }) });
-    expect(await reconcileDraftSend("anni", "d1", "t1", f)).toEqual({ state: "sent", messageId: "m7" });
-    // sent AFTER the attempt began -> this attempt's own send
-    expect(await reconcileDraftSend("anni", "d1", "t1", f, Date.parse("2026-11-11T19:26:00Z"))).toEqual({ state: "sent", messageId: "m7" });
+  const sentAt = (iso: string) => route({ "/drafts/d1": json(200, { id: "d1", message: { id: "m7", labelIds: ["SENT"], internalDate: String(Date.parse(iso)) } }) });
+  it("the id resolves, the message is SENT, and Gmail's own time is at or after the moment the attempt's request began -> this attempt's send", async () => {
+    expect(await reconcileDraftSend("anni", "d1", "t1", sentAt("2026-11-11T19:27:00Z"), Date.parse("2026-11-11T19:26:00Z"))).toEqual({ state: "sent", messageId: "m7" });
+    // exactly at the start is not earlier than it
+    expect(await reconcileDraftSend("anni", "d1", "t1", sentAt("2026-11-11T19:27:00Z"), Date.parse("2026-11-11T19:27:00Z"))).toEqual({ state: "sent", messageId: "m7" });
   });
-  it("a SENT message older than the attempt was sent outside JobSync -> external, never counted as ours", async () => {
-    const f = route({ "/drafts/d1": json(200, { id: "d1", message: { id: "m7", labelIds: ["SENT"], internalDate: String(Date.parse("2026-11-11T09:10:22Z")) } }) });
-    expect(await reconcileDraftSend("lukky", "d1", "t1", f, Date.parse("2026-11-11T19:27:10Z"))).toMatchObject({ state: "external" });
-    // within the clock slack of the attempt it is still treated as the attempt's own
-    const near = route({ "/drafts/d1": json(200, { id: "d1", message: { id: "m7", labelIds: ["SENT"], internalDate: String(Date.parse("2026-11-11T19:27:09Z")) } }) });
-    expect((await reconcileDraftSend("lukky", "d1", "t1", near, Date.parse("2026-11-11T19:27:10Z"))).state).toBe("sent");
+  it("a SENT message even ONE millisecond older than the attempt was sent outside JobSync -> external, never counted as ours (no slack)", async () => {
+    expect(await reconcileDraftSend("lukky", "d1", "t1", sentAt("2026-11-11T09:10:22Z"), Date.parse("2026-11-11T19:27:10Z"))).toMatchObject({ state: "external" });
+    const start = Date.parse("2026-11-11T19:27:10Z");
+    const justBefore = route({ "/drafts/d1": json(200, { id: "d1", message: { id: "m7", labelIds: ["SENT"], internalDate: String(start - 1) } }) });
+    expect((await reconcileDraftSend("lukky", "d1", "t1", justBefore, start)).state).toBe("external");
+  });
+  it("a SENT message with NO attempt start, or with no timestamp, is attributed to nobody -> unknown (a pre-existing SENT message can never become a JobSync send)", async () => {
+    expect(await reconcileDraftSend("anni", "d1", "t1", sentAt("2026-11-11T19:27:00Z"))).toMatchObject({ state: "unknown", reason: expect.stringMatching(/cannot be shown to come from this attempt/) });
+    const noTime = route({ "/drafts/d1": json(200, { id: "d1", message: { id: "m7", labelIds: ["SENT"] } }) });
+    expect((await reconcileDraftSend("anni", "d1", "t1", noTime, Date.parse("2026-11-11T19:26:00Z"))).state).toBe("unknown");
+  });
+  it("draft id gone, thread holds an OLD sent message and this attempt's newer one -> the newer one is the attempt's (the old one never is)", async () => {
+    state.scopes = [...state.scopes, METADATA];
+    const t = (a: string, b: string) => route({ "/drafts/d1": json(404, {}), "/threads/t1": json(200, { messages: [{ id: "old", labelIds: ["SENT"], internalDate: String(Date.parse(a)) }, { id: "new", labelIds: ["SENT"], internalDate: String(Date.parse(b)) }] }) });
+    const since = Date.parse("2026-11-11T19:27:10Z");
+    expect(await reconcileDraftSend("anni", "d1", "t1", t("2026-11-09T10:00:00Z", "2026-11-11T19:27:12Z"), since)).toEqual({ state: "sent", messageId: "new" });
+    // only the old one exists -> external, not ours
+    expect((await reconcileDraftSend("anni", "d1", "t1", t("2026-11-09T10:00:00Z", "2026-11-09T11:00:00Z"), since)).state).toBe("external");
   });
   it("the id resolves but the message is neither DRAFT nor SENT -> unknown", async () => {
     expect((await reconcileDraftSend("anni", "d1", "t1", route({ "/drafts/d1": json(200, { id: "d1", message: { id: "m1", labelIds: ["TRASH"] } }) }))).state).toBe("unknown");
@@ -183,7 +195,9 @@ describe("reconcileDraftSend: never guesses", () => {
   it("draft gone + thread has a SENT message (metadata permission) -> sent, with the message id", async () => {
     state.scopes = [...state.scopes, METADATA];
     const f = route({ "/drafts/d1": json(404, {}), "/threads/t1": json(200, { messages: [{ id: "m9", labelIds: ["SENT"] }] }) });
-    expect(await reconcileDraftSend("anni", "d1", "t1", f)).toEqual({ state: "sent", messageId: "m9" });
+    expect(await reconcileDraftSend("anni", "d1", "t1", f)).toMatchObject({ state: "unknown" }); // no attempt start / no message time -> cannot be attributed
+    const timed = route({ "/drafts/d1": json(404, {}), "/threads/t1": json(200, { messages: [{ id: "m9", labelIds: ["SENT"], internalDate: String(Date.parse("2026-11-11T19:27:30Z")) }] }) });
+    expect(await reconcileDraftSend("anni", "d1", "t1", timed, Date.parse("2026-11-11T19:27:10Z"))).toEqual({ state: "sent", messageId: "m9" });
   });
   it("draft gone + thread shows no sent message -> unknown (deleted?), never 'not sent'", async () => {
     state.scopes = [...state.scopes, METADATA];

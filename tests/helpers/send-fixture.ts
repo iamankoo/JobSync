@@ -39,8 +39,19 @@ export class FakeGmail implements GmailPort {
   /** Scripted send outcomes, consumed in order; default = a confirmed send. */
   sendScript: (SendOutcome | { status: "no_access"; access: string } | "throw")[] = [];
   reconcileScript: Reconciliation[] = [];
-  /** Scripted answers to inspect() (used after Gmail answered "Message not a draft"); default = cannot be determined. */
+  /** Scripted answers to inspect() for a draft Gmail has just REFUSED as "Message not a draft" (see refuseAsNotADraftFor); otherwise inspect() reports the labels of the stored draft. */
   inspectScript: (DraftInspection | "throw")[] = [];
+  /** Members whose drafts.send is answered with Gmail's "Message not a draft" (the draft was sent by hand between the readback and the send). */
+  refuseAsNotADraftFor = new Set<MemberId>();
+  refusedDrafts = new Set<string>();
+  /** While true, the pre-send inspection cannot reach Gmail (answers unknown). */
+  inspectDown = false;
+  /** Called right after a draft was read back (lets a test change the world between the readback and the send). */
+  onRead?: (member: MemberId, draftId: string) => void;
+  /** Called at the start of every inspect() (lets a test advance the clock between the claim and the send). */
+  onInspect?: (member: MemberId, draftId: string) => void;
+  /** The attempt start times reconcile() was given, in order. */
+  reconcileSince: (number | undefined)[] = [];
   /** Marks a draft as already SENT outside JobSync: Gmail still resolves the id, but the message is labelled SENT (this is what Gmail really does). */
   markSentOutside(draftId: string) {
     const d = this.drafts.get(draftId);
@@ -57,25 +68,43 @@ export class FakeGmail implements GmailPort {
   }
   async readDraft(m: MemberId, id: string): Promise<ReadResult> {
     this.calls.push(`read:${m}:${id}`);
-    return this.drafts.get(id) ?? { status: "not_found" };
+    const out = this.drafts.get(id) ?? { status: "not_found" as const };
+    this.onRead?.(m, id);
+    return out;
   }
   async send(m: MemberId, id: string) {
     this.calls.push(`send:${m}:${id}`);
+    if (this.refuseAsNotADraftFor.has(m)) {
+      this.refusedDrafts.add(id);
+      return { status: "not_a_draft" as const };
+    }
     const next = this.sendScript.shift();
     if (next === "throw") throw new Error("boom");
     if (next) return next;
     this.sentMessages.push({ member: m, draftId: id });
     return { status: "sent" as const, messageId: `msg-${this.sentMessages.length}`, threadId: `thr-${id}` };
   }
-  async reconcile(m: MemberId, id: string): Promise<Reconciliation> {
+  async reconcile(m: MemberId, id: string, _thread?: string, sinceMs?: number): Promise<Reconciliation> {
     this.calls.push(`reconcile:${m}:${id}`);
+    this.reconcileSince.push(sinceMs);
     return this.reconcileScript.shift() ?? { state: "unknown", reason: "no script" };
   }
   async inspect(m: MemberId, id: string): Promise<DraftInspection> {
     this.calls.push(`inspect:${m}:${id}`);
-    const next = this.inspectScript.shift();
-    if (next === "throw") throw new Error("gmail down");
-    return next ?? { state: "unknown", reason: "no script" };
+    this.onInspect?.(m, id);
+    if (this.refusedDrafts.has(id)) {
+      const next = this.inspectScript.shift();
+      if (next === "throw") throw new Error("gmail down");
+      return next ?? { state: "unknown", reason: "no script" };
+    }
+    if (this.inspectDown) return { state: "unknown", reason: "Gmail answered 503" };
+    // Like real Gmail: the labels of the message behind the stored draft decide.
+    const d = this.drafts.get(id);
+    if (!d || d.status !== "ok") return { state: "unknown", reason: "draft not found" };
+    const labels = d.draft.labelIds;
+    if (!labels) return { state: "unknown", reason: "no labels reported" };
+    if (labels.includes("SENT")) return { state: "sent_outside", messageId: `msg-out-${id}` };
+    return labels.includes("DRAFT") ? { state: "pending_draft" } : { state: "unknown", reason: "neither DRAFT nor SENT" };
   }
   sendCalls = () => this.calls.filter((c) => c.startsWith("send:"));
 }

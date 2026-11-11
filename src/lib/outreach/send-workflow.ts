@@ -302,6 +302,17 @@ async function refreshAggregate(deps: SendDeps, rec: TrackingRecord, ledger: rea
 
 /** Bookkeeping bound per call: notes written to the draft ledger (each is a Sheets read and write). It never limits sending. */
 const MAX_PARK_WRITES_PER_RUN = 25;
+/** Parking always gets at least this long after the walk, even when sending used the whole slice (sending is never delayed by it, it runs afterwards). */
+const MIN_PARK_PASS_MS = 3_000;
+
+/** When the Gmail request of an attempt began, from the ledger's own history (the last "<iso> sending" event); undefined when it cannot be read. */
+export function attemptStartOf(history: string): number | undefined {
+  let at: number | undefined;
+  for (const m of history.matchAll(/(\d{4}-\d{2}-\d{2}T[\d:.]+Z) sending(?=;|$)/g)) at = Date.parse(m[1]);
+  return at !== undefined && Number.isFinite(at) ? at : undefined;
+}
+
+const sentOutsideReason = (messageId: string) => `${STALE_SENT}; message ${messageId}`;
 /** One cron call per slot (the cron runs every ~2 minutes); used to rotate which already-parked contacts are re-checked. */
 const RUN_SLOT_MS = 120_000;
 const hashOf = (s: string) => [...s].reduce((n, ch) => (n * 31 + ch.charCodeAt(0)) >>> 0, 7);
@@ -321,7 +332,7 @@ async function reconcileInFlight(deps: SendDeps, result: SendRunResult, tracking
     if (nowMs - Date.parse(r.updatedAt || r.createdAt) < RECONCILE_AFTER_MS) continue;
     if (result.reconciled >= 5) break;
     const rec = trackingAll.find((t) => t.contactId === r.contactId);
-    const verdict = await deps.gmail.reconcile(r.member as MemberId, r.draftId, r.threadId || undefined, Date.parse(r.createdAt) || undefined).catch((): Reconciliation => ({ state: "unknown", reason: "reconcile failed" }));
+    const verdict = await deps.gmail.reconcile(r.member as MemberId, r.draftId, r.threadId || undefined, attemptStartOf(r.history)).catch((): Reconciliation => ({ state: "unknown", reason: "reconcile failed" }));
     result.reconciled += 1;
     if (verdict.state === "sent") {
       await finishSent(deps, r, verdict.messageId ?? "", r.threadId || undefined, "confirmed by reconciliation");
@@ -386,6 +397,9 @@ export async function runSendStep(deps: SendDeps): Promise<SendRunResult> {
   const slot = Math.floor(deps.now().getTime() / RUN_SLOT_MS);
   const dueForRecheck = (t: TrackingRecord) => every === 1 || (hashOf(t.contactId) + slot) % every === 0;
   let parkBudget = MAX_PARK_WRITES_PER_RUN;
+  // Parked notes are bookkeeping (a Sheets read + write each). They are queued while the contacts are walked and written AFTER the walk, so they can
+  // never use up the time slice the sends need. A note that is not written in this call is simply found again by the next one.
+  const parkQueue: { member: MemberId; connectionId: string; want: string | null }[] = [];
   /** Keeps the draft ledger's "parked" note equal to what this call just found out. Best effort: a failed note never affects sending. */
   const syncParked = async (member: MemberId, rec: TrackingRecord, ev: Evaluation) => {
     if (!deps.drafts.setParked) return;
@@ -397,14 +411,24 @@ export async function runSendStep(deps: SendDeps): Promise<SendRunResult> {
     else if (ev.kind === "block" && !(ev.check === "no_prior_send" && /is (claimed|sending|uncertain)/.test(ev.reason)) && !/no longer exists/.test(ev.reason)) reason = ev.reason;
     const want = reason ? normalizeParkReason(reason) : null;
     if ((parkedReasonOf(d.detail) ?? null) === want) return;
-    if (parkBudget <= 0 || (deps.deadline !== undefined && Date.now() > deps.deadline)) return;
+    if (parkBudget <= 0) return;
     parkBudget -= 1;
-    try {
-      await deps.drafts.setParked(member, rec.connectionId, want);
-      drafts.set(key, { ...d, detail: want ? `${d.detail}${d.detail ? "; " : ""}parked: ${want}` : d.detail.split("; ").filter((x) => !x.startsWith("parked:")).join("; ") });
-      result.parkedChanges = (result.parkedChanges ?? 0) + 1;
-    } catch {
-      // the note is bookkeeping only
+    parkQueue.push({ member, connectionId: rec.connectionId, want });
+    // The local copy reflects the note at once, so the same draft is never queued twice in one call.
+    drafts.set(key, { ...d, detail: want ? `${d.detail}${d.detail ? "; " : ""}parked: ${want}` : d.detail.split("; ").filter((x) => !x.startsWith("parked:")).join("; ") });
+  };
+  /** Writes the queued notes after the walk: until the call's send deadline, but always for at least MIN_PARK_PASS_MS so the backlog of stale notes keeps draining. */
+  const flushParks = async () => {
+    if (!deps.drafts.setParked) return;
+    const until = Math.max(deps.deadline ?? 0, Date.now() + MIN_PARK_PASS_MS);
+    for (const p of parkQueue) {
+      if (Date.now() > until) break;
+      try {
+        await deps.drafts.setParked(p.member, p.connectionId, p.want);
+        result.parkedChanges = (result.parkedChanges ?? 0) + 1;
+      } catch {
+        // bookkeeping only: nothing was sent or claimed because of it, and the next call finds the same draft again
+      }
     }
   };
 
@@ -448,8 +472,26 @@ export async function runSendStep(deps: SendDeps): Promise<SendRunResult> {
           continue;
         }
         let row = claim.record;
+        // FINAL label check, after the claim and immediately before the send. The cached listing and the readback made in evaluate() are only pre-filters:
+        // by now they are seconds old. A draft that is not (still) a DRAFT is never sent; if Gmail cannot say, nothing is sent and the claim is released.
+        const last = await deps.gmail.inspect(ctx.member, ctx.draft.gmailDraftId, ctx.readback.threadId ?? ctx.draft.threadId).catch((): DraftInspection => ({ state: "unknown", reason: "Gmail could not be queried" }));
+        if (last.state !== "pending_draft") {
+          if (last.state === "sent_outside") {
+            await patchLedger(deps, row, { status: "sent_outside", reason: sentOutsideReason(last.messageId) }, "final check before sending: already SENT outside JobSync; nothing was sent by this system");
+            await syncParked(member, rec, { kind: "stale", check: "not_already_received", sentOutside: true, reason: STALE_SENT });
+            result.externallySent = (result.externallySent ?? 0) + 1;
+          } else {
+            await patchLedger(deps, row, { status: "released", reason: "final Gmail check could not confirm the draft; nothing was sent" }, `released: final check unavailable (${last.reason}); nothing sent, safe to retry`);
+            note("pending", `${member}: [gmail_auth] Gmail could not confirm the draft just before sending (${last.reason}); will retry`);
+            result.waiting += 1;
+          }
+          ledgerAll = (await deps.sheet.readSendLedger()).records;
+          continue;
+        }
         // Persist "sending" BEFORE the Gmail call: a crash after this point is reconciled, never blindly retried.
         await patchLedger(deps, row, { status: "sending", draftId: ctx.draft.gmailDraftId }, "sending");
+        // The moment the Gmail request begins (taken after the ledger write): a SENT message older than this can never be this attempt's.
+        const attemptStartedMs = deps.now().getTime();
         const out = await deps.gmail.send(ctx.member, ctx.draft.gmailDraftId);
 
         if (out.status === "sent") {
@@ -474,7 +516,7 @@ export async function runSendStep(deps: SendDeps): Promise<SendRunResult> {
           // Gmail refused: the id is not a draft any more, so this request sent NOTHING. Ask Gmail what the message is. Never retried, never assumed.
           const seen = await deps.gmail.inspect(ctx.member, ctx.draft.gmailDraftId, row.threadId || undefined).catch((): DraftInspection => ({ state: "unknown", reason: "Gmail could not be queried" }));
           if (seen.state === "sent_outside") {
-            await patchLedger(deps, row, { status: "sent_outside", gmailMessageId: seen.messageId, reason: STALE_SENT }, "Gmail: message not a draft and already SENT outside JobSync; nothing was sent by this system");
+            await patchLedger(deps, row, { status: "sent_outside", reason: sentOutsideReason(seen.messageId) }, "Gmail: message not a draft and already SENT outside JobSync; nothing was sent by this system");
             await syncParked(member, rec, { kind: "stale", check: "not_already_received", sentOutside: true, reason: STALE_SENT });
             result.externallySent = (result.externallySent ?? 0) + 1;
           } else {
@@ -491,7 +533,7 @@ export async function runSendStep(deps: SendDeps): Promise<SendRunResult> {
           // uncertain (timeout, 5xx, unconfirmed 2xx, or "draft missing" which may mean it was already sent): reconcile NOW, never resend.
           row = (await deps.sheet.readSendLedger()).records.find((r) => r.claimId === row.claimId) ?? row;
           await patchLedger(deps, row, { status: "uncertain", reason: out.status === "uncertain" ? out.reason : "draft not found after the send request" }, "uncertain send result; reconciling");
-          const verdict = await deps.gmail.reconcile(ctx.member, ctx.draft.gmailDraftId, row.threadId || undefined, Date.parse(row.createdAt) || undefined).catch((): Reconciliation => ({ state: "unknown", reason: "reconcile failed" }));
+          const verdict = await deps.gmail.reconcile(ctx.member, ctx.draft.gmailDraftId, row.threadId || undefined, attemptStartedMs).catch((): Reconciliation => ({ state: "unknown", reason: "reconcile failed" }));
           result.reconciled += 1;
           if (verdict.state === "sent") {
             await finishSent(deps, row, verdict.messageId ?? "", row.threadId || undefined, "confirmed by reconciliation");
@@ -525,5 +567,6 @@ export async function runSendStep(deps: SendDeps): Promise<SendRunResult> {
       result.errors.push(err instanceof Error ? err.name : "error");
     }
   }
+  await flushParks();
   return result;
 }

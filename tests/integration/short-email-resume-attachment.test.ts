@@ -134,7 +134,7 @@ function mockGoogle() {
     const thread = /\/threads\/(thread-\d+)\?format=minimal$/.exec(url);
     if (thread && (init?.method ?? "GET") === "GET") {
       const sent = sentLog.find((x) => x.threadId === thread[1]);
-      return sent ? Response.json({ id: thread[1], messages: [{ id: sent.messageId, labelIds: ["SENT"] }] }) : Response.json({ id: thread[1], messages: [{ id: "m-draft", labelIds: ["DRAFT"] }] });
+      return sent ? Response.json({ id: thread[1], messages: [{ id: sent.messageId, labelIds: ["SENT"], internalDate: String(Date.parse("2099-01-01T00:00:00Z")) /* real Gmail reports it; later than any attempt start */ }] }) : Response.json({ id: thread[1], messages: [{ id: "m-draft", labelIds: ["DRAFT"] }] });
     }
     if (url === "https://gmail.googleapis.com/gmail/v1/users/me/drafts/send" && init?.method === "POST") {
       const who = (init?.headers as Record<string, string>).Authorization.replace("Bearer access-", "");
@@ -632,7 +632,7 @@ describe("send workflow with the real Gmail adapters (mock Gmail server)", () =>
       address: async (m) => (await readGmailAccounts({ fresh: true })).find((a) => a.memberId === m && a.status === "connected")?.email ?? null,
       readDraft: (m, id) => readDraftFor(m, id),
       send: (m, id) => sendDraftFor(m, id),
-      reconcile: (m, d, t) => reconcileDraftSend(m, d, t),
+      reconcile: (m, d, t, since) => reconcileDraftSend(m, d, t, undefined, since),
       inspect: (m, d, t) => inspectDraftFor(m, d, t),
     },
     resumes: existingResumes,

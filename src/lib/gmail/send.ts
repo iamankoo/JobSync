@@ -179,31 +179,31 @@ async function lookupDraftState(memberId: MemberId, draftId: string, threadId: s
   const thread = await get(`${GMAIL_API}/threads/${encodeURIComponent(threadId)}?format=minimal`);
   if (!thread || !thread.ok) return { kind: "unknown", reason: "thread could not be read" };
   const body = (await thread.json().catch(() => null)) as { messages?: { id?: string; labelIds?: string[]; internalDate?: string }[] } | null;
-  const sent = (body?.messages ?? []).find((m) => (m.labelIds ?? []).includes("SENT") && !(m.labelIds ?? []).includes("DRAFT"));
+  const sentAll = (body?.messages ?? []).filter((m) => m.id && (m.labelIds ?? []).includes("SENT") && !(m.labelIds ?? []).includes("DRAFT"));
   // A reconciled send is recorded only with Gmail's own message id; a SENT message without one is not proof enough.
-  if (!sent?.id) return { kind: "unknown", reason: "draft is gone and its thread shows no identifiable sent message" };
-  const at = Number(sent.internalDate);
-  return { kind: "sent", messageId: sent.id, ...(Number.isFinite(at) && at > 0 ? { at } : {}) };
+  if (!sentAll.length) return { kind: "unknown", reason: "draft is gone and its thread shows no identifiable sent message" };
+  // The LATEST sent message: if the attempt produced one it is the newest, and an older sent message must never be mistaken for it.
+  const dated = sentAll.map((m) => ({ id: m.id as string, at: Number(m.internalDate) })).map((m) => ({ id: m.id, ...(Number.isFinite(m.at) && m.at > 0 ? { at: m.at } : {}) }));
+  const latest = dated.reduce((a, b) => ((b.at ?? 0) > (a.at ?? 0) ? b : a));
+  return { kind: "sent", messageId: latest.id, ...(latest.at !== undefined ? { at: latest.at } : {}) };
 }
 
 /**
- * After an uncertain send: asks Gmail what happened to the draft. Labelled DRAFT => the send did not happen. Labelled SENT (or gone with a SENT message
- * in its thread) => it was sent: by THIS attempt, unless the message is older than the attempt (`sinceMs`, the claim time), in which case it was sent
- * outside JobSync ("external", never counted as ours). Anything unproven => "unknown", which the workflow turns into a manual-review flag; it is
- * never treated as "not sent" and never as "sent".
+ * After an uncertain send: asks Gmail what happened to the draft. Labelled DRAFT => the send did not happen. A SENT message is attributed to THIS attempt
+ * only when Gmail's own timestamp for it is at or after `sinceMs`, the moment the attempt's Gmail request began; an older one was sent outside JobSync
+ * ("external", never counted as ours). If the attempt's start or the message's time is unknown, a SENT message is NOT attributed to anyone ("unknown"):
+ * a pre-existing SENT message can therefore never become a JobSync send. Anything unproven => "unknown", which the workflow turns into a manual-review
+ * flag; it is never treated as "not sent" and never as "sent".
  */
 export async function reconcileDraftSend(memberId: MemberId, draftId: string, threadId: string | undefined, fetchFn: FetchLike = fetch, sinceMs?: number): Promise<Reconciliation> {
   const s = await lookupDraftState(memberId, draftId, threadId, fetchFn);
   if (s.kind === "draft") return { state: "not_sent" };
   if (s.kind === "unknown") return { state: "unknown", reason: s.reason };
-  if (sinceMs !== undefined && s.at !== undefined && s.at < sinceMs - SENT_BEFORE_ATTEMPT_SLACK_MS) {
-    return { state: "external", reason: "the message was sent before this attempt began, so it was sent outside JobSync" };
-  }
+  if (sinceMs === undefined || s.at === undefined) return { state: "unknown", reason: "a SENT message exists but cannot be shown to come from this attempt (the attempt's start or the message's time is unknown)" };
+  // Strictly earlier than the request = sent before it. The request began after `sinceMs` was taken, so this attempt's own message is never earlier.
+  if (s.at < sinceMs) return { state: "external", reason: "the message was sent before this attempt began, so it was sent outside JobSync" };
   return { state: "sent", messageId: s.messageId };
 }
-
-/** A SENT message older than the attempt by more than this is not the attempt's own (clock and rounding slack). */
-const SENT_BEFORE_ATTEMPT_SLACK_MS = 2_000;
 
 export type DraftInspection =
   | { state: "pending_draft" }
