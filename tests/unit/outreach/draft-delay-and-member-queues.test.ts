@@ -20,7 +20,7 @@ const conn = (id: string, createdAtMs: number, extra: Record<string, unknown> = 
   createdAt: new Date(createdAtMs).toISOString(), notes: "", ...extra,
 });
 
-function worker(list: ReturnType<typeof conn>[], clock: { t: number }, opts: { env?: Record<string, string>; backlog?: ReturnType<typeof createBacklogGate> } = {}) {
+function worker(list: ReturnType<typeof conn>[], clock: { t: number }, opts: { env?: Record<string, string>; backlog?: ReturnType<typeof createBacklogGate>; limit?: number } = {}) {
   const mail = new MockMailboxes();
   const config = loadNetworkFinderConfig({ NETWORK_FINDER_ENABLED: "true", ...(opts.env ?? {}) } as unknown as NodeJS.ProcessEnv);
   const deps = {
@@ -31,7 +31,7 @@ function worker(list: ReturnType<typeof conn>[], clock: { t: number }, opts: { e
     runState: {},
     now: () => new Date(clock.t),
   } as unknown as PipelineDeps;
-  return { mail, run: () => runPendingDrafts(deps, { limit: 10 }) };
+  return { mail, run: () => runPendingDrafts(deps, { limit: opts.limit ?? 10 }) };
 }
 
 describe("ten-minute drafting delay", () => {
@@ -67,6 +67,19 @@ describe("ten-minute drafting delay", () => {
     expect(await w.run()).toMatchObject({ created: 0 });
     clock.t = T0 + 10 * MIN;
     expect(await w.run()).toMatchObject({ created: 3 });
+  });
+
+  it("Connections a member added by hand are drafted BEFORE older JobSync-imported ones (oldest first within each group)", async () => {
+    const clock = { t: T0 + 60 * MIN };
+    const imported = (id: string, at: number) => conn(id, at, { notes: `Source: Outreach Database c_${id}` });
+    const w = worker([imported("imp1", T0), imported("imp2", T0 + MIN), conn("man2", T0 + 20 * MIN), conn("man1", T0 + 10 * MIN)], clock, { limit: 1 });
+    const order: string[] = [];
+    for (let k = 0; k < 4; k++) {
+      const before = w.mail.drafts.length;
+      await w.run();
+      order.push(w.mail.drafts[before]!.to!.split("@")[0]);
+    }
+    expect(order).toEqual(["man1", "man2", "imp1", "imp2"]);
   });
 
   it("a delayed (too new) Connection never blocks older ones that are already eligible", async () => {
