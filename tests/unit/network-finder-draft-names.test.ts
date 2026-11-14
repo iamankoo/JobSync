@@ -31,7 +31,7 @@ function mailboxes() {
 const target = { connectionId: "conn_priya", name: "Priya Sharma", title: "Engineering Manager", email: "priya@acme.example", company: { name: "Acme", website: "https://acme.example" } };
 
 function pipelineDeps(brain: Brain | undefined, drafts: Omit<FanoutDeps, "compose">, signatures: Partial<Record<MemberId, string>> = {}): PipelineDeps {
-  return { config: { ...loadNetworkFinderConfig({ NETWORK_FINDER_ENABLED: "true" } as unknown as NodeJS.ProcessEnv), signatures }, ...(brain ? { brain } : {}), drafts } as unknown as PipelineDeps;
+  return { config: { ...loadNetworkFinderConfig({ DRAFT_DELAY_MINUTES: "0", NETWORK_FINDER_ENABLED: "true" } as unknown as NodeJS.ProcessEnv), signatures }, ...(brain ? { brain } : {}), drafts } as unknown as PipelineDeps;
 }
 
 describe("member full names", () => {

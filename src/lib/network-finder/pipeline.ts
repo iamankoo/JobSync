@@ -746,6 +746,11 @@ export async function runBatchTick(deps: PipelineDeps): Promise<TickResult> {
 
 /** Manually added connections (not Network Finder) are drafted if added within this many days and they have an email. */
 export const MANUAL_DRAFT_DAYS = 30;
+/**
+ * A new manual or imported Connection is not drafted at once: its three member drafts become eligible this long after the Connection was created
+ * (its saved CreatedAt in the Connections sheet, so the delay survives restarts and is the same on every later run; no timer is kept anywhere).
+ */
+export const DRAFT_DELAY_MS = 10 * 60_000;
 
 /**
  * The automatic drafting worker (runs on every scheduled call). Every "Not Connected" connection that should be
@@ -755,25 +760,38 @@ export const MANUAL_DRAFT_DAYS = 30;
  *  - a member without Gmail gets a "skipped" record once and is retried automatically after reconnecting;
  *  - a failure stays retryable on later runs.
  * Manual connections go first (so they are drafted within one or two runs), then today's selections, then the oldest.
+ * A manual/imported connection waits DRAFT_DELAY_MS after it was created. The 100-draft limit is PER MEMBER: a member whose own Gmail holds 100+
+ * unsent JobSync drafts (or cannot be counted) is skipped, and the other members keep getting their drafts.
  */
 export async function runPendingDrafts(deps: PipelineDeps, options: { days?: number; manualDays?: number; limit?: number; manualOnly?: boolean } = {}): Promise<{ checked: number; created: number; remaining: number; paused?: string }> {
   const none: { checked: number; created: number; remaining: number; paused?: string } = { checked: 0, created: 0, remaining: 0 };
   if (!deps.drafts) return none;
   if (deps.drafts.backlog) {
-    // Backlog protection: while too many drafts wait unsent in the members' Gmail (or the count is unavailable) nothing new is drafted, and not even
+    // Backlog protection: while NO member may draft (each one's own Gmail is at the limit or cannot be counted) nothing new is drafted, and not even
     // the Connections / Gmail-account / ledger reads are made. Sending (a separate step) is unaffected and drains the backlog.
     const verdict = await deps.drafts.backlog.check().catch(() => ({ allowed: false, pending: null, reason: "draft backlog could not be checked" }));
     if (!verdict.allowed) return { ...none, paused: verdict.reason };
   }
   const members = deps.drafts.members ?? MEMBER_IDS;
   const connected = new Set<MemberId>();
+  /** Members whose OWN backlog is at the limit (or uncountable): no new draft for them in this run; the others continue. */
+  const paused = new Map<MemberId, string>();
   const loadConnected = async () => {
     for (const m of members) if (await deps.drafts!.isConnected(m)) connected.add(m);
+    if (deps.drafts!.backlog) {
+      for (const m of members) {
+        const v = await deps.drafts!.backlog.check(m).catch(() => ({ allowed: false, pending: null, reason: "draft backlog could not be checked" }));
+        if (!v.allowed) paused.set(m, v.reason);
+      }
+    }
   };
 
   const at = now(deps).getTime();
   const cutoff = new Date(at - (options.days ?? 3) * 86_400_000).toISOString();
   const manualCutoff = new Date(at - (options.manualDays ?? MANUAL_DRAFT_DAYS) * 86_400_000).toISOString();
+  const delayMs = deps.config.draftDelayMs ?? DRAFT_DELAY_MS;
+  // 0 = no delay at all (never compared, so a Connection created during this very run is not held back by clock rounding).
+  const readyBefore = delayMs > 0 ? new Date(at - delayMs).toISOString() : null;
   let snapshot: Map<string, { status: string; detail?: string }> | null = null;
   const statusOf = async (connectionId: string, m: MemberId) => {
     const key = draftKey({ type: "contact", id: connectionId }, m);
@@ -787,13 +805,14 @@ export async function runPendingDrafts(deps: PipelineDeps, options: { days?: num
     if (s === "created" || s === "sent") return true;
     // Never a replacement draft for a recipient who already has a valid pending (or sent) draft from this member, even under another Connection.
     if (email && drafted.get(m)?.has(email)) return true;
+    if (paused.has(m)) return true; // this member's own backlog is full: nothing for them now (picked up again once below the limit)
     return !connected.has(m) && s !== undefined; // not connected: settled once it has a record (skipped)
   };
   const hasFailed = (connectionId: string) => (snapshot ? members.some((m) => snapshot?.get(draftKey({ type: "contact", id: connectionId }, m))?.status === "failed") : false);
   let selectedIds = new Map<string, Selection>();
   const wanted = (c: Connection) =>
     c.status === "Not Connected" &&
-    (isNetworkFinderEntry(c) ? !options.manualOnly && c.createdAt >= cutoff : Boolean(c.email?.trim()) && c.createdAt >= manualCutoff);
+    (isNetworkFinderEntry(c) ? !options.manualOnly && c.createdAt >= cutoff : Boolean(c.email?.trim()) && c.createdAt >= manualCutoff && (readyBefore === null || c.createdAt <= readyBefore));
   const allConnections = await deps.connections.list();
   const recent = allConnections.filter(wanted);
   const emailById = new Map(allConnections.flatMap((c) => (c.email?.trim() ? ([[c.connectionId, c.email.trim().toLowerCase()]] as const) : [])));
@@ -867,7 +886,9 @@ export async function runPendingDrafts(deps: PipelineDeps, options: { days?: num
       },
     },
   };
-  const result = { checked: 0, created: 0, remaining: pending.length };
+  const result: { checked: number; created: number; remaining: number; paused?: string } = { checked: 0, created: 0, remaining: pending.length };
+  // Reported (counts only) so a cycle shows which members are held back by their own backlog.
+  if (paused.size) result.paused = [...paused.values()].join("; ");
   for (const c of pending.slice(0, options.limit ?? 5)) {
     if (timeLeft(deps) < DRAFT_TIME_MS) break;
     const s = selectedIds.get(c.connectionId);
@@ -881,10 +902,12 @@ export async function runPendingDrafts(deps: PipelineDeps, options: { days?: num
           company: companyOf(c),
           ...(isNetworkFinderEntry(c) ? {} : { manual: { ...(c.notes ? { notes: c.notes } : {}), ...(c.message ? { message: c.message } : {}), ...(c.applyRole ? { applyRole: c.applyRole } : {}) } }),
         });
-    const paused = outcomes.find((o) => o.result === "paused_backlog");
-    if (paused) {
-      // The gate closed (the backlog reached the limit during this run): this contact was not started, so it is not counted as checked.
-      return { ...result, paused: paused.detail ?? "draft backlog" };
+    // A member whose own backlog reached the limit during this run: no more drafts for them in this run. The other members carry on.
+    for (const o of outcomes) if (o.result === "paused_backlog") paused.set(o.memberId, o.detail ?? "draft backlog");
+    if (paused.size) result.paused = [...paused.values()].join("; ");
+    if (outcomes.length && outcomes.every((o) => o.result === "paused_backlog")) {
+      // Nothing was started for this contact (every member is paused), so it is not counted as checked.
+      return { ...result, paused: [...new Set(outcomes.map((o) => o.detail ?? "draft backlog"))].join("; ") };
     }
     result.checked += 1;
     result.remaining -= 1;

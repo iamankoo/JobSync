@@ -103,7 +103,7 @@ const status = async (id: string) => {
 function workerDeps(): PipelineDeps {
   const stores = createSheetsStores();
   return {
-    config: loadNetworkFinderConfig({ NETWORK_FINDER_ENABLED: "true", APP_TIMEZONE: "Asia/Kolkata" } as unknown as NodeJS.ProcessEnv),
+    config: loadNetworkFinderConfig({ DRAFT_DELAY_MINUTES: "0", NETWORK_FINDER_ENABLED: "true", APP_TIMEZONE: "Asia/Kolkata" } as unknown as NodeJS.ProcessEnv),
     sources: [], jobSources: [],
     queue: stores.queue, registry: stores.registry, ledger: stores.ledger, selections: stores.selections,
     drafts: existingDraftDeps(), connections: existingConnections, jobs: existingJobs, runState: {},

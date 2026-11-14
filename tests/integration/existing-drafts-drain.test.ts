@@ -411,28 +411,30 @@ describe("8. the backlog gate and existing drafts", () => {
     ledgerPending: async () => [...f.draftLedger].filter(([, v]) => v.status === "created" && v.gmailDraftId).map(([k, v]) => ({ memberId: k.split(":")[2] as MemberId, gmailDraftId: v.gmailDraftId, detail: v.detail })),
     gmailDraftIds: async (m) => ({ status: "ok", ids: new Set([...f.gmail.drafts.keys()].filter((id) => id.endsWith(`_${m}`) && !f.gmail.sentMessages.some((s) => s.draftId === id))) }),
   });
-  const config = loadNetworkFinderConfig({ NETWORK_FINDER_ENABLED: "true" } as unknown as NodeJS.ProcessEnv);
+  const config = loadNetworkFinderConfig({ DRAFT_DELAY_MINUTES: "0", NETWORK_FINDER_ENABLED: "true" } as unknown as NodeJS.ProcessEnv);
 
-  it("existing drafts are in the count: 120 old unsent drafts pause new drafting; once the eligible ones are sent it resumes, while the ones needing a person stay untouched", async () => {
+  it("existing drafts are in the count, PER MEMBER: 40 old unsent drafts each (limit 37 here) pause everyone; as each member's own count drops below the limit THAT member drafts again, while the ones needing a person stay untouched", async () => {
     // 40 old Connections x 3 members = 120 drafts. The last 8 Connections are opted out (24 drafts that can never be sent).
     const f = legacy(people(40));
     f.fake.tabs.set("Outreach Exclusions", [["Value", "Reason", "AddedAt", "AddedBy"], ...Array.from({ length: 8 }, (_, i) => [`p${32 + i}@c${32 + i}.example.com`, "opt out", "", "anni"])]);
-    const gate = createBacklogGate({ ports: portsOf(f), ttlMs: 0 });
+    const gate = createBacklogGate({ ports: portsOf(f), ttlMs: 0, limit: 37 });
     const mail = new MockMailboxes();
     const target = { connectionId: "new1", name: "Newly Found", title: "Head of Eng", email: "new1@fresh.example.com", company: { name: "FreshCo" } };
 
-    expect(await gate.check()).toMatchObject({ allowed: false, pending: 120 }); // before anything is registered or sent
+    expect(await gate.check()).toMatchObject({ allowed: false, pending: 120 }); // before anything is registered or sent: every member has 40
     expect((await draftForContact({ config, drafts: Object.assign(mail, { backlog: gate }) }, target)).every((o) => o.result === "paused_backlog")).toBe(true);
 
     await adopt(f);
-    // a first call that only has time for 10 sends: 110 eligible drafts are still waiting -> still no new drafting
+    // a first call that only has time for 10 sends (contacts 0-2 for everyone, contact 3 for Anni): Anni 36, Lukky 37, Rishii 37
     const deps = f.deps();
     Object.defineProperty(deps, "deadline", { get: () => (f.gmail.sentMessages.length >= 10 ? Date.now() - 1 : Date.now() + 60_000) });
     await runSendStep(deps);
     expect(f.gmail.sentMessages).toHaveLength(10);
-    expect(await gate.check()).toMatchObject({ allowed: false, pending: 110 });
-    expect((await draftForContact({ config, drafts: Object.assign(mail, { backlog: gate }) }, target)).every((o) => o.result === "paused_backlog")).toBe(true);
-    expect(mail.drafts).toEqual([]);
+    expect(await gate.check("anni")).toMatchObject({ allowed: true, pending: 36 });
+    expect(await gate.check("lukky")).toMatchObject({ allowed: false, pending: 37 });
+    expect(await gate.check("rishii")).toMatchObject({ allowed: false, pending: 37 });
+    expect((await draftForContact({ config, drafts: Object.assign(mail, { backlog: gate }) }, target)).map((o) => o.result)).toEqual(["created", "paused_backlog", "paused_backlog"]);
+    expect(mail.drafts.map((d) => d.memberId)).toEqual(["anni"]);
 
     // later calls drain everything that is eligible
     for (let i = 0; i < 6; i++) await runSendStep(f.deps());
@@ -447,7 +449,8 @@ describe("8. the backlog gate and existing drafts", () => {
     expect(stillThere.every(([, v]) => parkedReasonOf(v.detail)?.includes("opted out"))).toBe(true);
     const counted = await (await import("@/lib/gmail/draft-backlog")).countPendingGmailDrafts(portsOf(f));
     expect(counted).toMatchObject({ status: "ok", pending: 0, parked: 24 });
-    expect((await draftForContact({ config, drafts: Object.assign(mail, { backlog: gate }) }, target)).map((o) => o.result)).toEqual(["created", "created", "created"]); // drafting resumes
+    // drafting resumes for the two who were paused; Anni's draft from before is never made twice
+    expect((await draftForContact({ config, drafts: Object.assign(mail, { backlog: gate }) }, target)).map((o) => o.result)).toEqual(["already_drafted", "created", "created"]);
   }, 240_000);
 
   it("drafts flagged for review when they were made, and drafts parked by the send step, stay out of the ELIGIBLE count (but are never deleted)", async () => {
@@ -460,9 +463,9 @@ describe("8. the backlog gate and existing drafts", () => {
   });
 
   it("the gate prevents new drafts while eligible existing drafts are waiting, but never blocks sending them", async () => {
-    const f = legacy(people(40)); // 120 eligible drafts
+    const f = legacy(people(40)); // 40 eligible drafts per member
     await adopt(f);
-    const gate = createBacklogGate({ ports: portsOf(f), ttlMs: 0 });
+    const gate = createBacklogGate({ ports: portsOf(f), ttlMs: 0, limit: 40 });
     expect((await gate.check()).allowed).toBe(false);
     const r = await runSendStep(f.deps()); // sending is not gated: it runs and drains
     expect(r.sent).toBe(120);
@@ -472,7 +475,7 @@ describe("8. the backlog gate and existing drafts", () => {
 
 // ---------------------------------------------------------------------------------------------------------------------------------
 describe("5. no replacement draft for a recipient who already has a valid pending draft", () => {
-  const config = loadNetworkFinderConfig({ NETWORK_FINDER_ENABLED: "true" } as unknown as NodeJS.ProcessEnv);
+  const config = loadNetworkFinderConfig({ DRAFT_DELAY_MINUTES: "0", NETWORK_FINDER_ENABLED: "true" } as unknown as NodeJS.ProcessEnv);
   const conn = (id: string, email: string) => ({ connectionId: id, memberId: "anni", name: `Person ${id}`, company: "Acme", email, status: "Not Connected", createdAt: new Date().toISOString(), notes: "" });
 
   function worker(existing: Record<string, { status: string; detail?: string }>, conns: ReturnType<typeof conn>[]) {

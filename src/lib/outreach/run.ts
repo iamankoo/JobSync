@@ -273,13 +273,15 @@ export function buildRealCycleDeps(config: OutreachConfig = loadOutreachConfig()
         }
       : {}),
     connections: realConnectionsPort,
-    // The same real-draft count the 100-draft gate uses (cached 30 s). null = could not be counted = send-first stays off.
+    // The same real-draft count the 100-draft gate uses (cached 30 s), PER MEMBER: the LARGEST one member's count, so send-first starts when one account
+    // reaches the threshold on its own (never because of a combined total). null = could not be counted = send-first stays off.
     savedDrafts: async () => {
-      const verdict = await backlog.check().catch(() => ({ pending: null as number | null }));
-      if (verdict.pending === null || !config.sendAllDrafts) return verdict.pending;
-      // Sending every JobSync draft: the unsendable-by-the-usual-checks ("parked") ones count too, so the mode runs until NO JobSync draft is left in Gmail.
+      await backlog.check().catch(() => undefined);
       const counted = backlog.last();
-      return counted?.status === "ok" ? counted.pending + counted.parked : null;
+      if (counted?.status !== "ok") return null;
+      const members = MEMBER_IDS.filter((m) => !counted.unknown[m]);
+      // Sending every JobSync draft: the unsendable-by-the-usual-checks ("parked") ones count too, so the mode runs until NO JobSync draft is left in Gmail.
+      return Math.max(0, ...members.map((m) => counted.byMember[m] + (config.sendAllDrafts ? counted.parkedByMember[m] : 0)));
     },
     gmailHealth: {
       accounts: async () => (await readGmailAccounts()).map((a) => ({ memberId: a.memberId, status: a.status, connectedAt: a.connectedAt })),

@@ -7,10 +7,10 @@ import { isParkedDetail } from "./draft-flags";
 import { readDraftLedger } from "./store";
 
 /**
- * Draft backlog protection. While 100 or more JobSync-generated e-mail drafts are sitting UNSENT in the three members' Gmail Drafts folders,
- * no new draft is created anywhere (Outreach and Network Finder both create drafts only through `distributeDrafts`, which asks this gate
- * once before an item's three-member fan-out begins). Sending is a separate step and is never gated: it drains the backlog, and drafting
- * resumes by itself once the count is below the limit.
+ * Draft backlog protection, PER MEMBER. While 100 or more JobSync-generated e-mail drafts are sitting UNSENT in ONE member's Gmail Drafts folder,
+ * no new draft is created for THAT member (Outreach and Network Finder both create drafts only through `distributeDrafts`, which asks this gate
+ * for each member before creating that member's draft). The other members keep drafting. Sending is a separate step and is never gated: it
+ * drains the backlog, and the member's drafting resumes by itself once their own count is below the limit.
  *
  * WHAT IS COUNTED: the drafts that really exist in Gmail right now. For every member, ONE paged `drafts.list` call (ids only) returns what is
  * in their Drafts folder; a draft counts when the draft ledger (NF_Drafts) says JobSync created it ("created", with its Gmail draft id) AND
@@ -52,9 +52,22 @@ export interface BacklogPorts {
 }
 
 export type BacklogCount =
-  | { status: "ok"; pending: number; byMember: Record<MemberId, number>; parked: number }
+  | {
+      status: "ok";
+      /** Sum of the eligible counts of the members that COULD be counted (see `unknown`). */
+      pending: number;
+      byMember: Record<MemberId, number>;
+      parked: number;
+      parkedByMember: Record<MemberId, number>;
+      /** Members whose Drafts folder could not be listed (reason). Their own drafting is paused; the other members are unaffected. */
+      unknown: Partial<Record<MemberId, string>>;
+    }
   | { status: "unknown"; reason: string };
 
+/**
+ * PER MEMBER: each member's Gmail is counted on its own and the 100-draft limit applies to each member's own Drafts folder. A member whose folder cannot
+ * be listed is "unknown" (their drafting fails closed) without stopping the other members. Only an unreadable draft ledger makes the whole count unknown.
+ */
 export async function countPendingGmailDrafts(ports: BacklogPorts, members: readonly MemberId[] = MEMBER_IDS): Promise<BacklogCount> {
   let ledger: readonly PendingLedgerDraft[];
   try {
@@ -63,7 +76,8 @@ export async function countPendingGmailDrafts(ports: BacklogPorts, members: read
     return { status: "unknown", reason: "the draft ledger could not be read" };
   }
   const byMember = { anni: 0, lukky: 0, rishii: 0 } as Record<MemberId, number>;
-  let parked = 0;
+  const parkedByMember = { anni: 0, lukky: 0, rishii: 0 } as Record<MemberId, number>;
+  const unknown: Partial<Record<MemberId, string>> = {};
   for (const member of members) {
     const mine = ledger.filter((d) => d.memberId === member);
     let listed: MemberDrafts;
@@ -72,26 +86,42 @@ export async function countPendingGmailDrafts(ports: BacklogPorts, members: read
     } catch {
       listed = { status: "unavailable", reason: "Gmail could not be read" };
     }
-    if (listed.status === "unavailable") return { status: "unknown", reason: `${member}'s Gmail drafts could not be counted (${listed.reason})` };
+    if (listed.status === "unavailable") {
+      unknown[member] = `${member}'s Gmail drafts could not be counted (${listed.reason})`;
+      continue;
+    }
     // A member without a usable Gmail connection cannot be looked at: their ledger drafts cannot be shown to be gone, so they are counted (conservative).
     const ids = listed.status === "ok" ? listed.ids : null;
     const present = ids ? mine.filter((d) => ids.has(d.gmailDraftId)) : mine;
     const eligible = present.filter((d) => !isParkedDetail(d.detail));
     byMember[member] = eligible.length;
-    parked += present.length - eligible.length;
+    parkedByMember[member] = present.length - eligible.length;
   }
-  return { status: "ok", pending: members.reduce((n, m) => n + byMember[m], 0), byMember, parked };
+  const counted = members.filter((m) => !unknown[m]);
+  if (!counted.length) return { status: "unknown", reason: Object.values(unknown).join("; ") || "no member could be counted" };
+  return {
+    status: "ok",
+    pending: counted.reduce((n, m) => n + byMember[m], 0),
+    byMember,
+    parked: counted.reduce((n, m) => n + parkedByMember[m], 0),
+    parkedByMember,
+    unknown,
+  };
 }
 
 export interface BacklogVerdict {
   allowed: boolean;
-  /** The combined count, or null when it could not be obtained. */
+  /** With a member: that member's own count. Without: the sum over the members that could be counted. null when it could not be obtained. */
   pending: number | null;
   reason: string;
 }
 
 export interface DraftBacklogGate extends BacklogGatePort {
-  check(): Promise<BacklogVerdict>;
+  /**
+   * `check(member)`: may THIS member get a new draft (their own Gmail below the limit and countable)? `check()`: may ANY member (used as a cheap pre-check
+   * before the Connections are even read). Neither ever lets one member's backlog or unreadable Gmail stop another member.
+   */
+  check(member?: MemberId): Promise<BacklogVerdict>;
   /** Forgets the cached count (e.g. after the send step freed drafts): the next check recounts. */
   invalidate(): void;
   /** The last count obtained (for logging); null before the first one. */
@@ -102,21 +132,32 @@ export function createBacklogGate(opts: { ports: BacklogPorts; limit?: number; t
   const limit = opts.limit ?? DRAFT_BACKLOG_LIMIT;
   const ttl = opts.ttlMs ?? COUNT_TTL_MS;
   const now = opts.now ?? Date.now;
-  let memo: { at: number; count: BacklogCount; added: number } | null = null;
+  const noneAdded = (): Record<MemberId, number> => ({ anni: 0, lukky: 0, rishii: 0 }) as Record<MemberId, number>;
+  let memo: { at: number; count: BacklogCount; added: Record<MemberId, number> } | null = null;
   let inflight: Promise<BacklogCount> | null = null;
 
-  const verdictOf = (count: BacklogCount, added: number): BacklogVerdict => {
-    if (count.status !== "ok") return { allowed: false, pending: null, reason: `drafting paused: ${count.reason}` };
-    const pending = count.pending + added;
+  const memberVerdict = (count: Extract<BacklogCount, { status: "ok" }>, added: Record<MemberId, number>, member: MemberId): BacklogVerdict => {
+    const why = count.unknown[member];
+    if (why) return { allowed: false, pending: null, reason: `drafting paused for ${member}: ${why}` };
+    const pending = (count.byMember[member] ?? 0) + (added[member] ?? 0);
     return pending >= limit
-      ? { allowed: false, pending, reason: `drafting paused: ${pending} unsent drafts are waiting in the members' Gmail (limit ${limit}); sending continues and drafting resumes below ${limit}` }
-      : { allowed: true, pending, reason: `${pending} unsent drafts waiting (limit ${limit})` };
+      ? { allowed: false, pending, reason: `drafting paused for ${member}: ${pending} unsent drafts are waiting in ${member}'s Gmail (limit ${limit}); sending continues and ${member}'s drafting resumes below ${limit}` }
+      : { allowed: true, pending, reason: `${member}: ${pending} unsent drafts waiting (limit ${limit})` };
+  };
+  const verdictOf = (count: BacklogCount, added: Record<MemberId, number>, member?: MemberId): BacklogVerdict => {
+    if (count.status !== "ok") return { allowed: false, pending: null, reason: `drafting paused: ${count.reason}` };
+    if (member) return memberVerdict(count, added, member);
+    const each = MEMBER_IDS.map((m) => memberVerdict(count, added, m));
+    const pending = MEMBER_IDS.filter((m) => !count.unknown[m]).reduce((n, m) => n + count.byMember[m] + (added[m] ?? 0), 0);
+    return each.some((v) => v.allowed)
+      ? { allowed: true, pending, reason: each.map((v) => v.reason).join("; ") }
+      : { allowed: false, pending, reason: each.map((v) => v.reason).join("; ") };
   };
 
   return {
-    async check() {
+    async check(member?: MemberId) {
       const t = now();
-      if (memo && t - memo.at < (memo.count.status === "ok" ? ttl : FAILURE_TTL_MS)) return verdictOf(memo.count, memo.added);
+      if (memo && t - memo.at < (memo.count.status === "ok" ? ttl : FAILURE_TTL_MS)) return verdictOf(memo.count, memo.added, member);
       // Concurrent checks in one process share a single count.
       inflight ??= countPendingGmailDrafts(opts.ports).finally(() => { inflight = null; });
       let count: BacklogCount;
@@ -125,11 +166,13 @@ export function createBacklogGate(opts: { ports: BacklogPorts; limit?: number; t
       } catch {
         count = { status: "unknown", reason: "the draft count failed" };
       }
-      memo = { at: now(), count, added: 0 };
-      return verdictOf(count, 0);
+      memo = { at: now(), count, added: noneAdded() };
+      return verdictOf(count, memo.added, member);
     },
-    noteCreated(n = 1) {
-      if (memo) memo.added += n;
+    noteCreated(n = 1, member?: MemberId) {
+      if (!memo) return;
+      // A draft whose member is not known is charged to every member (conservative: it can only pause drafting sooner, never later).
+      for (const m of member ? [member] : MEMBER_IDS) memo.added[m] += n;
     },
     invalidate() {
       memo = null;

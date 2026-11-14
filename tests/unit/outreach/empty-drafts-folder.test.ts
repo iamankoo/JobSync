@@ -56,7 +56,7 @@ describe("what that fixes", () => {
       ],
       gmailDraftIds: async (m) => ({ status: "ok", ids: lists[m] }),
     });
-    expect(count).toEqual({ status: "ok", pending: 3, byMember: { anni: 2, lukky: 0, rishii: 1 }, parked: 0 });
+    expect(count).toEqual({ status: "ok", pending: 3, byMember: { anni: 2, lukky: 0, rishii: 1 }, parked: 0, parkedByMember: { anni: 0, lukky: 0, rishii: 0 }, unknown: {} });
   });
   it("the presence pre-filter now says 'absent' for every ledger draft of a member whose folder is empty", async () => {
     const { p } = ports(res(204));

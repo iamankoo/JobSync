@@ -141,16 +141,17 @@ describe("3. manual and imported Connections both produce three member-specific 
 });
 
 // ---------------------------------------------------------------------------------------------------------------------------------
-describe("4. no artificial sending cap remains", () => {
+describe("4. each member has their OWN allowance of 200 per rolling 24 h; there is no combined cap", () => {
   /** Rows of already-confirmed sends made within the last hour, as if the system had been sending all day. */
-  async function seedSent(f: ReturnType<typeof buildSendFixture>, perMember: number) {
+  async function seedSent(f: ReturnType<typeof buildSendFixture>, perMember: number | Partial<Record<(typeof ALL)[number], number>>, opts: { ageMs?: number; status?: SendRecord["status"] } = {}) {
     await f.sheet.ensureTabs();
     let { nextRow } = await f.sheet.readSendLedger();
     for (const member of ALL) {
-      for (let i = 0; i < perMember; i++) {
-        const at = new Date(NOW.getTime() - 60_000 * (1 + (i % 50))).toISOString();
+      const n = typeof perMember === "number" ? perMember : (perMember[member] ?? 0);
+      for (let i = 0; i < n; i++) {
+        const at = new Date(NOW.getTime() - (opts.ageMs ?? 60_000 * (1 + (i % 50)))).toISOString();
         const rec: SendRecord = {
-          row: 0, sendKey: sendKeyFor(member, `old${i}@old${i}.example.com`), contactId: `old${i}`, claimId: `old-${member}-${i}`, status: "sent", member, gmailAccount: `${member}@gmail.test`, connectionId: `oldconn${i}`,
+          row: 0, sendKey: sendKeyFor(member, `old${i}@old${i}.example.com`), contactId: `old${i}`, claimId: `old-${member}-${i}`, status: opts.status ?? "sent", member, gmailAccount: `${member}@gmail.test`, connectionId: `oldconn${i}`,
           company: "Old", role: "SDE", resumeFile: "r.pdf", resumeSha256: "0".repeat(64), resumeBytes: 10, draftId: `old_${member}_${i}`, threadId: "", gmailMessageId: `old-msg-${member}-${i}`, wordCount: 100, attempts: 1,
           notBefore: "", sentAt: at, sentDay: "2026-11-06", reason: "", history: "", createdAt: at, updatedAt: at,
         };
@@ -159,16 +160,35 @@ describe("4. no artificial sending cap remains", () => {
     }
   }
 
-  it("with 700 e-mails (233+ per member, far past the old 200 / 600) already sent in the last 24 hours, new e-mails still go out", async () => {
+  it("Anni at 200 waits, Lukky at 199 sends ONE more, Rishii (0) sends all of his: the members progress independently", async () => {
     const f = buildSendFixture(people(5));
-    await seedSent(f, 234); // 702 confirmed sends in the last hour
+    await seedSent(f, { anni: 200, lukky: 199, rishii: 0 });
     await f.seed();
-    const before = f.ledger().filter((r) => r[3] === "sent").length;
-    expect(before).toBe(702);
     const r = await runSendStep(f.deps());
-    expect(r).toMatchObject({ sent: 15, stoppedBecause: "none", errors: [] });
-    expect(f.ledger().filter((r2) => r2[3] === "sent")).toHaveLength(717);
-    for (const m of ALL) expect(f.gmail.sentMessages.filter((x) => x.member === m)).toHaveLength(5);
+    expect(r).toMatchObject({ sent: 6, errors: [] });
+    expect(f.gmail.sentMessages.filter((x) => x.member === "anni")).toHaveLength(0);
+    expect(f.gmail.sentMessages.filter((x) => x.member === "lukky")).toHaveLength(1);
+    expect(f.gmail.sentMessages.filter((x) => x.member === "rishii")).toHaveLength(5);
+    expect(r.waiting).toBeGreaterThanOrEqual(9); // Anni's 5 and Lukky's 4 wait for their window; nothing is parked or failed
+    expect(r.failed).toBe(0);
+  }, 240_000);
+
+  it("600 combined is not a limit: with 199 each already sent, each member still sends one more", async () => {
+    const f = buildSendFixture(people(2));
+    await seedSent(f, 199);
+    await f.seed();
+    const r = await runSendStep(f.deps());
+    expect(r.sent).toBe(3);
+    for (const m of ALL) expect(f.gmail.sentMessages.filter((x) => x.member === m)).toHaveLength(1);
+  }, 240_000);
+
+  it("only CONFIRMED JobSync sends inside the rolling 24 h count: older sends and drafts sent by hand (sent_outside) do not use the allowance", async () => {
+    const f = buildSendFixture(people(3));
+    await seedSent(f, { anni: 250 }, { ageMs: 25 * 3_600_000 });
+    await seedSent(f, { lukky: 250 }, { status: "sent_outside" });
+    await f.seed();
+    const r = await runSendStep(f.deps());
+    expect(r.sent).toBe(9);
   }, 240_000);
 
   it("a single run is not capped either: 100 Connections -> 300 e-mails in one call, 100 from each member", async () => {

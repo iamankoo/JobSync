@@ -31,6 +31,7 @@ import { draftKeyFor } from "./sync";
 import { hasReviewFlag, normalizeParkReason, parkedReasonOf } from "@/lib/gmail/draft-flags";
 import { MEMBER_RESUME_FILES } from "@/config/resume-map";
 import type { SendRecord, SendStatus, TrackingRecord } from "./types";
+import { MEMBER_DAILY_SEND_LIMIT, SEND_WINDOW_MS } from "./limits";
 
 /** The fourteen pre-send validations, in the order they are reported (evaluation order is cheap-first, see `evaluate`). */
 export const CHECKS = [
@@ -147,7 +148,18 @@ interface SendContext {
 const sha256 = (bytes: Uint8Array) => createHash("sha256").update(bytes).digest("hex");
 
 /** Runs the validations for one tracked contact. Cheap, local checks first; Gmail is read only after everything else passed. */
-interface Env { connections: Map<string, Connection>; drafts: ReadonlyMap<string, DraftInfo>; ledger: readonly SendRecord[]; tracking: readonly TrackingRecord[]; exclusions: { value: string; reason: string }[]; eligibleIds: ReadonlySet<string> | null; addresses: ReadonlyMap<MemberId, string | null> }
+interface Env { connections: Map<string, Connection>; drafts: ReadonlyMap<string, DraftInfo>; ledger: readonly SendRecord[]; tracking: readonly TrackingRecord[]; exclusions: { value: string; reason: string }[]; eligibleIds: ReadonlySet<string> | null; addresses: ReadonlyMap<MemberId, string | null>; sentInWindow: ReadonlyMap<MemberId, number> }
+
+/** Confirmed JobSync sends (Send Ledger "sent" with a Gmail message id) of each member in the rolling 24 hours before `nowMs`. "sent_outside" never counts. */
+export function confirmedSendsInWindow(ledger: readonly SendRecord[], nowMs: number): Map<MemberId, number> {
+  const out = new Map<MemberId, number>(MEMBER_IDS.map((m) => [m, 0]));
+  for (const r of ledger) {
+    if (r.status !== "sent" || !r.gmailMessageId.trim() || !out.has(r.member as MemberId)) continue;
+    const at = Date.parse(r.sentAt || r.updatedAt || r.createdAt);
+    if (Number.isFinite(at) && nowMs - at < SEND_WINDOW_MS) out.set(r.member as MemberId, out.get(r.member as MemberId)! + 1);
+  }
+  return out;
+}
 
 async function evaluate(deps: SendDeps, rec: TrackingRecord, member: MemberId, env: Env): Promise<Evaluation> {
   const email = normalizeEmail(rec.email);
@@ -202,6 +214,8 @@ async function evaluate(deps: SendDeps, rec: TrackingRecord, member: MemberId, e
     .filter((r) => r.member === member && r.status === "failed_transient" && r.reason === RATE_LIMIT_REASON && r.notBefore && Date.parse(r.notBefore) > deps.now().getTime())
     .sort((a, b) => b.notBefore.localeCompare(a.notBefore))[0];
   if (cooling) return { kind: "wait", check: "gmail_quota", reason: `Gmail asked ${member}'s account to slow down; sending resumes after ${cooling.notBefore}` };
+  // The member's OWN daily allowance (rolling 24 h). Another member's sends never use it up.
+  if ((env.sentInWindow.get(member) ?? 0) >= MEMBER_DAILY_SEND_LIMIT) return { kind: "wait", check: "gmail_quota", reason: `${member} has sent ${MEMBER_DAILY_SEND_LIMIT} e-mails in the last 24 hours; sending resumes as the window rolls on` };
 
   // Cheap pre-filter from the cached drafts.list: a ledger draft that is not in the member's Drafts folder is not a pending draft. No per-draft Gmail
   // call, no claim and no send. Only a complete, successful listing can say "absent"; any doubt ("unknown") falls through to the full verification below.
@@ -400,6 +414,8 @@ export async function runSendStep(deps: SendDeps): Promise<SendRunResult> {
   // Oldest first. A contact is finished only when ALL members' e-mails are confirmed. A contact flagged "sent" is still a candidate when some member
   // has an unsent draft (see outstandingMembers); a contact whose every draft is sent is skipped without a single Gmail call.
   const sentKeys = confirmedSendKeys(ledgerAll);
+  // Per-member allowance, counted once from the ledger and kept current as this call confirms sends.
+  const sentInWindow = confirmedSendsInWindow(ledgerAll, now.getTime());
   const candidates = tracking
     .filter((t) => t.importStatus === "added" && t.connectionId && (t.sendStatus !== "sent" || outstandingMembers(t, drafts, sentKeys).length > 0))
     .sort((a, b) => (a.addedAt || a.claimedAt).localeCompare(b.addedAt || b.claimedAt));
@@ -459,7 +475,7 @@ export async function runSendStep(deps: SendDeps): Promise<SendRunResult> {
     for (const member of MEMBER_IDS) {
       if (deps.deadline !== undefined && Date.now() > deps.deadline) { result.stoppedBecause = "deadline"; break outer; }
       try {
-        const ev = await evaluate(deps, rec, member, { connections: conns, drafts, ledger: ledgerAll, tracking, exclusions, eligibleIds: parsed.contacts.length + priority.contacts.length ? eligibleIds : null, addresses });
+        const ev = await evaluate(deps, rec, member, { connections: conns, drafts, ledger: ledgerAll, tracking, exclusions, eligibleIds: parsed.contacts.length + priority.contacts.length ? eligibleIds : null, addresses, sentInWindow });
         if (ev.kind !== "send") await syncParked(member, rec, ev);
         if (ev.kind !== "send") {
           // A stale draft costs nothing: no claim, no send, no ledger row. The next member / contact is processed straight away.
@@ -516,6 +532,7 @@ export async function runSendStep(deps: SendDeps): Promise<SendRunResult> {
         if (out.status === "sent") {
           await finishSent(deps, row, out.messageId, out.threadId, "confirmed by Gmail");
           result.sent += 1;
+          sentInWindow.set(member, (sentInWindow.get(member) ?? 0) + 1);
         } else if (out.status === "rate_limited") {
           // Back off harder while Gmail keeps refusing this account (a daily quota lasts hours): 15, 30, 60, 120, then 240 minutes.
           const recentRefusals = ledgerAll.filter((r) => r.member === member && r.reason === RATE_LIMIT_REASON && now.getTime() - Date.parse(r.updatedAt || r.createdAt) < RATE_ESCALATION_WINDOW_MS).length;
@@ -557,6 +574,7 @@ export async function runSendStep(deps: SendDeps): Promise<SendRunResult> {
           if (verdict.state === "sent") {
             await finishSent(deps, row, verdict.messageId ?? "", row.threadId || undefined, "confirmed by reconciliation");
             result.sent += 1;
+            sentInWindow.set(member, (sentInWindow.get(member) ?? 0) + 1);
           } else if (verdict.state === "external") {
             await patchLedger(deps, row, { status: "sent_outside", reason: verdict.reason }, "reconciled: sent outside JobSync before this attempt; not counted as ours");
             await syncParked(member, rec, { kind: "stale", check: "not_already_received", sentOutside: true, reason: STALE_SENT });

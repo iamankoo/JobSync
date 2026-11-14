@@ -35,6 +35,12 @@ export const MAX_CONSECUTIVE_FAILURES = 3;
  * backlog that cannot be sent (every remaining draft blocked by a content or résumé check) from keeping imports and drafting off forever.
  */
 export const SEND_FIRST_IDLE_LIMIT = 2;
+/**
+ * Send-first is decided by ONE member's backlog, but it skips importing and drafting for everyone. So after this many send-first cycles in a row the
+ * runner runs ONE normal cycle (manual Connections, import, drafting for the members below their own limit, and a normal send slice) before
+ * send-first resumes: one member's backlog can slow the others down, never stop them.
+ */
+export const SEND_FIRST_NORMAL_EVERY = 2;
 
 export interface RunnerLock {
   acquire(): Promise<boolean>;
@@ -65,6 +71,8 @@ export interface RunnerResult {
   completed: number;
   /** Cycles that ran in send-first mode, and whether the runner gave up on that mode because it stopped making progress. */
   sendFirstCycles: number;
+  /** Normal cycles the runner interleaved between send-first cycles (see SEND_FIRST_NORMAL_EVERY). */
+  interleaved?: number;
   sendFirstSuspended: boolean;
 }
 
@@ -107,12 +115,16 @@ export async function runOutreachRunner(deps: RunnerDeps): Promise<RunnerResult>
 
     let failures = 0;
     let idleSendFirst = 0;
+    let sendFirstInARow = 0;
     for (;;) {
       if (lost || now() - lastBeat >= RUNNER_LOCK_TTL_MS) return finish("lock-lost");
       if (now() - started >= maxRunMs) return finish("time-limit");
       const cycleStart = now();
       out.cycles += 1;
-      const outcome = await deps.runCycle({ noSendFirst: out.sendFirstSuspended });
+      const interleave = !out.sendFirstSuspended && sendFirstInARow >= SEND_FIRST_NORMAL_EVERY;
+      if (interleave) out.interleaved = (out.interleaved ?? 0) + 1;
+      const outcome = await deps.runCycle({ noSendFirst: out.sendFirstSuspended || interleave });
+      sendFirstInARow = outcome.mode === "send-first" ? sendFirstInARow + 1 : 0;
       if (outcome.status === "disabled") return finish("disabled");
       if (outcome.status === "timed-out") {
         const settled = outcome.settled ? await Promise.race([outcome.settled.then(() => true), sleep(settleGraceMs).then(() => false)]) : false;
@@ -134,7 +146,7 @@ export async function runOutreachRunner(deps: RunnerDeps): Promise<RunnerResult>
         failures = 0;
       }
       // While draining a backlog, cycles follow each other with only a short pause; otherwise they keep the 2-minute cadence.
-      const wait = outcome.mode === "send-first" ? MIN_CYCLE_GAP_MS : Math.max(MIN_CYCLE_GAP_MS, intervalMs - (now() - cycleStart));
+      const wait = outcome.mode === "send-first" || interleave ? MIN_CYCLE_GAP_MS : Math.max(MIN_CYCLE_GAP_MS, intervalMs - (now() - cycleStart));
       if (now() - started + wait >= maxRunMs) return finish("time-limit");
       await sleep(wait);
     }

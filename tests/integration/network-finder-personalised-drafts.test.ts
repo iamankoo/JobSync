@@ -25,7 +25,7 @@ beforeEach(() => {
 });
 afterEach(() => setSheetsClientForTesting(null));
 
-const config = loadNetworkFinderConfig({ NETWORK_FINDER_ENABLED: "true" } as unknown as NodeJS.ProcessEnv);
+const config = loadNetworkFinderConfig({ DRAFT_DELAY_MINUTES: "0", NETWORK_FINDER_ENABLED: "true" } as unknown as NodeJS.ProcessEnv);
 const json = (body: unknown) => ({ type: "application/json", body: JSON.stringify(body) });
 
 // ---- the fake public web: Magic Hour AI (Ashby board) and two other companies ---------------------------------------
