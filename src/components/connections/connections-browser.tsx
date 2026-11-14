@@ -18,13 +18,14 @@ import { ConnectionDetailsDialog } from "./connection-details-dialog";
 import { ConnectionForm } from "./connection-form";
 
 /** The SHARED people-to-connect-with list (everyone sees everything; only the adder edits). Tracking only: nothing is ever sent to LinkedIn or anyone else. */
-export function ConnectionsBrowser({ connections: initial, me, timeZone }: { connections: Connection[]; me: MemberId; timeZone: string }) {
+export function ConnectionsBrowser({ connections: initial, me, timeZone, initialConnectionId }: { connections: Connection[]; me: MemberId; timeZone: string; initialConnectionId?: string }) {
   const [items, setItems] = useState(initial);
   const [seen, setSeen] = useState(initial);
   const [editing, setEditing] = useState<Connection | "new" | null>(null);
   const [deleting, setDeleting] = useState<Connection | null>(null);
   // By id, so the open details always show the latest saved values (status changes, background refresh).
-  const [viewingId, setViewingId] = useState<string | null>(null);
+  // A notification link (?connection=<id>) opens that Connection's details at once; an unknown id simply shows the list.
+  const [viewingId, setViewingId] = useState<string | null>(initialConnectionId ?? null);
   const [busyId, setBusyId] = useState<string | null>(null);
   const [notice, setNotice] = useState<NoticeState | null>(null);
 

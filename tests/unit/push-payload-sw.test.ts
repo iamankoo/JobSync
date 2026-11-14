@@ -39,7 +39,7 @@ describe("payload text", () => {
 describe("connection and chat payloads", () => {
   it("connection: who added whom, at which company; opens Connections; never the message or notes", () => {
     const p = connectionAddedPayload("rishii", { connectionId: "conn_1", name: "Priya", company: "Acme", role: "Recruiter" });
-    expect(p).toEqual({ title: "Rishii added a connection: Priya", body: "Recruiter · Acme — tap to view in Connections.", url: "/connections", tag: "connection-added-conn_1", icon: "/assets/rishii.jpeg" });
+    expect(p).toEqual({ title: "Rishii added a connection: Priya", body: "Recruiter · Acme — tap to view in Connections.", url: "/connections?connection=conn_1", tag: "connection-added-conn_1", icon: "/assets/rishii.jpeg" });
   });
   it("chat: names the sender, previews the text, one collapsing tag per sender", () => {
     const p = chatMessagePayload("anni", { messageId: "msg_1", kind: "text", text: "hi\nthere" });
