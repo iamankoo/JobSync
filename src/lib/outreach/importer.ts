@@ -52,7 +52,9 @@ export interface ImportResult {
   resumed: number;
   linkedExisting: number;
   failed: number;
-  stoppedBecause: "daily-limit" | "run-limit" | "no-more-eligible" | "deadline" | "error" | "none";
+  stoppedBecause: "daily-limit" | "run-limit" | "no-more-eligible" | "deadline" | "error" | "none" | "scheduled";
+  /** Set when the import schedule (import-schedule.ts) held the import back or limited it: why, and which batch of the day this was. */
+  schedule?: { reason?: string; batch?: number; windowStart: string; importedInWindow: number };
   masterRejected: number;
   queueRemaining: number;
   /** Contacts of the optional Priority Contacts tab still waiting to be imported (they are imported before the rest of the queue). */
