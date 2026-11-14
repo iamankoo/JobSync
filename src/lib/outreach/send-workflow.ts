@@ -428,7 +428,19 @@ export async function runSendStep(deps: SendDeps): Promise<SendRunResult> {
   const every = Math.max(1, deps.reviewRecheckEvery ?? 1);
   // A contact that needs a person: all its open drafts are recorded as unsendable ("parked"), or (with rotation on) it is marked "review" or "blocked".
   const needsPerson = (t: TrackingRecord) => parkedRec(t) || (every > 1 && (t.sendStatus === "review" || t.sendStatus === "blocked"));
-  candidates.sort((a, b) => Number(needsPerson(a)) - Number(needsPerson(b))); // stable: oldest first inside each group
+  // FAIR ORDER ACROSS MEMBERS. Each member has their own queue: their unsent, un-flagged drafts, manually added Connections first, then the rest, oldest
+  // first. The walk takes every member's 1st, then every member's 2nd, ... so one member's backlog (e.g. re-drafts of old Connections only they still
+  // need) can never keep another member's drafts waiting. A contact's place is the best place it has in any member's queue.
+  const openFor = (t: TrackingRecord, m: MemberId) => {
+    const d = drafts.get(draftKeyFor(t.connectionId, m));
+    return d?.status === "created" && !hasReviewFlag(d.detail) && parkedReasonOf(d.detail) === null && !sentKeys.has(sendKeyFor(m, t.email));
+  };
+  const manualFirst = (a: TrackingRecord, b: TrackingRecord) => Number(a.source !== "manual") - Number(b.source !== "manual");
+  const turn = new Map<TrackingRecord, number>();
+  for (const m of MEMBER_IDS) {
+    candidates.filter((t) => openFor(t, m)).sort(manualFirst).forEach((t, k) => turn.set(t, Math.min(turn.get(t) ?? Infinity, k)));
+  }
+  candidates.sort((a, b) => Number(needsPerson(a)) - Number(needsPerson(b)) || (turn.get(a) ?? Infinity) - (turn.get(b) ?? Infinity)); // stable: oldest first otherwise
   const slot = Math.floor(deps.now().getTime() / RUN_SLOT_MS);
   const dueForRecheck = (t: TrackingRecord) => every === 1 || (hashOf(t.contactId) + slot) % every === 0;
   let parkBudget = MAX_PARK_WRITES_PER_RUN;
