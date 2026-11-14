@@ -23,6 +23,7 @@ import { loadOutreachConfig, type OutreachConfig } from "./config";
 import { eligibleIdSet, firstInDuplicateGroups, importEligibility, parseMasterRows } from "./contacts";
 import { resolvePriorityContacts } from "./priority";
 import { runOutreachImport, type ConnectionsPort, type ImportResult } from "./importer";
+import { decideImport } from "./import-schedule";
 import { adoptExistingDrafts, type AdoptResult } from "./existing-drafts";
 import { registerManualConnections } from "./manual";
 import { OutreachSheet } from "./sheet";
@@ -143,9 +144,22 @@ export async function runOutreachCycle(deps: CycleDeps): Promise<CycleResult> {
     // Sending runs FIRST with its own time slice, so slow drafting or Sheets back-off can never starve it.
     if (gate && deps.send) result.send = await step("send", () => deps.send!({ sendFirst }));
     else result.send = { status: "disabled", sent: 0, blocked: 0, needsReview: 0, failed: 0, waiting: 0, duplicatesPrevented: 0, reconciled: 0, stoppedBecause: "none", errors: [] };
-    if (!sendFirst) result.import = await step("import", () =>
-      runOutreachImport({ sheet: deps.sheet, connections: deps.connections, now: deps.now, timezone: deps.timezone, dailyLimit: deps.config.dailyLimit, perRun: deps.config.perRun, ownerOverride: deps.config.ownerOverride, staleClaimMs: 120_000, ...(deps.deadline ? { deadline: deps.deadline } : {}) }),
-    );
+    if (!sendFirst) result.import = await step("import", async () => {
+      // The owner's schedule decides whether and how much to import now (pause, daily start time, batches of 50 that are drafted and sent first).
+      const at = deps.now();
+      const { records } = await deps.sheet.readTracking();
+      const sched = deps.config.importSchedule;
+      if (!sched) return runOutreachImport({ sheet: deps.sheet, connections: deps.connections, now: deps.now, timezone: deps.timezone, dailyLimit: deps.config.dailyLimit, perRun: deps.config.perRun, ownerOverride: deps.config.ownerOverride, staleClaimMs: 120_000, ...(deps.deadline ? { deadline: deps.deadline } : {}) });
+      const plan = decideImport(records, at, deps.timezone, sched);
+      const schedule = { windowStart: plan.windowStart, importedInWindow: plan.importedInWindow, ...(plan.allowed ? { batch: plan.batch } : { reason: plan.reason }) };
+      if (!plan.allowed) {
+        return { day: todayOf(at, deps.timezone), importedThisRun: 0, importedToday: plan.importedInWindow, dailyLimit: sched.dailyLimit, resumed: 0, linkedExisting: 0, failed: 0, stoppedBecause: "scheduled", masterRejected: 0, queueRemaining: 0, errors: [], schedule } satisfies ImportResult;
+      }
+      // The importer keeps its own rolling-24 h guard; it is told to allow exactly `take` more than it already counts, so the schedule is the limit.
+      const rolling = records.filter((r) => r.source === "outreach-database" && Date.parse(r.claimedAt) > at.getTime() - 86_400_000 && (r.importStatus === "added" || r.importStatus === "importing") && r.lastError !== "linked-existing").length;
+      const res = await runOutreachImport({ sheet: deps.sheet, connections: deps.connections, now: deps.now, timezone: deps.timezone, dailyLimit: rolling + plan.take, perRun: Math.min(deps.config.perRun, plan.take), ownerOverride: deps.config.ownerOverride, staleClaimMs: 120_000, ...(deps.deadline ? { deadline: deps.deadline } : {}) });
+      return { ...res, schedule };
+    });
     const pressured = (deps.rateLimitHits?.() ?? 0) >= DRAFT_YIELD_AFTER_RATE_LIMITS;
     result.drafts = deps.draft && !pressured && !sendFirst ? ((await step("drafts", () => deps.draft!(deps.config.draftsPerRun))) ?? "skipped") : "skipped";
     const sync = () =>

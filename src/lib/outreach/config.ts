@@ -1,5 +1,6 @@
 import { MEMBER_IDS, type MemberId } from "@/config/members";
 import { DAILY_IMPORT_LIMIT, DEFAULT_IMPORT_PER_RUN, MASTER_TAB } from "./types";
+import { DEFAULT_BATCH_SIZE, DEFAULT_DAY_START, type ImportScheduleConfig } from "./import-schedule";
 
 /** Manual connections older than this are not picked up (same window as the drafting worker). */
 export const MANUAL_WINDOW_DAYS = 30;
@@ -35,6 +36,11 @@ export interface OutreachConfig {
    * another member, the attachment must be this member's own resume (never another member's), and opt-outs, exclusions, invalid addresses and duplicate protection all still apply.
    */
   sendAllDrafts: boolean;
+  /**
+   * The import schedule (see import-schedule.ts): no imports before OUTREACH_IMPORTS_FROM (ISO), each day's allowance opens at OUTREACH_IMPORT_DAY_START
+   * (local "HH:MM", default 00:15), in batches of OUTREACH_IMPORT_BATCH (default 50) that are drafted and sent before the next one is imported.
+   */
+  importSchedule?: ImportScheduleConfig;
   /** Runtime only (never read from the environment): the runner has switched send-first mode off for the rest of its run because it stopped making progress. */
   sendFirstSuspended?: boolean;
 }
@@ -59,6 +65,12 @@ export function loadOutreachConfig(env: NodeJS.ProcessEnv = process.env): Outrea
     sendAllowlist: (env.OUTREACH_SEND_ONLY_TO ?? "").split(",").map((s) => s.trim().toLowerCase()).filter((s) => /^[a-z0-9.!#$%&'*+/=?^_`{|}~-]+@[a-z0-9.-]+\.[a-z]{2,}$/.test(s)),
     manualSince: Number.isNaN(Date.parse(env.OUTREACH_MANUAL_SINCE ?? "")) ? "" : new Date(Date.parse(env.OUTREACH_MANUAL_SINCE ?? "")).toISOString(),
     sendAllDrafts: env.OUTREACH_SEND_ALL_DRAFTS === "true",
+    importSchedule: {
+      importsFrom: Number.isNaN(Date.parse(env.OUTREACH_IMPORTS_FROM ?? "")) ? "" : new Date(Date.parse(env.OUTREACH_IMPORTS_FROM ?? "")).toISOString(),
+      dayStart: /^([01]?\d|2[0-3]):[0-5]\d$/.test((env.OUTREACH_IMPORT_DAY_START ?? "").trim()) ? env.OUTREACH_IMPORT_DAY_START!.trim() : DEFAULT_DAY_START,
+      batchSize: int(env.OUTREACH_IMPORT_BATCH, DEFAULT_BATCH_SIZE, 1, DAILY_IMPORT_LIMIT),
+      dailyLimit: int(env.OUTREACH_DAILY_LIMIT, DAILY_IMPORT_LIMIT, 1, DAILY_IMPORT_LIMIT),
+    },
     sendFirstAt: env.OUTREACH_SEND_FIRST_AT === undefined || env.OUTREACH_SEND_FIRST_AT.trim() === "" ? DEFAULT_SEND_FIRST_AT : int(env.OUTREACH_SEND_FIRST_AT.trim(), DEFAULT_SEND_FIRST_AT, 0, 1000),
   };
 }

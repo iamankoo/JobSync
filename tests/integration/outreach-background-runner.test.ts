@@ -213,7 +213,7 @@ describe("the whole cycle under the runner: the 200-per-24-hours import limit is
     invalidateTableCache();
     const o = newOutreachSpreadsheet(masterGrid(manyContacts(260)));
     await o.sheet.ensureTabs();
-    const config = loadOutreachConfig({ OUTREACH_ENABLED: "true", OUTREACH_SPREADSHEET_ID: "x", OUTREACH_IMPORT_PER_RUN: "50" } as unknown as NodeJS.ProcessEnv);
+    const config = loadOutreachConfig({ OUTREACH_ENABLED: "true", OUTREACH_SPREADSHEET_ID: "x", OUTREACH_IMPORT_PER_RUN: "50", OUTREACH_IMPORT_BATCH: "200" } as unknown as NodeJS.ProcessEnv);
     const clock = new Date("2026-11-12T06:00:00.000Z");
     process.env.OUTREACH_ENABLED = "true";
     process.env.OUTREACH_SPREADSHEET_ID = "x";
