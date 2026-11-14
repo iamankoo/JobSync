@@ -1,10 +1,67 @@
 # JobSync — Session Handoff Summary
 
-> Read this first in a new session. Last updated **2026-11-01, ~19:45 IST** (the three 1 Nov updates below are the newest, newest first).
+> Read this first in a new session. Last updated **2026-11-15, ~01:30 IST** (newest first).
 > Items marked **[VERIFIED]** were checked in Production/the sheet; **[NEEDS VERIFICATION]** were not yet confirmed;
 > **[USER-REPORTED]** were confirmed by the user, not by me.
 
 ---
+
+## UPDATE 2026-11-15 ~01:30 IST (14 Nov ~20:00 UTC): outreach running unattended on Netlify
+
+**Production:** https://jobsync-app.netlify.app, Netlify site `jobsync-app`; `main` @ `0c8d301` (deploy `6af8b59e82fca8a4424c0ffb`). Google Sheets is the only database. Work happens in the worktree `../jobsync-netlify` (the `jobsync` folder is an old Vercel-era branch with unrelated uncommitted work; leave it). Anni = Aniket Raj (he/him).
+
+### How it runs [VERIFIED]
+- cron-job.org job "JobSync Outreach" (id 8789248): `GET https://jobsync-app.netlify.app/api/cron/outreach`, every **5 min**, enabled, Bearer `OUTREACH_CRON_SECRET` (the secret was regenerated at the Netlify migration; the user pasted the new header on 14 Nov). Since 18:20 UTC every call → **202 Accepted**.
+- The route hands over to the Netlify **background function** `outreach-background`: one runner (lock `bg-runner`, heartbeat) runs ~11 min of cycles (cycle lock `run-lock`); later cron calls while it runs exit as busy. Locks observed acquired, renewed and released cleanly.
+- Netlify function logs do NOT show cycle summaries. Check the **Outreach Database** sheet: `Outreach Send Ledger` (every send with Gmail message id), `Outreach Daily Counters`, `Added in Outreach Emails` (tracking), `Outreach State` (locks); main sheet `NF_Drafts` (every draft).
+
+### What was wrong (root causes) and the fixes
+1. **Nothing ran after the move to Netlify**: cron-job.org still pointed at the blocked Vercel URL, with the old secret. Repointed, 5-min cadence, enabled (user pasted header).
+2. **Manual Connections got no drafts**: the 100-draft gate and send-first used ONE combined count (Rishii's ~267 parked drafts paused everyone), and `OUTREACH_SEND_ALL_DRAFTS=true` made send-first trigger at 1 draft counting parked ones, so every cycle was send-only (no registration, import or drafting). → PR #42 + env `OUTREACH_SEND_ALL_DRAFTS=false` (validation enforced again).
+3. **Anni got no new drafts**: drafting sorted imports and manual together, oldest first; Anni's work sat behind ~100 old Connections only Lukky/Rishii still needed (their Gmail was disconnected ~9-10 Nov). Drafting also got squeezed out of the 44 s cycle budget. → PR #45.
+4. **Anni had drafts but 0 sends**: the send walk was oldest-contact-first; his first draft was #137 of 862 behind Lukky/Rishii re-drafts. → PR #47.
+
+### PRs merged 14 Nov (all tested: tsc, eslint, full suite ~1990 passed / 4 skipped, Netlify build)
+- **#42** per-member 100-draft gate (each Gmail counted and gated separately; one member's unreadable Gmail pauses only them); send-first stays at **50** (owner's decision) but per member, and the runner interleaves a normal cycle after every 2 send-first cycles; **10-minute drafting delay** from the Connection's CreatedAt (`DRAFT_DELAY_MINUTES`, default 10); **200 confirmed sends per member per rolling 24 h** (no combined cap; `sent_outside` never counts).
+- **#43** "added a connection" push opens `/connections?connection=<id>`.
+- **#44** Connections created by the importer / Network Finder show **"Added by JobSync"** (stored MemberID unchanged).
+- **#45** drafting order: member-added first, then imports, then Network Finder; `CYCLE_BUDGET_MS` 44 s → 65 s.
+- **#46** import schedule (`src/lib/outreach/import-schedule.ts`): no imports before `OUTREACH_IMPORTS_FROM` (= `2026-11-15T18:45:00Z`, i.e. **16 Nov 00:15 IST**); each day opens at **00:15 IST** (`OUTREACH_IMPORT_DAY_START`); **batches of 50** (`OUTREACH_IMPORT_BATCH`): the next 50 only after every Connection of the day's batches is sent / review / blocked / failed (8 h cap per item); max 200/day.
+- **#47** send order: members take turns (each member's queue: manual first, then oldest first).
+
+### Owner's plan
+- **15 Nov (IST): no imports.** Clear the backlog: manual Connections first, then JobSync imports; send from all three accounts.
+- **From 16 Nov:** 00:15 IST import 50 → draft (after 10 min) → send → next 50 …, up to 200/day.
+- "All three accounts equal by end of 15 Nov" is NOT reachable under the 200-sends-per-member-per-day allowance (Lukky/Rishii need ~375 each, Anni ~280). Owner was told; the cap was kept (Gmail rate-limited Rishii at 178/day on 11 Nov). The remaining backlog continues on 16 Nov alongside the new batches.
+
+### Production numbers [VERIFIED]
+Connections audit at 14 Nov 19:13 UTC: **1,717** Connections (1,692 unique e-mails, 15 without e-mail); **manual 266** (Anni 167, Lukky 97, Rishii 2; 241 distinct e-mails, 8 e-mails duplicated over 18 manual rows); **JobSync imports 1,451**; Network Finder 0. Each Connection is shared: every member drafts/sends their own e-mail for it; the stored owner only records who added it.
+
+Manual Connections at 19:41 UTC (per member): drafted 234 of 236 eligible (Anni/Lukky/Rishii: JobSync-sent 4/5/4, waiting to send 26/26/27, review 4/3/88, draft gone from Gmail i.e. sent by hand or deleted 200/200/115); 2 still waiting for a draft each.
+
+Last status 19:46 UTC (15 Nov 01:16 IST):
+
+| | Anni | Lukky | Rishii |
+|---|---:|---:|---:|
+| JobSync sends, last 24h | 12 | 29 | 29 |
+| Sendable drafts waiting | 18 | 48 | 48 |
+| Imported Connections still needing a draft | 251 | 312 | 308 |
+| Drafts flagged for review (not sent) | 44 | 8 | 275 |
+| Gmail auth / cool-downs | OK / none | OK / none | OK / none |
+
+Latest import before the pause: 14 Nov 19:00:42 UTC (72 in that rolling 24 h; ~50 of them after 00:15 IST 15 Nov, before the pause deployed). Drafts verified directly in Gmail: DRAFT label, correct recipient, member's own résumé only (Lakshya_SDE / Lakshya_AiMl, Rishi_Raj_SDE / Rishi_Raj_AIML, Aniket-Raj-AIML), member's signature, 81-138 words, no placeholders. Rishii's SDE and AIML PDFs have identical size (119,385 B): probably the same file uploaded twice (his to check). Rishii's ~270 drafts in review fail word-limit / résumé checks and are left untouched.
+
+### Open items / owner actions
+- **Gmail OAuth (Testing mode): all three connections (11 Nov ~18:00 UTC) expire ~18 Nov.** Publish the OAuth app or all three reconnect Gmail before then; otherwise drafting and sending stop. Not changed (needs owner approval).
+- cron-job.org **Morning Motivation / Nightly Progress** jobs still call the old Vercel URL and fail daily (they use `CRON_SECRET`); not changed.
+- Network Finder discovery stays OFF; its cron was not touched.
+- Push devices registered: Anni 5, Lukky 4, Rishii 4 (FCM). Job / Connection / group-chat notifications go to the other two members only (code unchanged, tests pass); not exercised live to avoid spamming.
+
+### Read-only check scripts (untracked, never committed)
+`jobsync-netlify/tests/live/zz-counts.live.test.ts` (per-member status), `zz-audit` (Connections table), `zz-gmail` (draft readback in Gmail), `zz-anniq` (send-queue position). Run: `npx vitest run --config vitest.live.config.mts tests/live/zz-counts.live.test.ts`. They write to a scratchpad path set in `OUT`; change it before use. One read per tab; never poll the sheet (shared Sheets quota). Secrets stay in `.env.local` / the old session scratchpad `cron-secrets.txt`; never print them.
+
+---
+
 
 ## UPDATE 2026-11-01 (email closing: "attached my resume")
 
