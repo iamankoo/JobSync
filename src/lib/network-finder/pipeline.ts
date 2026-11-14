@@ -831,10 +831,13 @@ export async function runPendingDrafts(deps: PipelineDeps, options: { days?: num
     }
   }
   selectedIds = new Map((deps.selections ? await deps.selections.all() : []).map((s) => [s.connectionId, s]));
+  // Who added it: a member by hand (0) first, then Outreach Database imports (1), then Network Finder contacts (2). Within each group the oldest first.
+  // Without this, a member's new Connection waited behind every older imported Connection that still needed a draft from someone.
+  const origin = (c: Connection) => (isNetworkFinderEntry(c) ? 2 : (c.notes ?? "").startsWith("Source: Outreach Database") ? 1 : 0);
   const contacts = recent
     .sort(
       (a, b) =>
-        Number(isNetworkFinderEntry(a)) - Number(isNetworkFinderEntry(b)) ||
+        origin(a) - origin(b) ||
         // A connection whose last attempt failed waits behind the ones never tried, so one broken record cannot block the rest.
         Number(hasFailed(a.connectionId)) - Number(hasFailed(b.connectionId)) ||
         Number(selectedIds.has(b.connectionId)) - Number(selectedIds.has(a.connectionId)) ||

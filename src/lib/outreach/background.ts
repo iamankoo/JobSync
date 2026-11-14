@@ -15,8 +15,12 @@ import { withHardDeadline } from "@/lib/network-finder/run";
 import { loadOutreachConfig, type OutreachConfig } from "./config";
 import { buildRealCycleDeps, runOutreachCycle, summarizeCycle, type CycleDeps, type CycleResult } from "./run";
 
-/** The cycle plans its steps inside this budget (send ~20 s, import ~36 s, drafting ~44 s). */
-export const CYCLE_BUDGET_MS = 44_000;
+/**
+ * The cycle plans its steps inside this budget (send slice 10-16 s, import until budget - 8 s, drafting until the budget). It was 44 s while a cycle had to
+ * fit a ~60 s request; in the background function the hard stop is 110 s, so drafting gets the extra time: 65 s plus ~30 s of wrap-up stays inside it
+ * (a send-first cycle already runs ~90 s). Drafting starts a Connection only with 12 s left, so it was often squeezed out entirely at 44 s.
+ */
+export const CYCLE_BUDGET_MS = 65_000;
 /** Sheets retry sleeping stops here, so a 429 storm cannot hold the run past the budget. */
 export const RETRY_DEADLINE_MS = 100_000;
 /**
