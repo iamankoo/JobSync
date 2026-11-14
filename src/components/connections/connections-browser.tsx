@@ -14,7 +14,9 @@ import { getMember, isAdmin, type MemberId } from "@/config/members";
 import { deleteConnectionRequest, updateConnectionRequest } from "@/lib/client/api";
 import { formatDisplayDate } from "@/lib/jobs/query";
 import type { Connection, ConnectionStatus } from "@/types/domain";
+import { addedByJobSync, JOBSYNC_ADDER_LABEL } from "@/lib/connections/source";
 import { ConnectionDetailsDialog } from "./connection-details-dialog";
+import { JobSyncMark } from "./jobsync-mark";
 import { ConnectionForm } from "./connection-form";
 
 /** The SHARED people-to-connect-with list (everyone sees everything; only the adder edits). Tracking only: nothing is ever sent to LinkedIn or anyone else. */
@@ -141,7 +143,12 @@ export function ConnectionsBrowser({ connections: initial, me, timeZone, initial
                         )}
                       </td>
                       <td role="cell" data-label="Added by" className={cellClass("whitespace-nowrap")}>
-                        {adder ? (
+                        {addedByJobSync(c) ? (
+                          <span className="flex items-center gap-2" data-testid="connection-row-added-by">
+                            <JobSyncMark size={22} />
+                            <span className="text-electric-soft">{JOBSYNC_ADDER_LABEL}</span>
+                          </span>
+                        ) : adder ? (
                           <span className="flex items-center gap-2" data-testid="connection-row-added-by">
                             <Avatar member={adder} size={22} />
                             <span style={{ color: adder.accentText }}>{mine ? "You" : adder.name}</span>

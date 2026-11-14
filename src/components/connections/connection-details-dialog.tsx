@@ -1,6 +1,8 @@
 "use client";
 
 import { useState } from "react";
+import { addedByJobSync, JOBSYNC_ADDER_LABEL } from "@/lib/connections/source";
+import { JobSyncMark } from "./jobsync-mark";
 import { Check, Copy, ExternalLink, Link2, Pencil, Trash2 } from "lucide-react";
 import { Avatar } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
@@ -109,7 +111,15 @@ export function ConnectionDetailsDialog({ c, mine, canManage = mine, timeZone, b
             <ConnectionStatusControl c={c} mine={mine} busy={busy} onStatus={onStatus} />
           </Field>
           <Field label="Added">
-            {adder ? (
+            {addedByJobSync(c) ? (
+              <span className="flex items-center gap-2" data-testid="connection-added-by">
+                <JobSyncMark size={20} />
+                <span>
+                  Added by <strong className="text-electric-soft">{JOBSYNC_ADDER_LABEL}</strong> on{" "}
+                  <time dateTime={c.createdAt}>{formatDisplayDate(c.createdAt, timeZone)}</time>
+                </span>
+              </span>
+            ) : adder ? (
               <span className="flex items-center gap-2" data-testid="connection-added-by">
                 <Avatar member={adder} size={20} />
                 <span>
