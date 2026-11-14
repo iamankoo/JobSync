@@ -36,7 +36,7 @@ const jobs = () => sheets.dataRows("Jobs");
 function setup(config: Partial<NetworkFinderConfig> = {}) {
   const jobSource = new MockJobSource();
   const deps: PipelineDeps = {
-    config: { ...loadNetworkFinderConfig({ NETWORK_FINDER_ENABLED: "true", APP_TIMEZONE: "Asia/Kolkata" } as unknown as NodeJS.ProcessEnv), ...config },
+    config: { ...loadNetworkFinderConfig({ DRAFT_DELAY_MINUTES: "0", NETWORK_FINDER_ENABLED: "true", APP_TIMEZONE: "Asia/Kolkata" } as unknown as NodeJS.ProcessEnv), ...config },
     sources: [],
     jobSources: [jobSource],
     queue: new InMemoryQueue<CompanyTask>(),

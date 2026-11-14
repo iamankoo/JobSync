@@ -28,13 +28,15 @@ export interface MemberDraftOutcome {
 }
 
 /**
- * The draft-backlog gate (see lib/gmail/draft-backlog.ts). `allowed: false` means NO new draft may be started, for any member. The check is
- * made once, BEFORE the three-member fan-out of an item begins, so an item is never left half drafted by a pause. It must fail closed.
+ * The draft-backlog gate (see lib/gmail/draft-backlog.ts), PER MEMBER. `check(member)` with `allowed: false` means no new draft may be started for
+ * THAT member (their own Gmail holds 100+ unsent JobSync drafts, or cannot be counted); the other members' drafts are created as usual. The paused
+ * member's draft for this item is simply not started (nothing is composed or recorded), so a later run creates it once they are below the limit.
+ * It must fail closed. `check()` without a member answers "may ANY member draft".
  */
 export interface BacklogGatePort {
-  check(): Promise<{ allowed: boolean; pending: number | null; reason: string }>;
-  /** A draft was just created: counted at once (the next check does not wait for a fresh Gmail count). */
-  noteCreated(count?: number): void;
+  check(member?: MemberId): Promise<{ allowed: boolean; pending: number | null; reason: string }>;
+  /** A draft was just created for `member`: counted at once (the next check does not wait for a fresh Gmail count). */
+  noteCreated(count?: number, member?: MemberId): void;
 }
 
 export interface FanoutDeps {
@@ -56,11 +58,6 @@ export const draftKey = (item: Pick<FanoutItem, "type" | "id">, memberId: Member
 
 export async function distributeDrafts(item: FanoutItem, deps: FanoutDeps): Promise<MemberDraftOutcome[]> {
   const outcomes: MemberDraftOutcome[] = [];
-  if (deps.backlog) {
-    // Fail closed: a gate that cannot answer (or throws) pauses drafting rather than risk growing the backlog.
-    const verdict = await deps.backlog.check().catch(() => ({ allowed: false, pending: null, reason: "draft backlog could not be checked" }));
-    if (!verdict.allowed) return (deps.members ?? MEMBER_IDS).map((memberId) => ({ memberId, result: "paused_backlog" as const, detail: verdict.reason }));
-  }
   for (const memberId of deps.members ?? MEMBER_IDS) {
     const key = draftKey(item, memberId);
     try {
@@ -69,6 +66,14 @@ export async function distributeDrafts(item: FanoutItem, deps: FanoutDeps): Prom
       if (previous === "created" || previous === "sent") {
         outcomes.push({ memberId, result: "already_drafted" });
         continue;
+      }
+      if (deps.backlog) {
+        // THIS member's own backlog. Fail closed: a gate that cannot answer (or throws) pauses this member's drafting rather than risk growing it.
+        const verdict = await deps.backlog.check(memberId).catch(() => ({ allowed: false, pending: null, reason: "draft backlog could not be checked" }));
+        if (!verdict.allowed) {
+          outcomes.push({ memberId, result: "paused_backlog", detail: verdict.reason });
+          continue;
+        }
       }
       if (!(await deps.isConnected(memberId))) {
         // Recorded once; retried automatically once the member connects Gmail.
@@ -85,7 +90,7 @@ export async function distributeDrafts(item: FanoutItem, deps: FanoutDeps): Prom
         const attachNote = content.attachment ? (res.attachment === "verified" ? `attached: ${content.attachment.fileName}` : "review: resume attachment could not be verified in the saved draft") : "";
         const detail = [content.review, content.note, attachNote].filter(Boolean).join("; ");
         await deps.ledger.record({ draftKey: key, memberId, itemType: item.type, itemId: item.id, gmailDraftId: res.draftId, ...(res.threadId ? { threadId: res.threadId } : {}), status: "created", detail });
-        deps.backlog?.noteCreated();
+        deps.backlog?.noteCreated(1, memberId);
         outcomes.push({ memberId, result: "created" });
       } else if (res.status === "failed") {
         await deps.ledger.record({ draftKey: key, memberId, itemType: item.type, itemId: item.id, gmailDraftId: "", status: "failed", detail: res.reason });

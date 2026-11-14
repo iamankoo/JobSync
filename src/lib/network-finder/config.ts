@@ -25,6 +25,8 @@ export interface NetworkFinderConfig {
   maxCompaniesPerTick: number;
   /** How often a processed company is re-checked for new openings. */
   jobRecheckIntervalMs: number;
+  /** How long after a manual/imported Connection was created its member drafts become eligible (DRAFT_DELAY_MINUTES, default 10, 0 = at once). */
+  draftDelayMs?: number;
   dailyInternships: number;
   dailyFullTime: number;
   /** When Connections holds this many entries, new Network Finder contacts stop and all three members are told (no export, no deletion). */
@@ -60,6 +62,7 @@ export function loadNetworkFinderConfig(env: NodeJS.ProcessEnv = process.env): N
     // One company per call keeps each call well inside a 60 s function limit (pages are read 1/s per site).
     maxCompaniesPerTick: posInt(env.NETWORK_FINDER_MAX_COMPANIES_PER_TICK, 1),
     jobRecheckIntervalMs: posInt(env.NETWORK_FINDER_JOB_RECHECK_HOURS, 24) * 3_600_000,
+    draftDelayMs: (/^\d{1,3}$/.test((env.DRAFT_DELAY_MINUTES ?? "").trim()) ? Number(env.DRAFT_DELAY_MINUTES!.trim()) : 10) * 60_000,
     dailyInternships: posInt(env.NETWORK_FINDER_DAILY_INTERNSHIPS, 15),
     dailyFullTime: posInt(env.NETWORK_FINDER_DAILY_FULL_TIME, 15),
     contactLimit: posInt(env.NETWORK_FINDER_CONTACT_LIMIT, 1000),

@@ -184,6 +184,6 @@ describe("the mode stays on until NO JobSync draft is left", () => {
     const run = readFileSync("src/lib/outreach/run.ts", "utf8");
     expect(run).toMatch(/reviewRecheckEvery: config\.sendAllDrafts \? 1 : REVIEW_RECHECK_EVERY/);
     expect(run).toMatch(/relaxContentChecks: config\.sendAllDrafts/);
-    expect(run).toMatch(/counted\.pending \+ counted\.parked/);
+    expect(run).toMatch(/counted\.byMember\[m\] \+ \(config\.sendAllDrafts \? counted\.parkedByMember\[m\] : 0\)/);
   });
 });

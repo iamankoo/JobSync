@@ -41,7 +41,7 @@ describe("a quiet scheduled cycle", () => {
     const jobSource = new MockJobSource();
     const result = await runScheduledCycle(
       {
-        config: loadNetworkFinderConfig({ NETWORK_FINDER_ENABLED: "true", APP_TIMEZONE: "Asia/Kolkata" } as unknown as NodeJS.ProcessEnv),
+        config: loadNetworkFinderConfig({ DRAFT_DELAY_MINUTES: "0", NETWORK_FINDER_ENABLED: "true", APP_TIMEZONE: "Asia/Kolkata" } as unknown as NodeJS.ProcessEnv),
         sources: [], jobSources: [jobSource], seedBoards: [{ name: "Acme", ats: "greenhouse", token: "acme" }],
         queue: stores.queue, registry: stores.registry, ledger: stores.ledger, selections: stores.selections,
         drafts: existingDraftDeps(), connections: existingConnections, jobs: existingJobs, runState: {}, stores,

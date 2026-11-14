@@ -88,7 +88,7 @@ function job(kind: "internship" | "full_time", over: Partial<JobCandidate> = {})
 function setup(ledger = new InMemoryBatchLedger(), jobsGateway: JobsGateway = existingJobs) {
   const jobSource = new MockJobSource();
   const deps: PipelineDeps = {
-    config: loadNetworkFinderConfig({ NETWORK_FINDER_ENABLED: "true", APP_TIMEZONE: "Asia/Kolkata" } as unknown as NodeJS.ProcessEnv),
+    config: loadNetworkFinderConfig({ DRAFT_DELAY_MINUTES: "0", NETWORK_FINDER_ENABLED: "true", APP_TIMEZONE: "Asia/Kolkata" } as unknown as NodeJS.ProcessEnv),
     sources: [], jobSources: [jobSource], seedBoards: [], jobAlerts: { send },
     queue: new InMemoryQueue<CompanyTask>(), registry: new InMemoryCompanyRegistry(), ledger, connections: existingConnections, jobs: jobsGateway, now: () => new Date(NOON_IST),
   };

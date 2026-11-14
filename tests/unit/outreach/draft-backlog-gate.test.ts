@@ -1,5 +1,5 @@
 /**
- * Draft backlog protection: 100+ unsent JobSync drafts in the members' Gmail pause ALL new drafting; sending is never gated.
+ * Draft backlog protection, PER MEMBER: 100+ unsent JobSync drafts in ONE member's Gmail pause new drafting for THAT member only; sending is never gated.
  * Unit level: the counting rules, the 99/100 boundary, fail-closed behaviour, caching, and every code path that creates drafts.
  */
 import fs from "node:fs";
@@ -12,7 +12,7 @@ import { createSelectionDrafts, draftForContact, runPendingDrafts, type Pipeline
 import { MockMailboxes } from "../../helpers/network-finder-mocks";
 
 const MEMBERS3: MemberId[] = ["anni", "lukky", "rishii"];
-const config = loadNetworkFinderConfig({ NETWORK_FINDER_ENABLED: "true" } as unknown as NodeJS.ProcessEnv);
+const config = loadNetworkFinderConfig({ DRAFT_DELAY_MINUTES: "0", NETWORK_FINDER_ENABLED: "true" } as unknown as NodeJS.ProcessEnv);
 
 /** n ledger drafts for a member, ids `${member}-${i}`. */
 const ledgerDrafts = (member: MemberId, n: number, detail = ""): PendingLedgerDraft[] => Array.from({ length: n }, (_, i) => ({ memberId: member, gmailDraftId: `${member}-${i}`, detail }));
@@ -81,9 +81,9 @@ describe("what is counted: the unsent JobSync drafts that really are in the memb
 
   it("existing (old) drafts are counted like new ones, and one that is later classified as unsendable leaves the eligible count without leaving Gmail", async () => {
     const old = ledgerDrafts("anni", 150);
-    expect((await createBacklogGate({ ports: ports(old) }).check()).allowed).toBe(false);
+    expect((await createBacklogGate({ ports: ports(old) }).check("anni")).allowed).toBe(false);
     const classified = old.map((d, i) => (i < 60 ? { ...d, detail: "parked: resume is missing" } : d));
-    expect(await createBacklogGate({ ports: ports(classified) }).check()).toMatchObject({ allowed: true, pending: 90 });
+    expect(await createBacklogGate({ ports: ports(classified) }).check("anni")).toMatchObject({ allowed: true, pending: 90 });
   });
 
   it("a member whose Gmail is not connected cannot be looked at: their ledger drafts are counted (conservative)", async () => {
@@ -91,64 +91,93 @@ describe("what is counted: the unsent JobSync drafts that really are in the memb
     expect(c).toMatchObject({ status: "ok", byMember: { anni: 4, lukky: 7, rishii: 0 } });
   });
 
-  it("cannot be counted -> unknown (never 'zero'): Gmail unavailable for a connected member, the ledger unreadable, or a port that throws", async () => {
+  it("cannot be counted -> unknown (never 'zero'), PER MEMBER: an unavailable or throwing Gmail makes only that member unknown; an unreadable ledger or no countable member makes it all unknown", async () => {
     const some = ledgerDrafts("anni", 2);
-    expect(await countPendingGmailDrafts(ports(some, { rishii: { status: "unavailable", reason: "Gmail answered 500" } }))).toMatchObject({ status: "unknown" });
-    expect(await countPendingGmailDrafts(ports(some, { lukky: "throw" }))).toMatchObject({ status: "unknown" });
+    const r = await countPendingGmailDrafts(ports(some, { rishii: { status: "unavailable", reason: "Gmail answered 500" } }));
+    expect(r).toMatchObject({ status: "ok", pending: 2, byMember: { anni: 2, lukky: 0 } });
+    expect(r.status === "ok" && r.unknown.rishii).toMatch(/Gmail answered 500/);
+    const t = await countPendingGmailDrafts(ports(some, { lukky: "throw" }));
+    expect(t.status === "ok" && Object.keys(t.unknown)).toEqual(["lukky"]);
     const broken: BacklogPorts = { ledgerPending: async () => { throw new Error("sheets down"); }, gmailDraftIds: async () => ({ status: "ok", ids: new Set() }) };
     expect(await countPendingGmailDrafts(broken)).toMatchObject({ status: "unknown" });
+    const allDown: BacklogPorts = { ledgerPending: async () => some, gmailDraftIds: async () => ({ status: "unavailable", reason: "429" }) };
+    expect(await countPendingGmailDrafts(allDown)).toMatchObject({ status: "unknown" });
   });
 });
 
-describe("the gate: 99 pending drafting proceeds, 100 or more it pauses", () => {
+describe("the gate, PER MEMBER: 99 in a member's own Gmail drafting proceeds for them, 100 or more it pauses only them", () => {
   const gateWith = (pending: number, opts: { ttlMs?: number; now?: () => number } = {}) => {
     const p = ports([...ledgerDrafts("anni", Math.ceil(pending / 3)), ...ledgerDrafts("lukky", Math.ceil(pending / 3)), ...ledgerDrafts("rishii", pending - 2 * Math.ceil(pending / 3))]);
     return { p, gate: createBacklogGate({ ports: p, ...opts }) };
   };
+  const gateFor = (counts: Partial<Record<MemberId, number>>, opts: { ttlMs?: number; now?: () => number } = {}) => {
+    const p = ports(MEMBERS3.flatMap((m) => ledgerDrafts(m, counts[m] ?? 0)));
+    return { p, gate: createBacklogGate({ ports: p, ...opts }) };
+  };
 
-  it("0 and 99 pending -> allowed", async () => {
+  it("the limit is per Gmail account, not combined: 100 + 40 + 100 -> Anni and Rishii paused, Lukky drafts", async () => {
+    const { gate } = gateFor({ anni: 100, lukky: 40, rishii: 100 });
+    expect(await gate.check("anni")).toMatchObject({ allowed: false, pending: 100 });
+    expect(await gate.check("lukky")).toMatchObject({ allowed: true, pending: 40 });
+    expect(await gate.check("rishii")).toMatchObject({ allowed: false, pending: 100 });
+    expect(await gate.check()).toMatchObject({ allowed: true, pending: 240 }); // "may anyone draft": yes, Lukky
+  });
+
+  it("a combined 297 (99 each) does not pause anyone", async () => {
+    const { gate } = gateFor({ anni: 99, lukky: 99, rishii: 99 });
+    for (const m of MEMBERS3) expect(await gate.check(m), m).toMatchObject({ allowed: true, pending: 99 });
+  });
+
+  it("0 and 99 pending in total -> allowed", async () => {
     expect(await gateWith(0).gate.check()).toMatchObject({ allowed: true, pending: 0 });
     expect(await gateWith(99).gate.check()).toMatchObject({ allowed: true, pending: 99 });
   });
 
-  it("exactly 100 and above -> paused, with a reason that says what happens next", async () => {
+  it("exactly 100 and above in ONE member's Gmail -> that member paused, with a reason that says what happens next", async () => {
     for (const n of [100, 101, 250]) {
-      const v = await gateWith(n).gate.check();
+      const { gate } = gateFor({ rishii: n });
+      const v = await gate.check("rishii");
       expect(v, String(n)).toMatchObject({ allowed: false, pending: n });
-      expect(v.reason).toMatch(/drafting paused/);
+      expect(v.reason).toMatch(/drafting paused for rishii/);
       expect(v.reason).toMatch(/sending continues/);
+      expect((await gate.check("anni")).allowed).toBe(true);
     }
   });
 
-  it("drafts created meanwhile count at once: 99 -> allowed, then one more draft -> paused without a new Gmail count", async () => {
-    const { p, gate } = gateWith(99);
-    expect((await gate.check()).allowed).toBe(true);
-    gate.noteCreated();
-    const v = await gate.check();
-    expect(v).toMatchObject({ allowed: false, pending: 100 });
+  it("only when EVERY member is at the limit does check() (anyone) answer paused", async () => {
+    const { gate } = gateFor({ anni: 100, lukky: 120, rishii: 100 });
+    expect(await gate.check()).toMatchObject({ allowed: false });
+  });
+
+  it("drafts created meanwhile count at once, for their own member: 99 -> allowed, one more of Anni's -> Anni paused, the others not, without a new Gmail count", async () => {
+    const { p, gate } = gateFor({ anni: 99 });
+    expect((await gate.check("anni")).allowed).toBe(true);
+    gate.noteCreated(1, "anni");
+    expect(await gate.check("anni")).toMatchObject({ allowed: false, pending: 100 });
+    expect(await gate.check("lukky")).toMatchObject({ allowed: true, pending: 0 });
     expect(p.listCalls()).toBe(3); // one Gmail list per member, once
   });
 
-  it("resumes by itself once the real count is below 100 again (after the cached count is dropped or expires)", async () => {
+  it("resumes by itself once the member's real count is below 100 again (after the cached count is dropped or expires)", async () => {
     let t = 1_000_000;
-    const ledger = [...ledgerDrafts("anni", 40), ...ledgerDrafts("lukky", 40), ...ledgerDrafts("rishii", 40)];
+    const ledger = ledgerDrafts("rishii", 120);
     const live = new Map<MemberId, Set<string>>(MEMBERS3.map((m) => [m, idsOf(ledger.filter((d) => d.memberId === m))]));
     const gate = createBacklogGate({ ports: { ledgerPending: async () => ledger, gmailDraftIds: async (m) => ({ status: "ok", ids: live.get(m)! }) }, now: () => t });
-    expect((await gate.check()).allowed).toBe(false); // 120 pending
-    for (const m of MEMBERS3) for (const id of [...live.get(m)!].slice(0, 15)) live.get(m)!.delete(id); // 45 were sent in Gmail
-    expect((await gate.check()).allowed).toBe(false); // still the cached count: a count is only trusted for a short time
+    expect((await gate.check("rishii")).allowed).toBe(false); // 120 pending
+    for (const id of [...live.get("rishii")!].slice(0, 45)) live.get("rishii")!.delete(id); // 45 were sent in Gmail
+    expect((await gate.check("rishii")).allowed).toBe(false); // still the cached count: a count is only trusted for a short time
     t += 31_000;
-    expect(await gate.check()).toMatchObject({ allowed: true, pending: 75 });
+    expect(await gate.check("rishii")).toMatchObject({ allowed: true, pending: 75 });
   });
 
   it("invalidate() (done after the send step freed drafts) forces a fresh count", async () => {
     const ledger = [...ledgerDrafts("anni", 100)];
     const live = idsOf(ledger);
     const gate = createBacklogGate({ ports: { ledgerPending: async () => ledger, gmailDraftIds: async (m) => ({ status: "ok", ids: m === "anni" ? live : new Set() }) } });
-    expect((await gate.check()).allowed).toBe(false);
+    expect((await gate.check("anni")).allowed).toBe(false);
     live.delete("anni-0");
     gate.invalidate();
-    expect(await gate.check()).toMatchObject({ allowed: true, pending: 99 });
+    expect(await gate.check("anni")).toMatchObject({ allowed: true, pending: 99 });
   });
 
   it("a count is reused only for a short time: older than the TTL it is recounted, never trusted", async () => {
@@ -171,10 +200,11 @@ describe("the gate: 99 pending drafting proceeds, 100 or more it pauses", () => 
     expect(p.ledgerCalls()).toBe(1);
   });
 
-  it("FAILS CLOSED: if Gmail or the ledger cannot be read the answer is 'paused', never 'allowed'", async () => {
+  it("FAILS CLOSED, per member: if a member's Gmail cannot be read THAT member is 'paused', never 'allowed'; if the ledger cannot be read everyone is", async () => {
     const down = createBacklogGate({ ports: ports(ledgerDrafts("anni", 1), { lukky: { status: "unavailable", reason: "Gmail answered 503" } }) });
-    expect(await down.check()).toMatchObject({ allowed: false, pending: null });
-    expect((await down.check()).reason).toMatch(/could not be counted/);
+    expect(await down.check("lukky")).toMatchObject({ allowed: false, pending: null });
+    expect((await down.check("lukky")).reason).toMatch(/could not be counted/);
+    expect(await down.check("anni")).toMatchObject({ allowed: true, pending: 1 }); // Lukky's outage never stops Anni
     const throws = createBacklogGate({ ports: { ledgerPending: async () => { throw new Error("x"); }, gmailDraftIds: async () => ({ status: "ok", ids: new Set() }) } });
     expect(await throws.check()).toMatchObject({ allowed: false, pending: null });
   });
@@ -208,24 +238,25 @@ describe("the gate applies to EVERY draft-creation path, before the three-member
     expect(gate.noteCreated).not.toHaveBeenCalled();
   });
 
-  it("allowed -> one draft per member, each counted in the gate as it is created", async () => {
+  it("allowed -> one draft per member; each member's own backlog is asked, and each draft is counted for its own member", async () => {
     const mail = new MockMailboxes();
     const gate = open();
     const outcomes = await draftForContact({ config, drafts: Object.assign(mail, { backlog: gate }) }, target);
     expect(outcomes.map((o) => o.result)).toEqual(["created", "created", "created"]);
-    expect(gate.check).toHaveBeenCalledTimes(1); // asked once for the whole fan-out, not per member
-    expect(gate.noteCreated).toHaveBeenCalledTimes(3);
+    expect(gate.check.mock.calls.map((c) => (c as unknown[])[0])).toEqual(MEMBERS3);
+    expect(gate.noteCreated.mock.calls).toEqual([[1, "anni"], [1, "lukky"], [1, "rishii"]]);
   });
 
-  it("the check is made BEFORE the fan-out: at 99 a Connection gets all three drafts (never 1 or 2), the next Connection is paused", async () => {
+  it("one member at the limit is skipped; the other two still get their drafts, and the paused one is drafted later (nothing recorded for it)", async () => {
     const mail = new MockMailboxes();
-    const gate = createBacklogGate({ ports: ports([...ledgerDrafts("anni", 33), ...ledgerDrafts("lukky", 33), ...ledgerDrafts("rishii", 33)]) });
+    const gate = createBacklogGate({ ports: ports([...ledgerDrafts("anni", 99), ...ledgerDrafts("rishii", 100)]) });
     const deps = { config, drafts: Object.assign(mail, { backlog: gate }) };
     const first = await draftForContact(deps, target);
-    expect(first.map((o) => o.result)).toEqual(["created", "created", "created"]); // 99 -> 102, but never stopped halfway
+    expect(first.map((o) => o.result)).toEqual(["created", "created", "paused_backlog"]); // Anni 99 -> 100, Lukky, Rishii is full
     const second = await draftForContact(deps, { ...target, connectionId: "c2", email: "raj@bolt.example.com" });
-    expect(second.map((o) => o.result)).toEqual(["paused_backlog", "paused_backlog", "paused_backlog"]);
-    expect(mail.drafts).toHaveLength(3);
+    expect(second.map((o) => o.result)).toEqual(["paused_backlog", "created", "paused_backlog"]);
+    expect(mail.drafts.map((d) => d.memberId)).toEqual(["anni", "lukky", "lukky"]);
+    expect(mail.rows.some((r) => r.memberId === "rishii")).toBe(false);
   });
 
   it("a gate that throws pauses drafting (fail closed)", async () => {
@@ -264,17 +295,28 @@ describe("the gate applies to EVERY draft-creation path, before the three-member
     expect(mail.drafts).toEqual([]);
   });
 
-  it("runPendingDrafts stops starting new Connections the moment the gate closes during the run", async () => {
+  it("runPendingDrafts: when one member's gate closes during the run, only that member stops; the other members' drafts keep coming", async () => {
     const mail = new MockMailboxes();
-    // 98 pending: the first Connection (3 drafts) is allowed and takes it past 100; the second must not start.
-    const gate = createBacklogGate({ ports: ports([...ledgerDrafts("anni", 33), ...ledgerDrafts("lukky", 33), ...ledgerDrafts("rishii", 32)]) });
+    // Anni at 99: the first Connection takes her to 100; the next ones are drafted for Lukky and Rishii only.
+    const gate = createBacklogGate({ ports: ports(ledgerDrafts("anni", 99)) });
     const recent = (i: number) => ({ connectionId: `c${i}`, memberId: "anni", name: `Person ${i}`, company: "Acme", email: `p${i}@acme.example.com`, status: "Not Connected", createdAt: new Date().toISOString(), notes: "" });
     const deps = { config, drafts: Object.assign(mail, { backlog: gate }), connections: { list: async () => [recent(1), recent(2), recent(3)] }, registry: { all: async () => [] }, runState: {} } as unknown as PipelineDeps;
     const r = await runPendingDrafts(deps, { limit: 10 });
-    expect(mail.drafts).toHaveLength(3); // exactly one Connection, fully drafted
-    expect(r.created).toBe(3);
-    expect(r.checked).toBe(1);
+    expect(mail.drafts.filter((d) => d.memberId === "anni")).toHaveLength(1);
+    expect(mail.drafts.filter((d) => d.memberId === "lukky")).toHaveLength(3);
+    expect(mail.drafts.filter((d) => d.memberId === "rishii")).toHaveLength(3);
+    expect(r.created).toBe(7);
+    expect(r.checked).toBe(3);
+    expect(r.paused).toMatch(/drafting paused for anni/);
+  });
+
+  it("runPendingDrafts: a member already at the limit never makes a Connection that only they still need look pending; every member at the limit -> returns at once", async () => {
+    const mail = new MockMailboxes();
+    const gate = createBacklogGate({ ports: ports([...ledgerDrafts("anni", 100), ...ledgerDrafts("lukky", 100), ...ledgerDrafts("rishii", 100)]) });
+    const list = vi.fn(async () => []);
+    const r = await runPendingDrafts({ config, drafts: Object.assign(mail, { backlog: gate }), connections: { list } } as unknown as PipelineDeps, { limit: 10 });
     expect(r.paused).toMatch(/drafting paused/);
+    expect(list).not.toHaveBeenCalled();
   });
 });
 

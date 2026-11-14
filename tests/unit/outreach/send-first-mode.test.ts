@@ -10,7 +10,7 @@ import { HARD_STOP_MS, runOutreachInBackground } from "@/lib/outreach/background
 import { DEFAULT_SEND_FIRST_AT, loadOutreachConfig } from "@/lib/outreach/config";
 import { OUTREACH_LOCK_TTL_MS, SEND_FIRST_SLICE_MS, SEND_SLICE_BACKLOG_MS, SEND_SLICE_MS, runOutreachCycle, type CycleDeps } from "@/lib/outreach/run";
 import {
-  MIN_CYCLE_GAP_MS, RUNNER_HEARTBEAT_MS, RUNNER_LOCK_TTL_MS, RUNNER_MAX_RUN_MS, SEND_FIRST_IDLE_LIMIT, SETTLE_GRACE_MS, runOutreachRunner, type RunnerDeps,
+  MIN_CYCLE_GAP_MS, RUNNER_HEARTBEAT_MS, RUNNER_LOCK_TTL_MS, RUNNER_MAX_RUN_MS, SEND_FIRST_IDLE_LIMIT, SEND_FIRST_NORMAL_EVERY, SETTLE_GRACE_MS, runOutreachRunner, type RunnerDeps,
 } from "@/lib/outreach/runner";
 import { runSendStep, type SendRunResult } from "@/lib/outreach/send-workflow";
 import { DAILY_IMPORT_LIMIT } from "@/lib/outreach/types";
@@ -246,7 +246,8 @@ describe("the runner", () => {
         calls.push(o.noSendFirst);
         w.advance(cycleMs);
         const n = queue.shift();
-        return n ? { status: "completed", mode: n.mode, sent: n.sent } : { status: "disabled" };
+        // A cycle told noSendFirst runs in normal mode (as the real cycle does).
+        return n ? { status: "completed", mode: o.noSendFirst ? "normal" : n.mode, sent: n.sent } : { status: "disabled" };
       },
     };
     return { deps, calls, w };
@@ -270,11 +271,22 @@ describe("the runner", () => {
     expect(out.sendFirstCycles).toBe(2);
   });
 
-  it("a send-first cycle that does send resets the count, so a draining backlog is never interrupted", async () => {
+  it("a send-first cycle that does send resets the count, so a draining backlog is never suspended", async () => {
     const r = run([{ mode: "send-first", sent: 0 }, { mode: "send-first", sent: 3 }, { mode: "send-first", sent: 0 }, { mode: "send-first", sent: 2 }]);
     const out = await runOutreachRunner(r.deps);
     expect(out.sendFirstSuspended).toBe(false);
-    expect(r.calls.every((x) => x === false)).toBe(true);
+    // The third call is the interleaved normal cycle (see below), not a suspension: send-first resumes right after it.
+    expect(r.calls).toEqual([false, false, true, false, false]);
+  });
+
+  it(`one member's backlog never stops the others: after ${SEND_FIRST_NORMAL_EVERY} send-first cycles in a row, ONE normal cycle (import, drafting) runs, then send-first resumes`, async () => {
+    const sf = { mode: "send-first" as const, sent: 4 };
+    const r = run([sf, sf, sf, sf, sf, sf, sf]);
+    const out = await runOutreachRunner(r.deps);
+    expect(r.calls).toEqual([false, false, true, false, false, true, false, false]);
+    expect(out.interleaved).toBe(2);
+    expect(out.sendFirstSuspended).toBe(false);
+    expect(r.w.sleeps.slice(0, 6).every((s) => s === MIN_CYCLE_GAP_MS)).toBe(true); // still draining back-to-back
   });
 
   it("normal-mode cycles never count towards the valve", async () => {

@@ -19,9 +19,11 @@ describe("limits: only the IMPORT limit remains; sending has no JobSync cap", ()
     expect(Object.keys(c)).not.toContain("sendLimits");
     expect(JSON.stringify(c)).not.toMatch(/perMemberDaily|globalDaily/);
   });
-  it("limits.ts exports no sending cap", async () => {
+  it("limits.ts has ONE sending limit, per member (200 per rolling 24 h), and no combined cap", async () => {
     const mod = await import("@/lib/outreach/limits");
-    expect(Object.keys(mod)).toEqual(["CLAIM_TTL_MS"]);
+    expect(Object.keys(mod).sort()).toEqual(["CLAIM_TTL_MS", "MEMBER_DAILY_SEND_LIMIT", "SEND_WINDOW_MS"]);
+    expect(mod.MEMBER_DAILY_SEND_LIMIT).toBe(200);
+    expect(mod.SEND_WINDOW_MS).toBe(86_400_000);
   });
 });
 
