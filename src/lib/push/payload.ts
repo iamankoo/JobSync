@@ -33,6 +33,11 @@ export function jobUrl(jobId: string): string {
   return ID_PATTERN.test(jobId) ? `/all-jobs?job=${encodeURIComponent(jobId)}` : "/all-jobs";
 }
 
+/** Same-origin, allow-listed destination for one Connection (opens its details). The ConnectionID must be a well-formed ID. */
+export function connectionUrl(connectionId: string): string {
+  return ID_PATTERN.test(connectionId) ? `/connections?connection=${encodeURIComponent(connectionId)}` : "/connections";
+}
+
 /** Validates a click destination (mirrored in public/sw.js). */
 export function safeUrl(raw: string, origin = "https://placeholder.invalid"): string {
   try {
@@ -105,7 +110,7 @@ export function connectionAddedPayload(actor: MemberId, c: ConnectionFacts): Pus
   return {
     title: clean(`${name} added a connection: ${c.name}`, 110),
     body: clean(`${where ? `${where} — ` : ""}tap to view in Connections.`, 140),
-    url: "/connections",
+    url: connectionUrl(c.connectionId),
     tag: `connection-added-${c.connectionId}`,
     icon: m?.photo,
   };

@@ -264,7 +264,7 @@ describe("existing notifications are unchanged", () => {
     await createConnection("anni", createConnectionSchema.parse({ name: "Max Manual", company: "Zed", role: "CTO", email: "max@zed.example.com", roleCategory: "SDE", applyRole: "Software Engineer", status: "Not Connected" }));
     await vi.waitFor(() => expect(delivered.length).toBe(2));
     expect(delivered.map((d) => d.member).sort()).toEqual(["lukky", "rishii"]); // the actor is never a recipient
-    expect(delivered[0].payload).toMatchObject({ title: "Anni added a connection: Max Manual", url: "/connections" });
+    expect(delivered[0].payload).toMatchObject({ title: "Anni added a connection: Max Manual", url: expect.stringMatching(/^\/connections\?connection=conn_/) });
     expect(delivered[0].payload.body).toBe("CTO · Zed — tap to view in Connections.");
     await runOutreachCycle(cycle());
     expect(connNotes()).toEqual([]);

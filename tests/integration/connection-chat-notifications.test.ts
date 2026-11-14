@@ -79,7 +79,7 @@ describe("new connection notifications", () => {
       for (const s of sent) {
         expect(s.payload.title).toBe(`${NAME[actor]} added a connection: Priya Sharma`);
         expect(s.payload.body).toBe("Engineering Manager · Acme Corp — tap to view in Connections.");
-        expect(s.payload.url).toBe("/connections");
+        expect(s.payload.url).toBe(`/connections?connection=${data.connectionId}`); // opens that Connection
         expect(s.payload.tag).toBe(`connection-added-${data.connectionId}`);
         // the saved message and notes never leave in a notification
         expect(JSON.stringify(s.payload)).not.toMatch(/PRIVATE/);
